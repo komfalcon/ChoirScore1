@@ -2,6 +2,8 @@ import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import { z } from 'zod';
 import {
   scoreImportWarningSchema,
+  scorePreservationFromWarnings,
+  scorePreservationSchema,
   type ScoreImportWarning,
   type ScoreImportWarningCode,
 } from './scoreContracts.js';
@@ -27,6 +29,8 @@ const musicXmlPreservationSchema = z
     sourceXml: z.string().min(1).max(MAX_MUSICXML_BYTES),
     /** Snapshot of the public model projection at import time. */
     modelSnapshot: z.string().min(1),
+    /** True when edits could discard semantics not represented by ScoreModel. */
+    requiresSourcePreservation: z.boolean(),
   })
   .strict();
 
@@ -40,6 +44,7 @@ export const musicXmlConversionResultSchema = z
   .object({
     model: preservedScoreModelSchema,
     warnings: z.array(scoreImportWarningSchema),
+    preservation: scorePreservationSchema,
   })
   .strict();
 export type MusicXmlConversionResult = z.infer<
@@ -55,6 +60,8 @@ export const musicXmlConversionErrorCodeSchema = z.enum([
   'NO_PARTS',
   'INVALID_SCORE',
   'PRESERVATION_CONTEXT_CHANGED',
+  'SOURCE_PROVENANCE_REQUIRED',
+  'UNREPRESENTABLE_DURATION',
 ]);
 export type MusicXmlConversionErrorCode = z.infer<
   typeof musicXmlConversionErrorCodeSchema
@@ -75,6 +82,13 @@ export class MusicXmlConversionError extends Error {
     this.issues = issues;
   }
 }
+
+export const modelToMusicXmlOptionsSchema = z
+  .object({ mode: z.literal('new-score') })
+  .strict();
+export type ModelToMusicXmlOptions = z.infer<
+  typeof modelToMusicXmlOptionsSchema
+>;
 
 type OrderedNode = Record<string, unknown> & {
   ':@'?: Record<string, string>;
@@ -150,6 +164,17 @@ const supportedElementNames = new Set([
   'per-minute',
   'sound',
 ]);
+
+const supportedAttributesByElement: Record<string, Set<string>> = {
+  'score-partwise': new Set(['version']),
+  'score-part': new Set(['id']),
+  part: new Set(['id']),
+  measure: new Set(['number']),
+  tie: new Set(['type']),
+  tied: new Set(['type']),
+  creator: new Set(['type']),
+  sound: new Set(['tempo']),
+};
 
 function tagName(node: OrderedNode | undefined): string | undefined {
   if (!node) return undefined;
@@ -260,6 +285,37 @@ function issue(
   warnings.push({ code, message, ...extra });
 }
 
+function collectUnsupportedAttributes(
+  node: OrderedNode,
+  elementName: string,
+  path: string,
+  warnings: ScoreImportWarning[],
+  seen: Set<string>
+): void {
+  const knownAttributes =
+    supportedAttributesByElement[elementName] ?? new Set<string>();
+  for (const attributeKey of Object.keys(node[':@'] ?? {})) {
+    const attributeName = attributeKey.replace(/^@_/, '');
+    if (
+      attributeName === 'xmlns' ||
+      attributeName.startsWith('xmlns:') ||
+      knownAttributes.has(attributeName)
+    ) {
+      continue;
+    }
+    const attributePath = `${path}/@${attributeName}`;
+    const attributeKeyForSeen = `attribute:${elementName}@${attributeName}`;
+    if (seen.has(attributeKeyForSeen)) continue;
+    seen.add(attributeKeyForSeen);
+    issue(
+      warnings,
+      'UNSUPPORTED_ATTRIBUTE_PRESERVED',
+      `MusicXML attribute @${attributeName} on <${elementName}> is not represented in the shared model; the original XML is preserved.`,
+      { path: attributePath }
+    );
+  }
+}
+
 function collectUnsupported(
   root: OrderedNode,
   warnings: ScoreImportWarning[]
@@ -270,6 +326,16 @@ function collectUnsupported(
   ];
   while (stack.length) {
     const current = stack.pop()!;
+    const currentName = tagName(current.node);
+    if (currentName) {
+      collectUnsupportedAttributes(
+        current.node,
+        currentName,
+        current.path,
+        warnings,
+        seen
+      );
+    }
     const currentChildren = elementChildren(current.node);
     for (let index = currentChildren.length - 1; index >= 0; index -= 1) {
       const child = currentChildren[index]!;
@@ -522,16 +588,76 @@ function parseTempo(root: OrderedNode, warnings: ScoreImportWarning[]): number {
     for (const measure of children(part, 'measure')) {
       for (const direction of children(measure, 'direction')) {
         const sound = firstChild(direction, 'sound');
-        const tempo = parseInteger(attribute(sound, 'tempo'));
-        if (tempo !== undefined) {
-          if (tempo >= 20 && tempo <= 300) return tempo;
+        const soundTempoText = attribute(sound, 'tempo')?.trim();
+        if (soundTempoText !== undefined) {
+          const soundTempo = Number(soundTempoText);
+          if (
+            Number.isInteger(soundTempo) &&
+            soundTempo >= 20 &&
+            soundTempo <= 300
+          ) {
+            return soundTempo;
+          }
           issue(
             warnings,
-            'UNSUPPORTED_CONSTRUCT_PRESERVED',
-            'Tempo is outside the model range; original XML is preserved and 90 BPM is used.'
+            'UNSUPPORTED_TEMPO_PRESERVED',
+            'Sound tempo is not an integer from 20 to 300 BPM; the source is preserved and 90 BPM is used in the model.',
+            { path: '/score-partwise/part/measure/direction/sound/@tempo' }
           );
-          return 90;
         }
+
+        const metronome = firstChild(
+          firstChild(direction, 'direction-type'),
+          'metronome'
+        );
+        const perMinuteText = childText(metronome, 'per-minute')?.trim();
+        if (perMinuteText === undefined) continue;
+
+        const beatUnit = childText(metronome, 'beat-unit')
+          ?.trim()
+          .toLowerCase();
+        const quarterUnitsByBeatUnit: Record<string, number> = {
+          longa: 16,
+          breve: 8,
+          whole: 4,
+          half: 2,
+          quarter: 1,
+          eighth: 0.5,
+          '16th': 0.25,
+          '32nd': 0.125,
+          '64th': 0.0625,
+          '128th': 0.03125,
+          '256th': 0.015625,
+          '512th': 0.0078125,
+          '1024th': 0.00390625,
+        };
+        const baseQuarterUnits = beatUnit
+          ? quarterUnitsByBeatUnit[beatUnit]
+          : undefined;
+        const dots = children(metronome, 'beat-unit-dot').length;
+        const dotFactor = dots === 0 ? 1 : 2 - 1 / 2 ** dots;
+        const perMinute = Number(perMinuteText);
+        const quarterTempo =
+          baseQuarterUnits === undefined
+            ? Number.NaN
+            : perMinute * baseQuarterUnits * dotFactor;
+        const roundedTempo = Math.round(quarterTempo);
+        if (
+          Number.isFinite(quarterTempo) &&
+          Math.abs(quarterTempo - roundedTempo) < 1e-8 &&
+          roundedTempo >= 20 &&
+          roundedTempo <= 300
+        ) {
+          return roundedTempo;
+        }
+        issue(
+          warnings,
+          'UNSUPPORTED_TEMPO_PRESERVED',
+          'Metronome beat-unit/per-minute cannot be represented as an integer from 20 to 300 quarter-note BPM; the source is preserved and 90 BPM is used in the model.',
+          {
+            path: '/score-partwise/part/measure/direction/direction-type/metronome',
+          }
+        );
       }
     }
   }
@@ -545,6 +671,7 @@ function buildPart(
   warnings: ScoreImportWarning[]
 ): ScoreModelInput['parts'][number] {
   const partId = attribute(part, 'id') || `P${partIndex + 1}`;
+  const partName = partNames.get(partId)?.trim();
   let divisions = 1;
   let clef: ScoreClef = 'treble';
   let sawClef = false;
@@ -604,7 +731,7 @@ function buildPart(
   }
   return {
     id: partId,
-    name: partNames.get(partId) || partId,
+    ...(partName ? { name: partName } : {}),
     clef,
     measures,
   };
@@ -786,14 +913,21 @@ export function musicXmlToModel(xml: string): MusicXmlConversionResult {
     );
   }
 
+  const preservationStatus = scorePreservationFromWarnings(warnings);
   const model = preservedScoreModelSchema.parse({
     ...modelWithoutPreservation.data,
     preservation: {
       sourceXml: xml,
       modelSnapshot: snapshot(modelWithoutPreservation.data),
+      requiresSourcePreservation:
+        preservationStatus.state === 'opaque_constructs_preserved',
     },
   });
-  return musicXmlConversionResultSchema.parse({ model, warnings });
+  return musicXmlConversionResultSchema.parse({
+    model,
+    warnings,
+    preservation: preservationStatus,
+  });
 }
 
 function escapeXml(value: string): string {
@@ -846,6 +980,26 @@ function rationalDenominator(value: number): number {
   return MAX_DIVISIONS;
 }
 
+function musicXmlTicks(
+  value: number,
+  divisions: number,
+  label: string
+): number {
+  const scaled = value * divisions;
+  const ticks = Math.round(scaled);
+  if (
+    !Number.isSafeInteger(ticks) ||
+    Math.abs(scaled - ticks) > 1e-8 ||
+    (value > 0 && ticks === 0)
+  ) {
+    throw new MusicXmlConversionError(
+      'UNREPRESENTABLE_DURATION',
+      `${label} ${value} cannot be represented as an exact, nonzero MusicXML tick count with at most ${MAX_DIVISIONS} divisions per quarter.`
+    );
+  }
+  return ticks;
+}
+
 function divisionsFor(model: ScoreModel): number {
   let divisions = 1;
   for (const part of model.parts) {
@@ -857,6 +1011,16 @@ function divisionsFor(model: ScoreModel): number {
             (divisions / greatestCommonDivisor(divisions, denominator)) *
             denominator;
           divisions = Math.min(MAX_DIVISIONS, next);
+        }
+      }
+    }
+  }
+  for (const part of model.parts) {
+    for (const measure of part.measures) {
+      for (const note of measure.notes) {
+        musicXmlTicks(note.dur, divisions, 'Note duration');
+        if (note.onset !== undefined) {
+          musicXmlTicks(note.onset, divisions, 'Note onset');
         }
       }
     }
@@ -955,7 +1119,7 @@ function noteLines(
     );
   }
   lines.push(
-    `${indent}  ${textTag('duration', Math.round(note.dur * divisions))}`
+    `${indent}  ${textTag('duration', musicXmlTicks(note.dur, divisions, 'Note duration'))}`
   );
   if (note.tie) lines.push(`${indent}  <tie type="start"/>`);
   lines.push(`${indent}  ${textTag('voice', note.voice)}`);
@@ -1021,14 +1185,14 @@ function measureEventLines(
     } else if (onset < cursor - 0.000001) {
       lines.push(
         '      <backup>',
-        `        ${textTag('duration', Math.round((cursor - onset) * divisions))}`,
+        `        ${textTag('duration', musicXmlTicks(cursor - onset, divisions, 'Backup duration'))}`,
         '      </backup>'
       );
       cursor = onset;
     } else if (onset > cursor + 0.000001) {
       lines.push(
         '      <forward>',
-        `        ${textTag('duration', Math.round((onset - cursor) * divisions))}`,
+        `        ${textTag('duration', musicXmlTicks(onset - cursor, divisions, 'Forward duration'))}`,
         '      </forward>'
       );
       cursor = onset;
@@ -1098,19 +1262,29 @@ function canonicalMusicXml(model: ScoreModel): string {
 
 /** Export canonical MusicXML for new models; unchanged imports use source passthrough. */
 export function modelToMusicXml(
-  modelInput: ScoreModel | PreservedScoreModel
+  modelInput: ScoreModel | PreservedScoreModel,
+  options?: ModelToMusicXmlOptions
 ): string {
+  const parsedOptions = options
+    ? modelToMusicXmlOptionsSchema.parse(options)
+    : undefined;
   const parsed = preservedScoreModelSchema.parse(modelInput);
   const { preservation, ...content } = parsed;
   const model = scoreModelSchema.parse(content);
   if (preservation) {
-    if (snapshot(model) !== preservation.modelSnapshot) {
+    const unchanged = snapshot(model) === preservation.modelSnapshot;
+    if (unchanged) return preservation.sourceXml;
+    if (preservation.requiresSourcePreservation) {
       throw new MusicXmlConversionError(
         'PRESERVATION_CONTEXT_CHANGED',
-        'An imported score with preserved opaque MusicXML cannot be canonically re-exported after model changes; this prevents silent data loss.'
+        'This imported score is read-only because it contains MusicXML constructs outside the shared model; restore the unchanged source model or keep the original MusicXML.'
       );
     }
-    return preservation.sourceXml;
+  } else if (!parsedOptions) {
+    throw new MusicXmlConversionError(
+      'SOURCE_PROVENANCE_REQUIRED',
+      'No source-preservation context is available. Pass { mode: "new-score" } only when creating MusicXML from a model that is not an imported score.'
+    );
   }
   const xml = canonicalMusicXml(model);
   if (XMLValidator.validate(xml) !== true) {

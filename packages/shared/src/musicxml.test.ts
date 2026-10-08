@@ -8,6 +8,7 @@ import {
   musicXmlToModel,
   type MusicXmlConversionErrorCode,
 } from './musicxml.js';
+import { scorePartSummariesFromModel } from './scoreContracts.js';
 import { scoreModelSchema } from './scoreModel.js';
 
 const fixture = readFileSync(
@@ -27,6 +28,24 @@ function expectConversionError(
     return;
   }
   throw new Error(`Expected MusicXmlConversionError with code ${code}.`);
+}
+
+function expectExportError(
+  action: () => string,
+  code: MusicXmlConversionErrorCode
+): void {
+  try {
+    action();
+  } catch (error) {
+    expect(error).toBeInstanceOf(MusicXmlConversionError);
+    expect(error).toMatchObject({ code });
+    return;
+  }
+  throw new Error(`Expected MusicXmlConversionError with code ${code}.`);
+}
+
+function tempoOnlyXml(perMinute: string, beatUnit = 'quarter'): string {
+  return `<?xml version="1.0"?><score-partwise version="4.0"><part-list><score-part id="voice-x"><part-name>Voice</part-name></score-part></part-list><part id="voice-x"><measure number="1"><attributes><divisions>1</divisions></attributes><direction><direction-type><metronome><beat-unit>${beatUnit}</beat-unit><per-minute>${perMinute}</per-minute></metronome></direction-type></direction><note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note></measure></part></score-partwise>`;
 }
 
 describe('MusicXML converters', () => {
@@ -49,6 +68,12 @@ describe('MusicXML converters', () => {
       'Alto',
       'Tenor',
       'Bass',
+    ]);
+    expect(scorePartSummariesFromModel({ parts: result.model.parts })).toEqual([
+      { id: 'P1', label: 'Soprano' },
+      { id: 'P2', label: 'Alto' },
+      { id: 'P3', label: 'Tenor' },
+      { id: 'P4', label: 'Bass' },
     ]);
     expect(result.model.parts.every((part) => part.measures.length === 2)).toBe(
       true
@@ -77,12 +102,17 @@ describe('MusicXML converters', () => {
         warning.message.includes('Tie-stop notation')
       )
     ).toBe(true);
+    expect(result.preservation).toMatchObject({
+      state: 'opaque_constructs_preserved',
+      readOnlyReason: 'UNSUPPORTED_MUSICXML_CONSTRUCTS_PRESERVED',
+    });
   });
 
   it('returns the exact original XML when an imported model is unchanged, including unmodelled notation', () => {
     const result = musicXmlToModel(fixture);
     expect(modelToMusicXml(result.model)).toBe(fixture);
     expect(result.model.preservation?.sourceXml).toBe(fixture);
+    expect(result.model.preservation?.requiresSourcePreservation).toBe(true);
     expect(result.model.preservation?.sourceXml).toContain(
       '<other-notation type="single">ChoirScore preservation sentinel</other-notation>'
     );
@@ -95,9 +125,23 @@ describe('MusicXML converters', () => {
   it('fails closed rather than silently losing preserved constructs after a model edit', () => {
     const imported = musicXmlToModel(fixture);
     const changed = { ...imported.model, title: 'Edited title' };
-    expect(() => modelToMusicXml(changed)).toThrowError(
-      /cannot be canonically re-exported after model changes/i
+    expectExportError(
+      () => modelToMusicXml(changed),
+      'PRESERVATION_CONTEXT_CHANGED'
     );
+    const { preservation: _discarded, ...wireModel } = imported.model;
+    expectExportError(
+      () => modelToMusicXml(wireModel),
+      'SOURCE_PROVENANCE_REQUIRED'
+    );
+  });
+
+  it('allows canonical edits to imported scores only when no opaque content was found', () => {
+    const imported = musicXmlToModel(tempoOnlyXml('120'));
+    expect(imported.preservation.state).toBe('clean');
+    const changed = { ...imported.model, title: 'Edited safely' };
+    const exported = modelToMusicXml(changed);
+    expect(musicXmlToModel(exported).model.title).toBe('Edited safely');
   });
 
   it('canonically exports a new model and round-trips voices, lyrics, ties and exact triplet timing', () => {
@@ -147,8 +191,13 @@ describe('MusicXML converters', () => {
       ],
     });
 
-    const xml = modelToMusicXml(model);
+    expectExportError(
+      () => modelToMusicXml(model),
+      'SOURCE_PROVENANCE_REQUIRED'
+    );
+    const xml = modelToMusicXml(model, { mode: 'new-score' });
     expect(xml).toContain('<score-partwise version="4.0">');
+    expect(xml).toContain('<divisions>3</divisions>');
     expect(xml).toContain('<actual-notes>3</actual-notes>');
     expect(xml).toContain('<duration>1</duration>');
     const roundTripped = musicXmlToModel(xml).model;
@@ -165,6 +214,79 @@ describe('MusicXML converters', () => {
       },
       { pitch: 'D5', dur: 1 / 3, voice: '2', onset: 1 / 3 },
     ]);
+  });
+
+  it('rejects positive durations that cannot be represented as exact nonzero ticks', () => {
+    const tiny = scoreModelSchema.parse({
+      title: 'Tiny duration',
+      key: { fifths: 0, mode: 'major' },
+      time: { beats: 4, beatType: 4 },
+      parts: [
+        {
+          id: 'voice-1',
+          clef: 'treble',
+          measures: [
+            {
+              number: 1,
+              notes: [{ pitch: 'C4', dur: 0.0000001 }],
+            },
+          ],
+        },
+      ],
+    });
+    expectExportError(
+      () => modelToMusicXml(tiny, { mode: 'new-score' }),
+      'UNREPRESENTABLE_DURATION'
+    );
+  });
+
+  it('reads metronome-only per-minute values and warns when they cannot be modeled', () => {
+    expect(musicXmlToModel(tempoOnlyXml('126')).model.tempo).toBe(126);
+    const unsupported = musicXmlToModel(tempoOnlyXml('allegro'));
+    expect(unsupported.model.tempo).toBe(90);
+    expect(unsupported.warnings).toContainEqual(
+      expect.objectContaining({ code: 'UNSUPPORTED_TEMPO_PRESERVED' })
+    );
+    expect(unsupported.preservation.state).toBe('opaque_constructs_preserved');
+  });
+
+  it('warns and marks the source read-only for unsupported attributes such as print-object="no"', () => {
+    const xml = fixture.replace(/<note(?=[\s>])/, '<note print-object="no"');
+    const result = musicXmlToModel(xml);
+    expect(result.warnings).toContainEqual(
+      expect.objectContaining({
+        code: 'UNSUPPORTED_ATTRIBUTE_PRESERVED',
+        path: expect.stringContaining('/@print-object'),
+      })
+    );
+    expect(result.preservation.state).toBe('opaque_constructs_preserved');
+    expect(modelToMusicXml(result.model)).toBe(xml);
+
+    const rootAttributeXml = fixture.replace(
+      '<score-partwise version="4.0">',
+      '<score-partwise version="4.0" custom-root-flag="yes">'
+    );
+    const rootAttributeResult = musicXmlToModel(rootAttributeXml);
+    expect(rootAttributeResult.warnings).toContainEqual(
+      expect.objectContaining({
+        code: 'UNSUPPORTED_ATTRIBUTE_PRESERVED',
+        path: '/score-partwise/@custom-root-flag',
+      })
+    );
+  });
+
+  it('uses the source part name or deterministic Part N fallback, never the MusicXML ID', () => {
+    const xml = fixture
+      .replace('<score-part id="P2">', '<score-part id="voice-2">')
+      .replace('<part id="P2">', '<part id="voice-2">')
+      .replace('<part-name>Alto</part-name>', '');
+    const model = musicXmlToModel(xml).model;
+    expect(model.parts[1]).toMatchObject({ id: 'voice-2' });
+    expect(model.parts[1]?.name).toBeUndefined();
+    expect(scorePartSummariesFromModel({ parts: model.parts })[1]).toEqual({
+      id: 'voice-2',
+      label: 'Part 2',
+    });
   });
 
   it('rejects malformed, oversized, timewise, entity and non-MusicXML external-DTD inputs', () => {

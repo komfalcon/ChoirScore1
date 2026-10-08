@@ -6,6 +6,7 @@ import {
   patchScoreRequestSchema,
   putScoreAccessRequestSchema,
   scoreAccessResponseSchema,
+  scoreContentWriteErrorResponseSchema,
   scoreDetailResponseSchema,
   scoreImportErrorResponseSchema,
   scoreImportFormFieldsSchema,
@@ -13,6 +14,8 @@ import {
   scoreLibraryResponseSchema,
   scoreListFiltersSchema,
   scoreListQuerySchema,
+  scorePreservationSchema,
+  scorePartSummariesFromModel,
   scoreVisibilityUpdateRequestSchema,
 } from './scoreContracts.js';
 
@@ -24,10 +27,22 @@ const summary = {
   composer: 'Traditional',
   key: { fifths: 0, mode: 'major' as const },
   time: { beats: 4, beatType: 4 },
-  partIds: ['S', 'A', 'T', 'B'],
+  partIds: ['voice-01', 'part-x', 'S', 'voice4'],
+  parts: [
+    { id: 'voice-01', label: 'Soprano' },
+    { id: 'part-x', label: 'Alto' },
+    { id: 'S', label: 'Tenor' },
+    { id: 'voice4', label: 'Bass' },
+  ],
   partCount: 4,
   measureCount: 3,
   visibility: 'shared' as const,
+  canEditContent: false,
+  preservation: {
+    state: 'clean' as const,
+    readOnlyReason: null,
+    preservedConstructs: [],
+  },
   creator: { id: 'user_1', displayName: 'Choir Director' },
   createdAt: timestamp,
   updatedAt: timestamp,
@@ -71,6 +86,35 @@ const model = {
 };
 
 describe('shared score API contracts', () => {
+  it('uses source part names and deterministic Part N fallbacks, never inferring from IDs', () => {
+    const parts = scorePartSummariesFromModel({
+      parts: [
+        {
+          id: 'voice-17',
+          name: '  Contralto  ',
+          clef: 'treble',
+          measures: [{ number: 1, notes: [] }],
+        },
+        {
+          id: 'S',
+          clef: 'treble',
+          measures: [{ number: 1, notes: [] }],
+        },
+        {
+          id: 'voice-3',
+          name: '   ',
+          clef: 'bass',
+          measures: [{ number: 1, notes: [] }],
+        },
+      ],
+    });
+    expect(parts).toEqual([
+      { id: 'voice-17', label: 'Contralto' },
+      { id: 'S', label: 'Part 2' },
+      { id: 'voice-3', label: 'Part 3' },
+    ]);
+  });
+
   it('parses list filters independently and normalizes URL query defaults', () => {
     expect(
       scoreListFiltersSchema.parse({
@@ -115,6 +159,74 @@ describe('shared score API contracts', () => {
         nextCursor: null,
       }).success
     ).toBe(false);
+    expect(
+      scoreLibraryResponseSchema.safeParse({
+        scores: [
+          { ...summary, parts: [{ id: 'different-id', label: 'Soprano' }] },
+        ],
+        nextCursor: null,
+      }).success
+    ).toBe(false);
+  });
+
+  it('distinguishes ACL canEdit from effective content editability for preserved XML', () => {
+    const preservation = scorePreservationSchema.parse({
+      state: 'opaque_constructs_preserved',
+      readOnlyReason: 'UNSUPPORTED_MUSICXML_CONSTRUCTS_PRESERVED',
+      preservedConstructs: [
+        {
+          code: 'UNSUPPORTED_ATTRIBUTE_PRESERVED',
+          path: '/score-partwise/part/measure/note/@print-object',
+        },
+      ],
+    });
+    const readOnlySummary = {
+      ...summary,
+      canEdit: true,
+      canEditContent: false,
+      preservation,
+    };
+    expect(
+      scoreLibraryResponseSchema.parse({
+        scores: [readOnlySummary],
+        nextCursor: null,
+      }).scores[0]
+    ).toMatchObject({ canEdit: true, canEditContent: false, preservation });
+    const detail = scoreDetailResponseSchema.parse({
+      score: {
+        ...readOnlySummary,
+        currentVersionId: 'version_1',
+        version: {
+          id: 'version_1',
+          note: null,
+          createdAt: timestamp,
+          createdBy: summary.creator,
+        },
+        model,
+        musicXml: '<score-partwise/>',
+      },
+    }).score;
+    expect(detail).toMatchObject({
+      canEdit: true,
+      canEditContent: false,
+      preservation,
+      musicXml: '<score-partwise/>',
+    });
+    expect(
+      scoreLibraryResponseSchema.safeParse({
+        scores: [{ ...readOnlySummary, canEditContent: true }],
+        nextCursor: null,
+      }).success
+    ).toBe(false);
+    expect(
+      scoreContentWriteErrorResponseSchema.parse({
+        error: {
+          code: 'SCORE_CONTENT_READ_ONLY',
+          message: 'Opaque source constructs must be preserved.',
+          preservation,
+        },
+      }).error.code
+    ).toBe('SCORE_CONTENT_READ_ONLY');
   });
 
   it('defines metadata/visibility updates and owner-managed shared-access replacement', () => {

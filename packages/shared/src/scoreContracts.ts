@@ -4,10 +4,27 @@ import {
   scoreKeySchema,
   scoreModelSchema,
   scoreTimeSchema,
+  type ScoreModel,
 } from './scoreModel.js';
 
 export const scoreVisibilitySchema = z.enum(['private', 'choir', 'shared']);
 export type ScoreVisibility = z.infer<typeof scoreVisibilitySchema>;
+
+export const scoreImportWarningCodeSchema = z.enum([
+  'UNSUPPORTED_CONSTRUCT_PRESERVED',
+  'UNSUPPORTED_ATTRIBUTE_PRESERVED',
+  'UNSUPPORTED_PITCH_PRESERVED',
+  'UNSUPPORTED_GRACE_NOTE_PRESERVED',
+  'UNSUPPORTED_CLEF_PRESERVED',
+  'UNSUPPORTED_KEY_MODE_PRESERVED',
+  'UNSUPPORTED_TIME_SIGNATURE_PRESERVED',
+  'UNSUPPORTED_TEMPO_PRESERVED',
+  'MID_SCORE_ATTRIBUTES_PRESERVED',
+  'MULTIPLE_LYRICS_PRESERVED',
+]);
+export type ScoreImportWarningCode = z.infer<
+  typeof scoreImportWarningCodeSchema
+>;
 
 export const scoreCreatorSchema = z
   .object({
@@ -16,6 +33,81 @@ export const scoreCreatorSchema = z
   })
   .strict();
 export type ScoreCreator = z.infer<typeof scoreCreatorSchema>;
+
+export const scorePartSummarySchema = z
+  .object({
+    id: z.string().min(1),
+    label: z.string().trim().min(1).max(256),
+  })
+  .strict();
+export type ScorePartSummary = z.infer<typeof scorePartSummarySchema>;
+
+/** Uses the source part name; stable MusicXML IDs are never treated as labels. */
+export function scorePartSummariesFromModel(
+  model: Pick<ScoreModel, 'parts'>
+): ScorePartSummary[] {
+  return model.parts.map((part, index) =>
+    scorePartSummarySchema.parse({
+      id: part.id,
+      label: part.name?.trim() || `Part ${index + 1}`,
+    })
+  );
+}
+
+export const scorePreservationStateSchema = z.enum([
+  'clean',
+  'opaque_constructs_preserved',
+]);
+export type ScorePreservationState = z.infer<
+  typeof scorePreservationStateSchema
+>;
+
+export const scoreReadOnlyReasonSchema = z.literal(
+  'UNSUPPORTED_MUSICXML_CONSTRUCTS_PRESERVED'
+);
+export type ScoreReadOnlyReason = z.infer<typeof scoreReadOnlyReasonSchema>;
+
+export const scorePreservedConstructSchema = z
+  .object({
+    code: scoreImportWarningCodeSchema,
+    path: z.string().min(1).optional(),
+    partId: z.string().min(1).optional(),
+  })
+  .strict();
+export type ScorePreservedConstruct = z.infer<
+  typeof scorePreservedConstructSchema
+>;
+
+export const scorePreservationSchema = z
+  .object({
+    state: scorePreservationStateSchema,
+    readOnlyReason: scoreReadOnlyReasonSchema.nullable(),
+    preservedConstructs: z.array(scorePreservedConstructSchema).max(512),
+  })
+  .strict()
+  .superRefine((preservation, context) => {
+    const hasOpaqueConstructs =
+      preservation.state === 'opaque_constructs_preserved';
+    if (
+      hasOpaqueConstructs !==
+      (preservation.readOnlyReason ===
+        'UNSUPPORTED_MUSICXML_CONSTRUCTS_PRESERVED')
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['readOnlyReason'],
+        message: 'Read-only reason must match the preservation state.',
+      });
+    }
+    if (hasOpaqueConstructs !== preservation.preservedConstructs.length > 0) {
+      context.addIssue({
+        code: 'custom',
+        path: ['preservedConstructs'],
+        message: 'Preserved constructs must match the preservation state.',
+      });
+    }
+  });
+export type ScorePreservation = z.infer<typeof scorePreservationSchema>;
 
 export const scoreAccessFlagsSchema = z
   .object({
@@ -38,9 +130,12 @@ export const scoreSummarySchema = z
     key: scoreKeySchema,
     time: scoreTimeSchema,
     partIds: z.array(z.string().min(1)).min(1).max(64),
+    parts: z.array(scorePartSummarySchema).min(1).max(64),
     partCount: z.number().int().min(1).max(64),
     measureCount: z.number().int().positive(),
     visibility: scoreVisibilitySchema,
+    canEditContent: z.boolean(),
+    preservation: scorePreservationSchema,
     creator: scoreCreatorSchema,
     createdAt: isoUtcTimestampSchema,
     updatedAt: isoUtcTimestampSchema,
@@ -53,6 +148,20 @@ export const scoreSummarySchema = z
         code: 'custom',
         path: ['partCount'],
         message: 'partCount must equal the number of partIds.',
+      });
+    }
+    if (score.parts.length !== score.partCount) {
+      context.addIssue({
+        code: 'custom',
+        path: ['parts'],
+        message: 'parts must contain one readable label for each part.',
+      });
+    }
+    if (score.parts.some((part, index) => part.id !== score.partIds[index])) {
+      context.addIssue({
+        code: 'custom',
+        path: ['parts'],
+        message: 'parts must preserve partIds order and stable MusicXML IDs.',
       });
     }
     if (new Set(score.partIds).size !== score.partIds.length) {
@@ -68,6 +177,23 @@ export const scoreSummarySchema = z
         path: ['canView'],
         message:
           'A score returned in the library must be viewable by the caller.',
+      });
+    }
+    if (!score.canEdit && score.canEditContent) {
+      context.addIssue({
+        code: 'custom',
+        path: ['canEditContent'],
+        message: 'Content editing cannot exceed role/access edit permission.',
+      });
+    }
+    if (
+      score.preservation.state === 'opaque_constructs_preserved' &&
+      score.canEditContent
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['canEditContent'],
+        message: 'Scores with preserved opaque constructs are read-only.',
       });
     }
   });
@@ -227,26 +353,45 @@ export const scoreDetailResponseSchema = z
   .strict();
 export type ScoreDetailResponse = z.infer<typeof scoreDetailResponseSchema>;
 
+export const scoreContentWriteErrorCodeSchema = z.literal(
+  'SCORE_CONTENT_READ_ONLY'
+);
+export type ScoreContentWriteErrorCode = z.infer<
+  typeof scoreContentWriteErrorCodeSchema
+>;
+
+/** HTTP 409 for model/version writes blocked by opaque source preservation. */
+export const scoreContentWriteErrorResponseSchema = z
+  .object({
+    error: z
+      .object({
+        code: scoreContentWriteErrorCodeSchema,
+        message: z.string().min(1),
+        preservation: scorePreservationSchema,
+      })
+      .strict(),
+  })
+  .strict()
+  .superRefine((response, context) => {
+    if (response.error.preservation.state !== 'opaque_constructs_preserved') {
+      context.addIssue({
+        code: 'custom',
+        path: ['error', 'preservation'],
+        message:
+          'Content-read-only errors require opaque preserved constructs.',
+      });
+    }
+  });
+export type ScoreContentWriteErrorResponse = z.infer<
+  typeof scoreContentWriteErrorResponseSchema
+>;
+
 export const scoreImportFormFieldsSchema = z
   .object({ visibility: scoreVisibilitySchema.default('private') })
   .strict();
 export type ScoreImportFormFields = z.input<typeof scoreImportFormFieldsSchema>;
 export type ParsedScoreImportFormFields = z.output<
   typeof scoreImportFormFieldsSchema
->;
-
-export const scoreImportWarningCodeSchema = z.enum([
-  'UNSUPPORTED_CONSTRUCT_PRESERVED',
-  'UNSUPPORTED_PITCH_PRESERVED',
-  'UNSUPPORTED_GRACE_NOTE_PRESERVED',
-  'UNSUPPORTED_CLEF_PRESERVED',
-  'UNSUPPORTED_KEY_MODE_PRESERVED',
-  'UNSUPPORTED_TIME_SIGNATURE_PRESERVED',
-  'MID_SCORE_ATTRIBUTES_PRESERVED',
-  'MULTIPLE_LYRICS_PRESERVED',
-]);
-export type ScoreImportWarningCode = z.infer<
-  typeof scoreImportWarningCodeSchema
 >;
 
 export const scoreImportWarningSchema = z
@@ -260,6 +405,31 @@ export const scoreImportWarningSchema = z
   })
   .strict();
 export type ScoreImportWarning = z.infer<typeof scoreImportWarningSchema>;
+
+/** Projects import warnings into stable, bounded summary/detail read-only metadata. */
+export function scorePreservationFromWarnings(
+  warnings: readonly ScoreImportWarning[]
+): ScorePreservation {
+  const unique = new Map<string, ScorePreservedConstruct>();
+  for (const warning of warnings) {
+    const construct = scorePreservedConstructSchema.parse({
+      code: warning.code,
+      ...(warning.path ? { path: warning.path } : {}),
+      ...(warning.partId ? { partId: warning.partId } : {}),
+    });
+    const key = `${construct.code}\0${construct.path ?? ''}\0${construct.partId ?? ''}`;
+    if (!unique.has(key)) unique.set(key, construct);
+  }
+  const preservedConstructs = [...unique.values()].slice(0, 512);
+  const hasOpaqueConstructs = preservedConstructs.length > 0;
+  return scorePreservationSchema.parse({
+    state: hasOpaqueConstructs ? 'opaque_constructs_preserved' : 'clean',
+    readOnlyReason: hasOpaqueConstructs
+      ? 'UNSUPPORTED_MUSICXML_CONSTRUCTS_PRESERVED'
+      : null,
+    preservedConstructs,
+  });
+}
 
 /** 201 response for multipart POST /scores (file field) or model-based create. */
 export const scoreImportResultSchema = z
