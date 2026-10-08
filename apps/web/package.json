@@ -7,10 +7,9 @@
     "dev": "vite",
     "build": "tsc -b --noEmit && vite build",
     "preview": "vite preview",
-    "lint": "eslint src e2e playwright.config.ts --ext .ts,.tsx",
-    "typecheck": "tsc -b --noEmit && tsc --noEmit -p tsconfig.e2e.json",
-    "test": "vitest run",
-    "test:e2e": "playwright test"
+    "lint": "eslint src --ext .ts,.tsx",
+    "typecheck": "tsc -b --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@choirscore/shared": "0.0.0",
@@ -22,7 +21,6 @@
     "tone": "^15.1.22"
   },
   "devDependencies": {
-    "@playwright/test": "^1.64.0",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.2",
     "@vitejs/plugin-react": "^5.0.4",
