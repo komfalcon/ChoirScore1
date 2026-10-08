@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { OpenSheetMusicDisplay } from 'opensheetmusicdisplay';
 import { Link, useParams } from 'react-router-dom';
 import { AppHeader } from '../components/AppHeader';
@@ -10,6 +10,7 @@ import {
   exportScoreMusicXml,
   getScoreDetail,
   isScoreRequestAborted,
+  patchScoreMetadata,
   toScoreUiError,
 } from '../lib/scoreApi';
 
@@ -91,12 +92,102 @@ function ScoreNotation({
   );
 }
 
+type ScoreMetadataDraft = { title: string; composer: string | null };
+
+function ScoreMetadataEditor({
+  title: initialTitle,
+  composer: initialComposer,
+  saving,
+  error,
+  onSave,
+  onCancel,
+}: {
+  title: string;
+  composer: string | null;
+  saving: boolean;
+  error: string;
+  onSave: (metadata: ScoreMetadataDraft) => Promise<boolean>;
+  onCancel: () => void;
+}) {
+  const [title, setTitle] = useState(initialTitle);
+  const [composer, setComposer] = useState(initialComposer ?? '');
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const saved = await onSave({
+      title: title.trim(),
+      composer: composer.trim() || null,
+    });
+    if (saved) onCancel();
+  }
+
+  return (
+    <form
+      className="score-metadata-editor"
+      aria-labelledby="score-metadata-editor-title"
+      onSubmit={(event) => void submit(event)}
+    >
+      <h2 id="score-metadata-editor-title">Edit score details</h2>
+      <label>
+        <span>Title</span>
+        <input
+          autoFocus
+          name="title"
+          value={title}
+          maxLength={512}
+          required
+          onChange={(event) => setTitle(event.currentTarget.value)}
+        />
+      </label>
+      <label>
+        <span>Composer</span>
+        <input
+          name="composer"
+          value={composer}
+          maxLength={512}
+          onChange={(event) => setComposer(event.currentTarget.value)}
+        />
+      </label>
+      <p className="score-metadata-editor__help">
+        Leave composer blank if it is not known.
+      </p>
+      {error ? (
+        <p className="score-data-state score-data-state--error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <div className="score-metadata-editor__actions">
+        <button
+          className="button button--primary"
+          type="submit"
+          disabled={saving}
+        >
+          {saving ? 'Saving…' : 'Save details'}
+        </button>
+        <button
+          className="button button--quiet"
+          type="button"
+          disabled={saving}
+          onClick={onCancel}
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
 type WorkspaceProps = {
   state: ScoreViewerState;
   onRetry: () => void;
   downloading: boolean;
   downloadError: string;
   onDownload: () => void;
+  metadataSaving: boolean;
+  metadataError: string;
+  metadataNotice: string;
+  onSaveMetadata: (metadata: ScoreMetadataDraft) => Promise<boolean>;
+  onClearMetadataMessage: () => void;
 };
 
 export function StaffViewerWorkspace({
@@ -105,7 +196,13 @@ export function StaffViewerWorkspace({
   downloading,
   downloadError,
   onDownload,
+  metadataSaving,
+  metadataError,
+  metadataNotice,
+  onSaveMetadata,
+  onClearMetadataMessage,
 }: WorkspaceProps) {
+  const [metadataEditorOpen, setMetadataEditorOpen] = useState(false);
   const score = state.status === 'ready' ? state.response.score : null;
   return (
     <main className="viewer-main" id="main-content" tabIndex={-1}>
@@ -123,7 +220,21 @@ export function StaffViewerWorkspace({
               : 'A clear, responsive page for reading choir scores.'}
           </p>
         </div>
-        <span className="viewer-mode-label">Staff view</span>
+        <div className="viewer-heading__actions">
+          {score?.canEdit && !metadataEditorOpen ? (
+            <button
+              className="button button--quiet button--small"
+              type="button"
+              onClick={() => {
+                onClearMetadataMessage();
+                setMetadataEditorOpen(true);
+              }}
+            >
+              Edit title &amp; composer
+            </button>
+          ) : null}
+          <span className="viewer-mode-label">Staff view</span>
+        </div>
       </div>
 
       {state.status === 'loading' ? (
@@ -146,6 +257,22 @@ export function StaffViewerWorkspace({
       {score ? (
         <>
           <ScoreViewerStatePanel state={state} />
+          {metadataNotice ? (
+            <p className="score-metadata-notice" role="status">
+              {metadataNotice}
+            </p>
+          ) : null}
+          {score.canEdit && metadataEditorOpen ? (
+            <ScoreMetadataEditor
+              key={score.id}
+              title={score.title}
+              composer={score.composer}
+              saving={metadataSaving}
+              error={metadataError}
+              onSave={onSaveMetadata}
+              onCancel={() => setMetadataEditorOpen(false)}
+            />
+          ) : null}
           <section
             className="staff-viewport"
             aria-labelledby="staff-viewport-title"
@@ -194,10 +321,15 @@ export function ScoreViewPage() {
   const [revision, setRevision] = useState(0);
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState('');
+  const [metadataSaving, setMetadataSaving] = useState(false);
+  const [metadataError, setMetadataError] = useState('');
+  const [metadataNotice, setMetadataNotice] = useState('');
 
   useEffect(() => {
     const controller = new AbortController();
     setState({ status: 'loading' });
+    setMetadataError('');
+    setMetadataNotice('');
     if (!id) {
       setState({
         status: 'error',
@@ -238,6 +370,43 @@ export function ScoreViewPage() {
     }
   }
 
+  async function saveMetadata(metadata: ScoreMetadataDraft) {
+    if (!id || state.status !== 'ready') return false;
+    setMetadataSaving(true);
+    setMetadataError('');
+    setMetadataNotice('');
+    try {
+      const result = await patchScoreMetadata(id, metadata);
+      setState((current) => {
+        if (current.status !== 'ready' || current.response.score.id !== id) {
+          return current;
+        }
+        const currentScore = current.response.score;
+        return {
+          status: 'ready',
+          response: {
+            score: {
+              ...currentScore,
+              ...result.score,
+              model: {
+                ...currentScore.model,
+                title: result.score.title,
+                composer: result.score.composer,
+              },
+            },
+          },
+        };
+      });
+      setMetadataNotice('Score title and composer updated.');
+      return true;
+    } catch (error) {
+      setMetadataError(toScoreUiError(error).message);
+      return false;
+    } finally {
+      setMetadataSaving(false);
+    }
+  }
+
   return (
     <div className="app-page">
       <AppHeader />
@@ -247,6 +416,14 @@ export function ScoreViewPage() {
         downloading={downloading}
         downloadError={downloadError}
         onDownload={() => void downloadMusicXml()}
+        metadataSaving={metadataSaving}
+        metadataError={metadataError}
+        metadataNotice={metadataNotice}
+        onSaveMetadata={saveMetadata}
+        onClearMetadataMessage={() => {
+          setMetadataError('');
+          setMetadataNotice('');
+        }}
       />
     </div>
   );

@@ -39,7 +39,7 @@ npm run lint
 - Root directory: `apps/web`
 - Build command: `npm run build`
 - Output directory: `dist`
-- Ensure `apps/web/vercel.json` points `/api/*` rewrites to your Pxxl API URL.
+- Set `PXXL_API_URL` in the Vercel project environment to the Pxxl API origin (scheme and host, without a trailing slash). The Vercel route uses this value at request time; do not put the API origin in `VITE_*` variables or hardcode it in the repository. Keep `VITE_API_BASE=/api` so browser requests and session cookies stay same-origin.
 
 ### Pxxl (api)
 

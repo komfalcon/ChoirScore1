@@ -4,6 +4,7 @@ import {
   getScoreDetail,
   importScoreFile,
   listScores,
+  patchScoreMetadata,
   toScoreUiError,
 } from './scoreApi';
 import { ApiError } from './apiClient';
@@ -26,11 +27,17 @@ describe('score API client', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(
-      listScores({ query: '  Morning light ', visibility: 'private' })
+      listScores({
+        query: '  Morning light ',
+        mine: true,
+        visibility: 'private',
+      })
     ).resolves.toEqual(scoreLibraryResponse);
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('/api/scores?q=Morning+light&visibility=private&limit=20');
+    expect(url).toBe(
+      '/api/scores?q=Morning+light&mine=true&visibility=private&limit=20'
+    );
     expect(init.method).toBeUndefined();
     expect(init.credentials).toBe('same-origin');
   });
@@ -47,6 +54,41 @@ describe('score API client', () => {
       scoreDetailResponse
     );
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/scores/score%20%2F%201');
+  });
+
+  it('sends title and composer metadata through a CSRF-protected API PATCH', async () => {
+    const updatedScore = {
+      ...scoreLibraryResponse.scores[0],
+      title: 'Evening Song',
+      composer: null,
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ score: updatedScore }), { status: 200 })
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      patchScoreMetadata('score / 1', {
+        title: '  Evening Song  ',
+        composer: null,
+      })
+    ).resolves.toEqual({ score: updatedScore });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/scores/score%20%2F%201');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(String(init.body))).toEqual({
+      title: 'Evening Song',
+      composer: null,
+    });
+    expect(new Headers(init.headers).get('X-Requested-With')).toBe(
+      'choirscore'
+    );
+    expect(new Headers(init.headers).get('Content-Type')).toBe(
+      'application/json'
+    );
   });
 
   it('uploads a multipart file with CSRF protection and leaves the boundary to fetch', async () => {

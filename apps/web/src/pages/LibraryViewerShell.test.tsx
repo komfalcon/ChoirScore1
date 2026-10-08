@@ -5,7 +5,10 @@ import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import { AppHeader } from '../components/AppHeader';
 import { AuthProvider } from '../lib/auth';
-import { scoreDetailResponse } from '../test/scoreFixtures';
+import {
+  opaqueReadOnlyScoreDetailResponse,
+  scoreDetailResponse,
+} from '../test/scoreFixtures';
 import { LibraryWorkspace } from './LibraryPage';
 import { StaffViewerWorkspace } from './ScoreViewPage';
 
@@ -16,6 +19,17 @@ const appStyles = readFileSync(
 const readyViewerState = {
   status: 'ready' as const,
   response: scoreDetailResponse,
+};
+const viewerWorkspaceProps = {
+  onRetry: () => undefined,
+  downloading: false,
+  downloadError: '',
+  onDownload: () => undefined,
+  metadataSaving: false,
+  metadataError: '',
+  metadataNotice: '',
+  onSaveMetadata: async () => true,
+  onClearMetadataMessage: () => undefined,
 };
 
 function expectVisibleSkipLinkFocus(workspace: ReactNode, mainClass: string) {
@@ -41,27 +55,31 @@ function expectVisibleSkipLinkFocus(workspace: ReactNode, mainClass: string) {
 }
 
 describe('M2 library and staff viewer integration shell', () => {
-  it('renders live library controls and private-import guidance', () => {
+  it('renders the Mine facet and accessible private-import controls', () => {
     const html = renderToStaticMarkup(<LibraryWorkspace />);
 
     expect(html).toContain('<h1>Library</h1>');
     expect(html).toContain('Search by title or composer');
     expect(html).toContain('Filter by visibility');
+    expect(html).toContain('aria-label="Mine"');
     expect(html).toContain('Choose a MusicXML, XML, or MXL score file');
+    const fileInput = html.match(/<input\b[^>]*type="file"[^>]*>/)?.[0];
+    expect(fileInput).toContain('tabindex="-1"');
+    const buttonFocusRule = appStyles.match(
+      /button:focus-visible,\s*a:focus-visible\s*\{([^}]*)\}/s
+    )?.[1];
+    expect(buttonFocusRule).toMatch(/outline:\s*3px solid var\(--focus\)/);
     expect(html).toContain('Imports create private scores.');
     expect(html).not.toContain('disabled=""');
     expect(html).toContain('Loading scores…');
   });
 
-  it('renders connected score details without adding deferred features', () => {
+  it('renders connected score details and title/composer editing without deferred features', () => {
     const html = renderToStaticMarkup(
       <MemoryRouter>
         <StaffViewerWorkspace
+          {...viewerWorkspaceProps}
           state={readyViewerState}
-          onRetry={() => undefined}
-          downloading={false}
-          downloadError=""
-          onDownload={() => undefined}
         />
       </MemoryRouter>
     );
@@ -69,11 +87,52 @@ describe('M2 library and staff viewer integration shell', () => {
     expect(html).toContain('<h1>Morning Light</h1>');
     expect(html).toContain('Notation');
     expect(html).toContain('Download MusicXML');
+    expect(html).toContain('Edit title &amp; composer');
     expect(html).toContain('Staff notation for Morning Light');
     expect(html).not.toContain('Tonic Sol-fa');
     expect(html).not.toContain('Playback');
     expect(html).not.toContain('Edit score');
     expect(html).not.toContain('AI tools');
+  });
+
+  it('allows metadata edits for an owner even when preserved score content is read-only', () => {
+    const html = renderToStaticMarkup(
+      <MemoryRouter>
+        <StaffViewerWorkspace
+          {...viewerWorkspaceProps}
+          state={{
+            status: 'ready',
+            response: opaqueReadOnlyScoreDetailResponse,
+          }}
+        />
+      </MemoryRouter>
+    );
+
+    expect(html).toContain('Edit title &amp; composer');
+    expect(html).toContain(
+      'Read-only to preserve unsupported MusicXML content'
+    );
+  });
+
+  it('does not offer metadata editing to a score viewer without edit permission', () => {
+    const viewOnlyState = {
+      status: 'ready' as const,
+      response: {
+        score: {
+          ...scoreDetailResponse.score,
+          canEdit: false,
+          canEditContent: false,
+        },
+      },
+    };
+    const html = renderToStaticMarkup(
+      <MemoryRouter>
+        <StaffViewerWorkspace {...viewerWorkspaceProps} state={viewOnlyState} />
+      </MemoryRouter>
+    );
+
+    expect(html).not.toContain('Edit title &amp; composer');
+    expect(html).toContain('Morning Light');
   });
 
   it('keeps the skip link keyboard focus visible on the library main landmark', () => {
@@ -83,11 +142,8 @@ describe('M2 library and staff viewer integration shell', () => {
   it('keeps the skip link keyboard focus visible on the viewer main landmark', () => {
     expectVisibleSkipLinkFocus(
       <StaffViewerWorkspace
+        {...viewerWorkspaceProps}
         state={readyViewerState}
-        onRetry={() => undefined}
-        downloading={false}
-        downloadError=""
-        onDownload={() => undefined}
       />,
       'viewer-main'
     );

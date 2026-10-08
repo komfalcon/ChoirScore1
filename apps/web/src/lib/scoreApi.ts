@@ -1,6 +1,10 @@
 import {
+  patchScoreRequestSchema,
+  patchScoreResponseSchema,
   scoreListFiltersSchema,
   type ApiErrorResponse,
+  type PatchScoreRequest,
+  type PatchScoreResponse,
   type ScoreImportResult,
   type ScoreLibraryResponse,
   type ScoreVisibility,
@@ -59,6 +63,7 @@ function parseResponse<T>(parse: (payload: unknown) => T, payload: unknown): T {
 export async function listScores(
   options: {
     query?: string;
+    mine?: boolean;
     visibility?: ScoreVisibility;
     cursor?: string;
     limit?: number;
@@ -67,12 +72,14 @@ export async function listScores(
 ): Promise<ScoreLibraryResponse> {
   const filters = scoreListFiltersSchema.parse({
     ...(options.query?.trim() ? { q: options.query } : {}),
+    ...(options.mine !== undefined ? { mine: options.mine } : {}),
     ...(options.visibility ? { visibility: options.visibility } : {}),
     ...(options.cursor ? { cursor: options.cursor } : {}),
     limit: options.limit ?? 20,
   });
   const params = new URLSearchParams();
   if (filters.q) params.set('q', filters.q);
+  if (filters.mine !== undefined) params.set('mine', String(filters.mine));
   if (filters.visibility) params.set('visibility', filters.visibility);
   if (filters.cursor) params.set('cursor', filters.cursor);
   params.set('limit', String(filters.limit));
@@ -87,6 +94,24 @@ export async function getScoreDetail(id: string, signal?: AbortSignal) {
     signal,
   });
   return parseResponse(parseScoreDetailResponse, await readJson(response));
+}
+
+export async function patchScoreMetadata(
+  id: string,
+  metadata: Pick<PatchScoreRequest, 'title' | 'composer'>,
+  signal?: AbortSignal
+): Promise<PatchScoreResponse> {
+  const request = patchScoreRequestSchema.parse(metadata);
+  const response = await apiFetch(`/scores/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+    signal,
+  });
+  return parseResponse(
+    patchScoreResponseSchema.parse,
+    await readJson(response)
+  );
 }
 
 export async function importScoreFile(

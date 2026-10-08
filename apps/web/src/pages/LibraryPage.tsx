@@ -27,6 +27,7 @@ export function LibraryWorkspace() {
   const loadMoreController = useRef<AbortController | null>(null);
   const [query, setQuery] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [mine, setMine] = useState(false);
   const [visibility, setVisibility] = useState<'all' | ScoreVisibility>('all');
   const [state, setState] = useState<ScoreLibraryState>({ status: 'loading' });
   const [revision, setRevision] = useState(0);
@@ -54,6 +55,7 @@ export function LibraryWorkspace() {
     setLoadMoreError('');
     void listScores({
       query: debouncedQuery,
+      mine,
       visibility: visibility === 'all' ? undefined : visibility,
       signal: controller.signal,
     })
@@ -64,7 +66,7 @@ export function LibraryWorkspace() {
         }
       });
     return () => controller.abort();
-  }, [debouncedQuery, visibility, revision]);
+  }, [debouncedQuery, mine, visibility, revision]);
 
   async function handleImportChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.currentTarget.files?.[0];
@@ -117,6 +119,7 @@ export function LibraryWorkspace() {
     try {
       const nextPage = await listScores({
         query: debouncedQuery,
+        mine,
         visibility: visibility === 'all' ? undefined : visibility,
         cursor: state.response.nextCursor,
         signal: controller.signal,
@@ -163,6 +166,7 @@ export function LibraryWorkspace() {
             type="file"
             accept=".musicxml,.xml,.mxl,application/vnd.recordare.musicxml+xml,text/xml,application/zip"
             aria-label="Choose a MusicXML, XML, or MXL score file"
+            tabIndex={-1}
             onChange={(event) => void handleImportChange(event)}
           />
           <button
@@ -207,6 +211,15 @@ export function LibraryWorkspace() {
             <option value="choir">Choir</option>
             <option value="shared">Shared</option>
           </select>
+        </label>
+        <label className="library-mine-filter">
+          <input
+            type="checkbox"
+            aria-label="Mine"
+            checked={mine}
+            onChange={(event) => setMine(event.currentTarget.checked)}
+          />
+          <span>Mine</span>
         </label>
       </section>
       <p className="library-contract-note" id="library-import-help">

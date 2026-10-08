@@ -70,14 +70,14 @@ It is "MuseScore/Sibelius for one choir": much smaller in scope, but tuned to ch
 Browser ──► Vercel (static app + rewrite /api/* ──►) Pxxl API ──► Turso DB
                                                         └──► AI provider (server-side only)
 ```
-- The Vercel `vercel.json` **rewrites `/api/*` to the Pxxl API URL**, so the browser sees one origin. This avoids cross-site cookie and CORS problems.
+- Vercel `vercel.json` routes `/api/*` through the `PXXL_API_URL` project environment variable to the Pxxl API, so the browser sees one origin. This avoids cross-site cookie and CORS problems; the origin is configured per deployment and is never hardcoded as a placeholder.
 - The API still sets a strict CORS allowlist (the Vercel domain) as defence in depth.
 
 ### 2.3 Environment variables
 **API (Pxxl dashboard):**
 `PORT`, `NODE_ENV`, `DATABASE_URL`, `DATABASE_AUTH_TOKEN`, `JWT_SECRET`, `COOKIE_DOMAIN` (optional), `ALLOWED_ORIGIN`, `AI_PROVIDER` (= `mistral`), `AI_API_KEY`, `AI_MODEL` (heavy tasks, e.g. `mistral-large-latest`), `AI_MODEL_LIGHT` (light tasks, e.g. `mistral-small-latest`), `AI_DAILY_LIMIT_DEFAULT` (default 20), `AI_MAX_MEASURES_PER_CALL` (default 64), `ADMIN_BOOTSTRAP_USERNAME`, `ADMIN_BOOTSTRAP_PASSWORD` (used once to seed the first admin).
 
-**Web (Vercel):** `VITE_API_BASE` (default `/api`). **No secrets in the frontend, ever.**
+**Web (Vercel):** `VITE_API_BASE` (default `/api`) and `PXXL_API_URL` (API origin, used only by the Vercel route configuration). **No secrets in the frontend, ever.**
 
 Commit a `.env.example` for each app. Never commit real values.
 
@@ -189,7 +189,7 @@ Add indexes on `scores(created_by)`, `scores(visibility)`, `ai_jobs(user_id, cre
 
 ## 7. Score library
 
-- Pages: `/library` (cards/list, search by title/composer, filter by visibility and "mine").
+- Pages: `/library` (cards/list, search by title/composer, filter by visibility and an independent "mine" facet that can be combined with visibility).
 - Upload: drag-and-drop or file picker for `.musicxml`, `.xml`, `.mxl` (compressed MusicXML is a zip; unzip server-side and read `META-INF/container.xml` to find the root file).
 - On upload, server **validates** (well-formed XML, root is `score-partwise`, has at least one part, size limit) and stores as a new `score_versions` row. Reject `score-timewise` or convert it (v1: reject with a clear message).
 - Score metadata (title, composer) is read from the MusicXML and editable.
