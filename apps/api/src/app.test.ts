@@ -47,14 +47,15 @@ let app: ReturnType<typeof createApp>;
 let logs: Record<string, unknown>[];
 let clock: number;
 let throttle: LoginThrottle;
+let primaryTestDatabasePath: string;
 const testDatabaseDirectories: string[] = [];
 
 async function createTestRepository() {
   const directory = mkdtempSync(join(tmpdir(), 'choirscore-api-test-'));
   testDatabaseDirectories.push(directory);
-  return createRepository(
-    createClient({ url: `file:${join(directory, 'test.sqlite')}` })
-  );
+  const databasePath = join(directory, 'test.sqlite');
+  primaryTestDatabasePath = databasePath;
+  return createRepository(createClient({ url: `file:${databasePath}` }));
 }
 
 async function insertUser(
@@ -123,7 +124,7 @@ beforeEach(async () => {
   await insertUser('admin', 'admin', 'none');
   logs = [];
   clock = 1_800_000_000_000;
-  throttle = new LoginThrottle(() => clock);
+  throttle = new LoginThrottle(repository, () => clock);
   const logger = {
     info: (record: Record<string, unknown>) => logs.push(record),
     warn: (record: Record<string, unknown>) => logs.push(record),
@@ -372,6 +373,77 @@ describe('M1 API security and auth', () => {
     expect(recovered.response.status).toBe(200);
   });
 
+  it('shares throttle state across repository instances and retains a lockout after restart', async () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), 'choirscore-shared-throttle-')
+    );
+    testDatabaseDirectories.push(directory);
+    const databasePath = join(directory, 'shared.sqlite');
+    const firstRepository = await createRepository(
+      createClient({ url: `file:${databasePath}` })
+    );
+    const secondRepository = await createRepository(
+      createClient({ url: `file:${databasePath}` })
+    );
+    const firstInstance = new LoginThrottle(firstRepository, () => clock);
+    const secondInstance = new LoginThrottle(secondRepository, () => clock);
+
+    for (let i = 0; i < 3; i += 1) {
+      expect(await firstInstance.consume('203.0.113.20', 'Shared.User')).toBe(
+        true
+      );
+    }
+    for (let i = 0; i < 2; i += 1) {
+      expect(await secondInstance.consume('203.0.113.20', 'shared.user')).toBe(
+        true
+      );
+    }
+    expect(await secondInstance.consume('203.0.113.20', 'shared.user')).toBe(
+      false
+    );
+
+    firstRepository.close();
+    secondRepository.close();
+    const restartedRepository = await createRepository(
+      createClient({ url: `file:${databasePath}` })
+    );
+    try {
+      const restartedInstance = new LoginThrottle(
+        restartedRepository,
+        () => clock
+      );
+      expect(
+        await restartedInstance.consume('203.0.113.20', 'shared.user')
+      ).toBe(false);
+      clock += 15 * 60_000 + 1;
+      expect(
+        await restartedInstance.consume('203.0.113.20', 'shared.user')
+      ).toBe(true);
+    } finally {
+      restartedRepository.close();
+    }
+  });
+
+  it('allows a new pair when the database already contains 10,000 active pairs', async () => {
+    const saturationClient = createClient({
+      url: `file:${primaryTestDatabasePath}`,
+    });
+    try {
+      const existingPairs = Array.from({ length: 10_000 }, (_, index) => ({
+        sql: `INSERT INTO login_throttle
+          (pair_key, window_started_at, attempts, locked_until, expires_at)
+          VALUES (?, ?, 1, 0, ?)`,
+        args: [`existing-pair-${index}`, clock, clock + 60_000],
+      }));
+      await saturationClient.batch(existingPairs, 'write');
+      expect(await throttle.consume('203.0.113.21', 'unrelated.new.pair')).toBe(
+        true
+      );
+    } finally {
+      saturationClient.close();
+    }
+  }, 30_000);
+
   it('requires the custom CSRF header on every state-changing M1 route', async () => {
     const requests = [
       request(app)
@@ -531,7 +603,7 @@ describe('M1 admin users, roles and audit', () => {
     expect(changed.body.user.voicePart).toBe('T');
   });
 
-  it('audits each rejected admin mutation once with only actor, target, action, outcome, and safe error code', async () => {
+  it('audits authenticated rejected admin mutations with only actor, target, action, outcome, and safe error code', async () => {
     const { cookie } = await login();
     const adminId = (await repository.findUserByUsername('admin'))!.id;
     const secret = 'RejectedRequestSecret!234';
@@ -554,6 +626,10 @@ describe('M1 admin users, roles and audit', () => {
       const added = (await repository.listAuditEntries()).filter(
         (entry) => !beforeIds.has(entry.id)
       );
+      if (expected.actorId === null) {
+        expect(added).toHaveLength(0);
+        return;
+      }
       expect(added).toHaveLength(1);
       expect(added[0]).toMatchObject({
         actorId: expected.actorId,
@@ -579,6 +655,21 @@ describe('M1 admin users, roles and audit', () => {
         action: 'users.create',
         targetType: 'user',
         targetId: null,
+        actorId: null,
+      }
+    );
+    await auditAttempt(
+      () =>
+        request(app)
+          .post('/admin/settings')
+          .set('Origin', 'https://untrusted.example')
+          .send({ requirePasswordChangeAtFirstLogin: secret }),
+      {
+        status: 403,
+        code: 'ORIGIN_NOT_ALLOWED',
+        action: 'admin.settings.update',
+        targetType: 'settings',
+        targetId: 'requirePasswordChangeAtFirstLogin',
         actorId: null,
       }
     );
@@ -709,6 +800,64 @@ describe('M1 admin users, roles and audit', () => {
       }
     );
     expect(JSON.stringify(logs)).not.toContain(secret);
+  });
+
+  it('keeps inactive-session mutation denials out of the durable audit table', async () => {
+    const inactiveUser = await addMember('inactive.actor');
+    const { cookie } = await login('inactive.actor', MEMBER_PASSWORD);
+    await repository.updateUser(inactiveUser.id, { isActive: false });
+
+    const response = await stateChanging(
+      withCookie(request(app).post('/users'), cookie)
+    ).send({ displayName: 'Denied after deactivation' });
+    expect(response.status).toBe(401);
+    expect(response.body.error.code).toBe('UNAUTHENTICATED');
+    expect(await repository.listAuditEntries()).toHaveLength(0);
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        event: 'anonymous_admin_mutation_denied',
+        reason: 'UNAUTHENTICATED',
+      })
+    );
+  });
+
+  it('rate-limits anonymous denial telemetry, excludes request data, and keeps it out of the audit table', async () => {
+    const secret = 'AnonymousSecret!234';
+    for (let i = 0; i < 40; i += 1) {
+      const response = await request(app).post('/users').send({
+        displayName: 'Anonymous attempt',
+        password: secret,
+      });
+      expect(response.status).toBe(403);
+      expect(response.body.error.code).toBe('CSRF_HEADER_REQUIRED');
+    }
+    const originDenied = await request(app)
+      .post('/admin/settings')
+      .set('Origin', 'https://untrusted.example')
+      .send({ password: secret, token: 'AnonymousToken!234' });
+    expect(originDenied.status).toBe(403);
+    expect(originDenied.body.error.code).toBe('ORIGIN_NOT_ALLOWED');
+
+    expect(await repository.listAuditEntries()).toHaveLength(0);
+    const events = logs.filter(
+      (record) => record.event === 'anonymous_admin_mutation_denied'
+    );
+    expect(events).toHaveLength(2);
+    expect(events).toContainEqual({
+      event: 'anonymous_admin_mutation_denied',
+      reason: 'CSRF_HEADER_REQUIRED',
+      count: 1,
+    });
+    expect(events).toContainEqual({
+      event: 'anonymous_admin_mutation_denied',
+      reason: 'ORIGIN_NOT_ALLOWED',
+      count: 1,
+    });
+    expect(logs.some((record) => record.event === 'http_request')).toBe(false);
+    expect(JSON.stringify(events)).not.toContain(secret);
+    expect(JSON.stringify(events)).not.toContain('AnonymousToken!234');
+    expect(JSON.stringify(events)).not.toContain('requestId');
+    expect(JSON.stringify(events)).not.toContain('/users');
   });
 
   it('writes exactly one redacted audit record for every successful admin route action', async () => {

@@ -76,7 +76,7 @@ export function createAuthRouter({
     if (!attempt.success) throw payloadError();
     const username = attempt.data.username.trim().toLowerCase();
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
-    if (!throttle.consume(ip, username)) {
+    if (!(await throttle.consume(ip, username))) {
       return sendApiError(
         res,
         429,

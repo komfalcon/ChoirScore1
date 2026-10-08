@@ -53,7 +53,8 @@ export async function recordAdminMutationFailure(
   req: RequestWithContext,
   attempt: AdminMutationAuditAttempt,
   outcome: 'rejected' | 'failed',
-  errorCode: string
+  errorCode: string,
+  actorId: string
 ) {
   const safeErrorCode = /^[A-Z][A-Z0-9_]{0,63}$/.test(errorCode)
     ? errorCode
@@ -61,7 +62,7 @@ export async function recordAdminMutationFailure(
   await repository.insertAudit({
     ...newAuditEntry(
       req,
-      req.authUser?.id ?? req.adminMutationActorId ?? null,
+      actorId,
       attempt.action,
       attempt.targetType,
       attempt.targetId,

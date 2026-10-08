@@ -3,6 +3,8 @@ import { recordAdminMutationFailure } from '../audit';
 import type { ApiConfig } from '../config';
 import type { ApiRepository } from '../db/repository';
 import { SESSION_COOKIE, verifySessionToken } from '../security/session';
+import { AnonymousSecurityEvents } from '../security/anonymousSecurityEvents';
+import type { StructuredLogger } from '../audit';
 import type { AdminMutationAuditAttempt, RequestWithContext } from '../types';
 
 const STATE_CHANGING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
@@ -53,8 +55,10 @@ function identifyAttempt(req: Request): AdminMutationAuditAttempt | null {
 
 export function adminMutationAuditMiddleware(
   repository: ApiRepository,
-  config: ApiConfig
+  config: ApiConfig,
+  logger: StructuredLogger
 ) {
+  const anonymousSecurityEvents = new AnonymousSecurityEvents(logger);
   return async (req: Request, res: Response, next: NextFunction) => {
     const attempt = identifyAttempt(req);
     if (!attempt) return next();
@@ -66,7 +70,7 @@ export function adminMutationAuditMiddleware(
     if (claims) {
       try {
         const actor = await repository.findUserById(claims.userId);
-        if (actor) request.adminMutationActorId = actor.id;
+        if (actor?.isActive) request.adminMutationActorId = actor.id;
       } catch {
         // Attribution is best effort; the normal auth middleware remains authoritative.
       }
@@ -77,13 +81,19 @@ export function adminMutationAuditMiddleware(
     ) => {
       if (request.adminMutationAuditRecorded) return;
       request.adminMutationAuditRecorded = true;
+      const actorId = request.authUser?.id ?? request.adminMutationActorId;
+      if (!actorId) {
+        anonymousSecurityEvents.record(errorCode);
+        return;
+      }
       try {
         await recordAdminMutationFailure(
           repository,
           request,
           attempt,
           status >= 500 ? 'failed' : 'rejected',
-          errorCode
+          errorCode,
+          actorId
         );
       } catch {
         // Keep the response safe and avoid logging database or request details.

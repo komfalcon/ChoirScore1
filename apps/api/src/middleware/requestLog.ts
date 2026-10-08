@@ -6,7 +6,16 @@ export function requestLogMiddleware(logger: StructuredLogger) {
   return (req: Request, res: Response, next: NextFunction) => {
     const startedAt = Date.now();
     res.once('finish', () => {
-      const requestId = (req as RequestWithContext).context?.requestId ?? null;
+      const request = req as RequestWithContext;
+      if (
+        request.adminMutationAuditAttempt &&
+        res.statusCode >= 400 &&
+        !request.authUser &&
+        !request.adminMutationActorId
+      ) {
+        return;
+      }
+      const requestId = request.context?.requestId ?? null;
       logger.info({
         event: 'http_request',
         requestId,

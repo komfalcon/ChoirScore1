@@ -30,17 +30,18 @@ export function createApp({
   repository,
   config,
   logger = structuredLogger,
-  throttle = new LoginThrottle(),
+  throttle,
   trustProxyHops = config.trustProxyHops,
 }: AppOptions) {
   const app = express();
+  const loginThrottle = throttle ?? new LoginThrottle(repository);
   const allowedOrigins = new Set(config.allowedOrigins);
   app.set('trust proxy', trustProxyHops);
 
   app.use(helmet());
   app.use(requestIdMiddleware);
   app.use(cookieParser());
-  app.use(adminMutationAuditMiddleware(repository, config));
+  app.use(adminMutationAuditMiddleware(repository, config, logger));
   app.use(requestLogMiddleware(logger));
   app.use(
     cors({
@@ -73,7 +74,10 @@ export function createApp({
     res.status(200).json({ ok: true });
   });
 
-  app.use('/auth', createAuthRouter({ repository, config, throttle }));
+  app.use(
+    '/auth',
+    createAuthRouter({ repository, config, throttle: loginThrottle })
+  );
   app.use('/users', createUsersRouter(repository));
   app.use('/scores', scoresRouter);
   app.use('/ai', aiRouter);

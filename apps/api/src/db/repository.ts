@@ -56,6 +56,13 @@ export interface RepositoryTransaction {
 }
 
 export interface ApiRepository extends RepositoryTransaction {
+  consumeLoginAttempt(
+    pairKey: string,
+    now: number,
+    windowMs: number,
+    maxAttempts: number,
+    lockoutMs: number
+  ): Promise<boolean>;
   transaction<T>(work: (tx: RepositoryTransaction) => Promise<T>): Promise<T>;
   listUsers(query?: string): Promise<UserRecord[]>;
   listAuditEntries(): Promise<AuditRecord[]>;
@@ -164,6 +171,92 @@ class DrizzleApiRepository implements ApiRepository {
     updatedAt: string
   ) => this.operations.setSetting(key, value, actorId, updatedAt);
   insertAudit = (entry: AuditInput) => this.operations.insertAudit(entry);
+
+  async consumeLoginAttempt(
+    pairKey: string,
+    now: number,
+    windowMs: number,
+    maxAttempts: number,
+    lockoutMs: number
+  ) {
+    const transaction = await this.client.transaction('write');
+    try {
+      await transaction.execute({
+        sql: 'DELETE FROM login_throttle WHERE expires_at <= ?',
+        args: [now],
+      });
+      const result = await transaction.execute({
+        sql: `INSERT INTO login_throttle
+          (pair_key, window_started_at, attempts, locked_until, expires_at)
+          VALUES (?, ?, 1, 0, ?)
+          ON CONFLICT(pair_key) DO UPDATE SET
+            window_started_at = CASE
+              WHEN login_throttle.locked_until > 0
+                AND login_throttle.locked_until <= excluded.window_started_at
+                THEN excluded.window_started_at
+              WHEN login_throttle.window_started_at + ? <= excluded.window_started_at
+                THEN excluded.window_started_at
+              ELSE login_throttle.window_started_at
+            END,
+            attempts = CASE
+              WHEN login_throttle.locked_until > excluded.window_started_at
+                THEN login_throttle.attempts
+              WHEN (login_throttle.locked_until > 0
+                    AND login_throttle.locked_until <= excluded.window_started_at)
+                OR login_throttle.window_started_at + ? <= excluded.window_started_at
+                THEN 1
+              WHEN login_throttle.attempts < ?
+                THEN login_throttle.attempts + 1
+              ELSE login_throttle.attempts
+            END,
+            locked_until = CASE
+              WHEN login_throttle.locked_until > excluded.window_started_at
+                THEN login_throttle.locked_until
+              WHEN (login_throttle.locked_until > 0
+                    AND login_throttle.locked_until <= excluded.window_started_at)
+                OR login_throttle.window_started_at + ? <= excluded.window_started_at
+                THEN 0
+              WHEN login_throttle.attempts < ?
+                THEN 0
+              ELSE excluded.window_started_at + ?
+            END,
+            expires_at = CASE
+              WHEN login_throttle.locked_until > excluded.window_started_at
+                THEN login_throttle.locked_until
+              WHEN (login_throttle.locked_until > 0
+                    AND login_throttle.locked_until <= excluded.window_started_at)
+                OR login_throttle.window_started_at + ? <= excluded.window_started_at
+                THEN excluded.expires_at
+              WHEN login_throttle.attempts < ?
+                THEN login_throttle.window_started_at + ?
+              ELSE excluded.window_started_at + ?
+            END
+          RETURNING locked_until`,
+        args: [
+          pairKey,
+          now,
+          now + windowMs,
+          windowMs,
+          windowMs,
+          maxAttempts,
+          windowMs,
+          maxAttempts,
+          lockoutMs,
+          windowMs,
+          maxAttempts,
+          windowMs,
+          lockoutMs,
+        ],
+      });
+      await transaction.commit();
+      return Number(result.rows[0]?.locked_until ?? 0) <= now;
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    } finally {
+      transaction.close();
+    }
+  }
 
   async transaction<T>(work: (tx: RepositoryTransaction) => Promise<T>) {
     return this.db.transaction(async (tx) => work(repositoryOperations(tx)));
