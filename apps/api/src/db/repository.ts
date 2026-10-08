@@ -143,22 +143,26 @@ export interface ApiRepository extends RepositoryTransaction {
   createScoreWithVersion(
     score: ScoreRecord,
     version: ScoreVersionRecord,
-    actorId: string
+    actorId: string,
+    audit?: AuditInput
   ): Promise<ScoreCreationResult>;
   patchScore(
     id: string,
     patch: ScorePatch,
-    actorId: string
+    actorId: string,
+    audit?: AuditInput
   ): Promise<ScoreMutationResult>;
   replaceScoreAccess(
     scoreId: string,
     grants: Array<{ userId: string; canEdit: boolean }>,
-    actorId: string
+    actorId: string,
+    audit?: AuditInput
   ): Promise<ScoreAccessReplacementResult>;
   createScoreVersion(
     version: ScoreVersionRecord,
     updatedAt: string,
-    actorId: string
+    actorId: string,
+    audit?: AuditInput
   ): Promise<ScoreVersionCreationResult>;
   close(): void;
 }
@@ -668,7 +672,8 @@ class DrizzleApiRepository implements ApiRepository {
   async createScoreWithVersion(
     score: ScoreRecord,
     version: ScoreVersionRecord,
-    actorId: string
+    actorId: string,
+    audit?: AuditInput
   ) {
     return await this.db.transaction(async (tx) => {
       const actors = await tx
@@ -697,6 +702,7 @@ class DrizzleApiRepository implements ApiRepository {
         .set({ currentVersionId: version.id })
         .where(eq(scores.id, score.id))
         .run();
+      if (audit) await tx.insert(auditLog).values(audit).run();
       return { status: 'created' } as const;
     });
   }
@@ -704,7 +710,8 @@ class DrizzleApiRepository implements ApiRepository {
   async patchScore(
     id: string,
     patch: ScorePatch,
-    actorId: string
+    actorId: string,
+    audit?: AuditInput
   ): Promise<ScoreMutationResult> {
     return this.db.transaction(async (tx) => {
       const authorization = await scoreWriteAuthorization(tx, id, actorId);
@@ -738,16 +745,17 @@ class DrizzleApiRepository implements ApiRepository {
         .from(scores)
         .where(eq(scores.id, id))
         .limit(1);
-      return updated[0]
-        ? { status: 'updated', score: updated[0] }
-        : { status: 'not_found' };
+      if (!updated[0]) return { status: 'not_found' };
+      if (audit) await tx.insert(auditLog).values(audit).run();
+      return { status: 'updated', score: updated[0] };
     });
   }
 
   async replaceScoreAccess(
     scoreId: string,
     grants: Array<{ userId: string; canEdit: boolean }>,
-    actorId: string
+    actorId: string,
+    audit?: AuditInput
   ): Promise<ScoreAccessReplacementResult> {
     return this.db.transaction(async (tx) => {
       const authorization = await scoreWriteAuthorization(tx, scoreId, actorId);
@@ -785,17 +793,19 @@ class DrizzleApiRepository implements ApiRepository {
       const byId = new Map(
         recipients.map((recipient) => [recipient.id, recipient])
       );
+      const usersWithAccess = grants
+        .map((grant) => ({
+          userId: grant.userId,
+          displayName: byId.get(grant.userId)!.displayName,
+          canEdit: grant.canEdit,
+        }))
+        .sort((left, right) =>
+          left.displayName.localeCompare(right.displayName)
+        );
+      if (audit) await tx.insert(auditLog).values(audit).run();
       return {
         status: 'updated',
-        users: grants
-          .map((grant) => ({
-            userId: grant.userId,
-            displayName: byId.get(grant.userId)!.displayName,
-            canEdit: grant.canEdit,
-          }))
-          .sort((left, right) =>
-            left.displayName.localeCompare(right.displayName)
-          ),
+        users: usersWithAccess,
       };
     });
   }
@@ -803,7 +813,8 @@ class DrizzleApiRepository implements ApiRepository {
   async createScoreVersion(
     version: ScoreVersionRecord,
     updatedAt: string,
-    actorId: string
+    actorId: string,
+    audit?: AuditInput
   ): Promise<ScoreVersionCreationResult> {
     return this.db.transaction(async (tx) => {
       const authorization = await scoreWriteAuthorization(
@@ -820,6 +831,7 @@ class DrizzleApiRepository implements ApiRepository {
         .set({ currentVersionId: version.id, updatedAt })
         .where(eq(scores.id, version.scoreId))
         .run();
+      if (audit) await tx.insert(auditLog).values(audit).run();
       return { status: 'created' };
     });
   }

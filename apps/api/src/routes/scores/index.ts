@@ -30,8 +30,12 @@ import {
   type ScoreImportValidationIssueCode,
   type ScoreSummary,
 } from '@choirscore/shared';
-import { newId } from '../../audit';
-import type { ApiRepository, ScoreRowWithVersion } from '../../db/repository';
+import { newAuditEntry, newId } from '../../audit';
+import type {
+  ApiRepository,
+  AuditInput,
+  ScoreRowWithVersion,
+} from '../../db/repository';
 import { sendApiError } from '../../errors';
 import type { RequestWithContext } from '../../types';
 import {
@@ -168,6 +172,7 @@ export function createScoresRouter(
         return await persistNewScore({
           repository,
           res,
+          request: req as RequestWithContext,
           user,
           musicXml,
           title: converted.model.title,
@@ -177,7 +182,7 @@ export function createScoresRouter(
           warnings: converted.warnings,
         });
       } catch (error) {
-        if (sendConversionFailure(res, error)) return;
+        if (await sendConversionFailure(res, error)) return;
         return next(error);
       }
     }
@@ -227,6 +232,7 @@ export function createScoresRouter(
       return await persistNewScore({
         repository,
         res,
+        request: req as RequestWithContext,
         user,
         musicXml,
         title: converted.model.title,
@@ -245,7 +251,7 @@ export function createScoresRouter(
           error.message
         );
       }
-      if (sendConversionFailure(res, error)) return;
+      if (await sendConversionFailure(res, error)) return;
       return next(error);
     }
   });
@@ -341,7 +347,14 @@ export function createScoresRouter(
           createdAt: now,
         },
         now,
-        user.id
+        user.id,
+        scoreAdminAuditEntry(
+          req as RequestWithContext,
+          user,
+          'scores.version.create',
+          row.score.id,
+          {}
+        )
       );
       if (saved.status === 'not_found') {
         return await sendApiError(
@@ -359,6 +372,7 @@ export function createScoresRouter(
           'You may no longer edit this score.'
         );
       }
+      markScoreAdminAuditRecorded(req as RequestWithContext, user);
       const updatedRow = await repository.findScoreRow(row.score.id, user.id);
       if (!updatedRow) {
         return await sendApiError(
@@ -385,9 +399,14 @@ export function createScoresRouter(
               preservation: conversion.preservation,
             },
           });
+          await recordScoreAdminMutationFailure(
+            res,
+            409,
+            'SCORE_CONTENT_READ_ONLY'
+          );
           return res.status(409).json(body);
         }
-        if (sendConversionFailure(res, error)) return;
+        if (await sendConversionFailure(res, error)) return;
       }
       return next(error);
     }
@@ -494,7 +513,14 @@ export function createScoresRouter(
           ...parsed.data,
           updatedAt: new Date().toISOString(),
         },
-        user.id
+        user.id,
+        scoreAdminAuditEntry(
+          req as RequestWithContext,
+          user,
+          'scores.update',
+          req.params.id,
+          { fields: Object.keys(parsed.data) }
+        )
       );
       if (updated.status === 'not_found') {
         return await sendApiError(
@@ -512,6 +538,7 @@ export function createScoresRouter(
           'You may no longer modify this score.'
         );
       }
+      markScoreAdminAuditRecorded(req as RequestWithContext, user);
       const updatedRow = await repository.findScoreRow(
         updated.score.id,
         user.id
@@ -574,7 +601,14 @@ export function createScoresRouter(
       const result = await repository.replaceScoreAccess(
         row.score.id,
         parsed.data.users,
-        user.id
+        user.id,
+        scoreAdminAuditEntry(
+          req as RequestWithContext,
+          user,
+          'scores.access.update',
+          row.score.id,
+          { recipientCount: parsed.data.users.length }
+        )
       );
       if (result.status === 'not_found') {
         return await sendApiError(
@@ -608,6 +642,7 @@ export function createScoresRouter(
           'You may no longer manage access for this score.'
         );
       }
+      markScoreAdminAuditRecorded(req as RequestWithContext, user);
       return res.status(200).json(
         scoreAccessResponseSchema.parse({
           scoreId: row.score.id,
@@ -626,6 +661,7 @@ export function createScoresRouter(
 async function persistNewScore(args: {
   repository: ApiRepository;
   res: Response;
+  request: RequestWithContext;
   user: NonNullable<RequestWithContext['authUser']>;
   musicXml: string;
   title: string;
@@ -656,7 +692,10 @@ async function persistNewScore(args: {
       createdBy: args.user.id,
       createdAt: now,
     },
-    args.user.id
+    args.user.id,
+    scoreAdminAuditEntry(args.request, args.user, 'scores.create', scoreId, {
+      visibility: args.visibility,
+    })
   );
   if (creation.status === 'forbidden') {
     return await sendApiError(
@@ -666,6 +705,7 @@ async function persistNewScore(args: {
       'Your account no longer has permission to create this score.'
     );
   }
+  markScoreAdminAuditRecorded(args.request, args.user);
   const row = await args.repository.findScoreRow(scoreId, args.user.id);
   if (!row) throw new Error('New score could not be read after creation');
   const converted = musicXmlToModel(args.musicXml);
@@ -760,7 +800,7 @@ function publicModel(
   });
 }
 
-function sendScoreImportFailure(
+async function sendScoreImportFailure(
   res: Response,
   status: number,
   code: string,
@@ -771,6 +811,7 @@ function sendScoreImportFailure(
     path?: string;
   }>
 ) {
+  await recordScoreAdminMutationFailure(res, status, code);
   return res.status(status).json({
     error: {
       code: code as ScoreImportErrorCode,
@@ -780,7 +821,10 @@ function sendScoreImportFailure(
   });
 }
 
-function sendConversionFailure(res: Response, error: unknown): boolean {
+async function sendConversionFailure(
+  res: Response,
+  error: unknown
+): Promise<boolean> {
   if (!(error instanceof MusicXmlConversionError)) return false;
   if (error.code === 'PRESERVATION_CONTEXT_CHANGED') {
     return false;
@@ -836,10 +880,38 @@ function sendConversionFailure(res: Response, error: unknown): boolean {
     },
   };
   const mapped = codeMap[error.code];
-  sendScoreImportFailure(res, mapped.status, mapped.code, error.message, [
+  await sendScoreImportFailure(res, mapped.status, mapped.code, error.message, [
     { code: mapped.issue, message: error.message },
   ]);
   return true;
+}
+
+function scoreAdminAuditEntry(
+  request: RequestWithContext,
+  user: NonNullable<RequestWithContext['authUser']>,
+  action: string,
+  targetId: string,
+  detail: Record<string, unknown>
+): AuditInput | undefined {
+  if (user.role !== 'admin') return undefined;
+  return newAuditEntry(request, user.id, action, 'score', targetId, detail);
+}
+
+function markScoreAdminAuditRecorded(
+  request: RequestWithContext,
+  user: NonNullable<RequestWithContext['authUser']>
+) {
+  if (user.role === 'admin') request.adminMutationAuditRecorded = true;
+}
+
+async function recordScoreAdminMutationFailure(
+  res: Response,
+  status: number,
+  errorCode: string
+) {
+  const recordFailure = res.locals.recordAdminMutationFailure as
+    ((status: number, errorCode: string) => Promise<void>) | undefined;
+  if (recordFailure) await recordFailure(status, errorCode);
 }
 
 function filenameSlug(title: string): string {

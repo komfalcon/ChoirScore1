@@ -474,6 +474,134 @@ describe('M2 score API routes', () => {
     expect(rows).toHaveLength(0);
   });
 
+  it('audits admin score mutations atomically and redacts failed import details', async () => {
+    expect(await repository.listAuditEntries()).toHaveLength(0);
+    const memberCreate = await asActor(
+      request(app).post('/scores'),
+      actors.owner,
+      true
+    ).send({ model: MODEL });
+    expect(memberCreate.status).toBe(201);
+    expect(await repository.listAuditEntries()).toHaveLength(0);
+
+    const auditedTitle = 'Sensitive score title excluded from audit detail';
+    const model = structuredClone(MODEL);
+    model.title = auditedTitle;
+    const adminCreate = await asActor(
+      request(app).post('/scores'),
+      actors.admin,
+      true
+    ).send({ model, visibility: 'private' });
+    expect(adminCreate.status).toBe(201);
+    const scoreId = adminCreate.body.score.id as string;
+
+    const expectAudit = async (
+      count: number,
+      action: string,
+      outcome: 'success' | 'rejected',
+      detail: Record<string, unknown>,
+      errorCode: string | null,
+      targetId: string | null = scoreId
+    ) => {
+      const entries = await repository.listAuditEntries();
+      expect(entries).toHaveLength(count);
+      const matching = entries.filter(
+        (entry) =>
+          entry.action === action &&
+          entry.targetId === targetId &&
+          entry.outcome === outcome
+      );
+      expect(matching).toHaveLength(1);
+      expect(matching[0]).toMatchObject({
+        actorId: actors.admin.id,
+        action,
+        targetType: 'score',
+        targetId,
+        outcome,
+        errorCode,
+      });
+      expect(JSON.parse(matching[0]!.detailJson)).toEqual(detail);
+      expect(JSON.stringify(matching[0])).not.toContain(auditedTitle);
+      return matching[0]!;
+    };
+    await expectAudit(
+      1,
+      'scores.create',
+      'success',
+      { visibility: 'private' },
+      null
+    );
+
+    const shared = await asActor(
+      request(app).patch(`/scores/${scoreId}`),
+      actors.admin,
+      true
+    ).send({ visibility: 'shared' });
+    expect(shared.status).toBe(200);
+    await expectAudit(
+      2,
+      'scores.update',
+      'success',
+      { fields: ['visibility'] },
+      null
+    );
+
+    const access = await asActor(
+      request(app).put(`/scores/${scoreId}/access`),
+      actors.admin,
+      true
+    ).send({ users: [{ userId: actors.recipient.id, canEdit: false }] });
+    expect(access.status).toBe(200);
+    await expectAudit(
+      3,
+      'scores.access.update',
+      'success',
+      { recipientCount: 1 },
+      null
+    );
+
+    const changedModel = structuredClone(model);
+    changedModel.parts[0]!.measures[0]!.notes[0]!.pitch = 'D4';
+    const version = await asActor(
+      request(app).post(`/scores/${scoreId}/versions`),
+      actors.admin,
+      true
+    ).send({ model: changedModel, note: 'Sensitive version note' });
+    expect(version.status).toBe(201);
+    await expectAudit(4, 'scores.version.create', 'success', {}, null);
+
+    const invalidPatch = await asActor(
+      request(app).patch(`/scores/${scoreId}`),
+      actors.admin,
+      true
+    ).send({ visibility: 'unknown' });
+    expect(invalidPatch.status).toBe(400);
+    await expectAudit(5, 'scores.update', 'rejected', {}, 'VALIDATION_ERROR');
+
+    const invalidImport = await asActor(
+      request(app).post('/scores'),
+      actors.admin,
+      true
+    )
+      .set('Content-Type', 'multipart/form-data')
+      .send('Sensitive multipart payload');
+    expect(invalidImport.status).toBe(400);
+    const failedAudit = await expectAudit(
+      6,
+      'scores.create',
+      'rejected',
+      {},
+      'VALIDATION_ERROR',
+      null
+    );
+    expect(JSON.stringify(failedAudit)).not.toContain(
+      'Sensitive multipart payload'
+    );
+    expect(JSON.stringify(await repository.listAuditEntries())).not.toContain(
+      'Sensitive version note'
+    );
+  });
+
   it('imports MusicXML and MXL, rejects unsupported extensions, unsafe paths, DTDs, and files over 6 MiB', async () => {
     const malformedMultipart = await asActor(
       request(app).post('/scores'),
