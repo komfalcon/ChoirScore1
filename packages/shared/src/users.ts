@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isoUtcTimestampSchema } from './timestamps.js';
 
 export const roleSchema = z.enum(['admin', 'director', 'member']);
 export type Role = z.infer<typeof roleSchema>;
@@ -27,8 +28,8 @@ const safeUserFields = {
   mustChangePassword: z.boolean(),
   aiEnabled: z.boolean(),
   aiDailyLimit: z.number().int().nonnegative().nullable(),
-  lastLoginAt: z.string().nullable(),
-  createdAt: z.string(),
+  lastLoginAt: isoUtcTimestampSchema.nullable(),
+  createdAt: isoUtcTimestampSchema,
 };
 
 /** Public user data. Unknown fields (including credential/hash fields) are stripped. */

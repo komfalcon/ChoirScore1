@@ -17,11 +17,13 @@ The authentication, user, and admin-settings routes below define the M1 contract
 
 - Enums and public user: `roleSchema` / `Role` (`admin | director | member`), `voicePartSchema` / `VoicePart` (`S | A | T | B | none`), `staffedVoicePartSchema` / `StaffedVoicePart`, `userRoleVoicePartSchema` / `UserRoleVoicePart`, and `safeUserSchema` / `SafeUser`.
 - Auth: `loginRequestSchema` / `LoginRequest`, `loginResponseSchema` / `LoginResponse`, `meResponseSchema` / `MeResponse`, `logoutResponseSchema` / `LogoutResponse`, `changePasswordRequestSchema` / `ChangePasswordRequest`, `changePasswordResponseSchema` / `ChangePasswordResponse`, and `apiErrorResponseSchema` / `ApiErrorResponse`.
+- Admin Settings: `adminSettingsSchema` / `AdminSettings`, `getAdminSettingsResponseSchema` / `GetAdminSettingsResponse`, `patchAdminSettingsRequestSchema` / `PatchAdminSettingsRequest`, and `patchAdminSettingsResponseSchema` / `PatchAdminSettingsResponse`.
 - User create/bulk/update/reset: `createUserRequestSchema` / `CreateUserRequest`, `createUserResponseSchema` / `CreateUserResponse`, `bulkCreateUserRowSchema` / `BulkCreateUserRow`, `bulkCreateUsersRequestSchema` / `BulkCreateUsersRequest`, `bulkCreateUserResultSchema` / `BulkCreateUserResult`, `bulkCreateUsersResponseSchema` / `BulkCreateUsersResponse`, `updateUserRequestSchema` / `UpdateUserRequest`, `updateUserResponseSchema` / `UpdateUserResponse`, `resetPasswordRequestSchema` / `ResetPasswordRequest`, and `resetPasswordResponseSchema` / `ResetPasswordResponse`.
 - Parsed defaulted outputs are also exported as `ParsedCreateUserRequest`, `ParsedBulkCreateUserRow`, `ParsedBulkCreateUsersRequest`, and `ParsedUpdateUserRequest`.
 - Supporting user responses: `userListResponseSchema` / `UserListResponse`, `userResponseSchema` / `UserResponse`, and `credentialsSchema` / `Credentials`.
+- Timestamp: `isoUtcTimestampSchema` / `IsoUtcTimestamp`.
 
-`SafeUser` is `{ id, username, displayName, role, voicePart, isActive, mustChangePassword, aiEnabled, aiDailyLimit, lastLoginAt, createdAt }`. `aiDailyLimit` is a number or `null`; `lastLoginAt` is a string or `null`. Passwords and password hashes are never part of this type or an ordinary user response. `Credentials` is `{ username, password }` and is returned only by create, bulk create, and password reset.
+`SafeUser` is `{ id, username, displayName, role, voicePart, isActive, mustChangePassword, aiEnabled, aiDailyLimit, lastLoginAt, createdAt }`. `aiDailyLimit` is a number or `null`; `lastLoginAt` is an ISO-8601 UTC date-time string or `null`, and `createdAt` is an ISO-8601 UTC date-time string. Non-null timestamps must use a `Z` suffix, with no numeric offset or local time. Passwords and password hashes are never part of this type or an ordinary user response. `Credentials` is `{ username, password }` and is returned only by create, bulk create, and password reset.
 
 ### Role and voice-part validation
 
@@ -35,16 +37,24 @@ For `PATCH /users/:id`, a role change to `member` requires an accompanying staff
 
 All state-changing requests—including login, logout, and password change—must include `X-Requested-With: choirscore`.
 
-| Method and path              | Request                                                                                       | Success                    |
-| ---------------------------- | --------------------------------------------------------------------------------------------- | -------------------------- |
-| `POST /auth/login`           | `{ "username": string, "password": string }`                                                  | `200 { "user": SafeUser }` |
-| `GET /auth/me`               | —                                                                                             | `200 { "user": SafeUser }` |
-| `POST /auth/logout`          | —                                                                                             | `204` with no JSON body    |
-| `POST /auth/change-password` | `{ "currentPassword": string, "newPassword": string }`; new password is at least 8 characters | `200 { "user": SafeUser }` |
+| Method and path              | Request                                                                                       | Success                                                                                                  |
+| ---------------------------- | --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `POST /auth/login`           | `{ "username": string, "password": string }`                                                  | `200 { "user": SafeUser }`                                                                               |
+| `GET /auth/me`               | —                                                                                             | `200 { "user": SafeUser }` when password change is not pending; otherwise `403 PASSWORD_CHANGE_REQUIRED` |
+| `POST /auth/logout`          | —                                                                                             | `204` with no JSON body                                                                                  |
+| `POST /auth/change-password` | `{ "currentPassword": string, "newPassword": string }`; new password is at least 8 characters | `200 { "user": SafeUser }`                                                                               |
 
-Successful login sets a 7-day JWT in an `HttpOnly; Secure; SameSite=Lax` cookie. The token is never returned as JSON. Logout clears the cookie. Login failures use a generic `401` response with code `INVALID_CREDENTIALS`; do not reveal whether a username exists. `/auth/me` includes `mustChangePassword` in its user.
+Successful login sets a 7-day JWT in an `HttpOnly; Secure; SameSite=Lax` cookie. The token is never returned as JSON. Logout clears the cookie. Login failures use a generic `401` response with code `INVALID_CREDENTIALS`; do not reveal whether a username exists. The login response includes `mustChangePassword` in its user.
 
-The API checks that the authenticated account is active on every request. While `mustChangePassword` is true, protected routes return `403` with code `PASSWORD_CHANGE_REQUIRED`; only `/auth/me`, `/auth/logout`, and `/auth/change-password` remain available. There is no signup or email flow. Never log passwords, password hashes, JWTs, or one-time credentials.
+The API checks that the authenticated account is active on every request. While `mustChangePassword` is true, every route except `POST /auth/change-password` and `POST /auth/logout` returns `403` with code `PASSWORD_CHANGE_REQUIRED`; this includes `GET /auth/me`. The client must use the login response to present the forced-change flow rather than calling `/auth/me` first. There is no signup or email flow. Never log passwords, password hashes, JWTs, or one-time credentials.
+
+### M1 server-test acceptance (not implemented by this shared-contract change)
+
+The following are backend requirements for M1 and must be enforced and covered by server tests when the routes are implemented; the shared schemas in this change do not implement server behavior:
+
+- With `mustChangePassword: true`, tests verify that only `POST /auth/change-password` and `POST /auth/logout` are available; `GET /auth/me` and all other routes are rejected with `403 PASSWORD_CHANGE_REQUIRED`. After a successful password change, normal authenticated routes become available.
+- Passwords are stored only as hashes using Argon2id or bcrypt with cost at least 12. Tests verify that raw passwords are not persisted or exposed in responses.
+- `POST /auth/login` is limited to 5 attempts per minute for each IP-and-username pair, followed by a 15-minute temporary lockout. Server tests cover the threshold, lockout, and recovery after it expires.
 
 ## Users
 
@@ -66,10 +76,10 @@ Create requests require `displayName` and `role`; `username` and `password` are 
 
 ## Admin settings
 
-Both routes are admin-only. The setting belongs on Admin Settings, not in the Users form. State-changing requests require `X-Requested-With: choirscore`.
+Both routes are admin-only. The setting belongs on Admin Settings, not in the Users form. State-changing requests require `X-Requested-With: choirscore`. The GET response and PATCH request/response are validated by the shared `getAdminSettingsResponseSchema`, `patchAdminSettingsRequestSchema`, and `patchAdminSettingsResponseSchema`.
 
-- `GET /admin/settings` → `200 { "requirePasswordChangeAtFirstLogin": boolean }`
-- `PATCH /admin/settings` accepts `{ "requirePasswordChangeAtFirstLogin": boolean }` and returns the same object with status `200`.
+- `GET /admin/settings` → `200 { "requirePasswordChangeAtFirstLogin": boolean }` (`GetAdminSettingsResponse`)
+- `PATCH /admin/settings` accepts exactly `{ "requirePasswordChangeAtFirstLogin": boolean }` (`PatchAdminSettingsRequest`) and returns the same object with status `200` (`PatchAdminSettingsResponse`).
 
 ## Errors
 

@@ -15,7 +15,7 @@ const user = {
   role: 'member' as const,
   voicePart: 'A' as const,
   isActive: true,
-  mustChangePassword: true,
+  mustChangePassword: false,
   aiEnabled: true,
   aiDailyLimit: null,
   lastLoginAt: null,
@@ -37,7 +37,9 @@ describe('auth contract schemas', () => {
   });
 
   it('uses the same SafeUser shape for /auth/me and change-password responses', () => {
-    expect(meResponseSchema.parse({ user }).user.mustChangePassword).toBe(true);
+    expect(meResponseSchema.parse({ user }).user.mustChangePassword).toBe(
+      false
+    );
     expect(changePasswordResponseSchema.parse({ user })).toEqual({ user });
   });
 

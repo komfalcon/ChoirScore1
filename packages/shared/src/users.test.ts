@@ -112,6 +112,27 @@ describe('safe user shape', () => {
       safeUserSchema.safeParse({ ...memberUser, voicePart: 'none' }).success
     ).toBe(false);
   });
+
+  it('requires createdAt and lastLoginAt to be ISO-UTC timestamps', () => {
+    expect(
+      safeUserSchema.safeParse({
+        ...memberUser,
+        createdAt: '2026-10-08T08:47:51+01:00',
+      }).success
+    ).toBe(false);
+    expect(
+      safeUserSchema.safeParse({
+        ...memberUser,
+        lastLoginAt: '2026-10-08T07:47:51',
+      }).success
+    ).toBe(false);
+    expect(
+      safeUserSchema.safeParse({
+        ...memberUser,
+        lastLoginAt: '2026-10-08T07:47:51.000Z',
+      }).success
+    ).toBe(true);
+  });
 });
 
 describe('user update validation', () => {
