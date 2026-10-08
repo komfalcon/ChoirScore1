@@ -43,7 +43,7 @@ describe('auth contract schemas', () => {
     expect(changePasswordResponseSchema.parse({ user })).toEqual({ user });
   });
 
-  it('requires a new password of at least eight characters', () => {
+  it('requires 8+ characters and limits new passwords to 72 UTF-8 bytes', () => {
     expect(
       changePasswordRequestSchema.safeParse({
         currentPassword: 'current',
@@ -54,6 +54,30 @@ describe('auth contract schemas', () => {
       changePasswordRequestSchema.safeParse({
         currentPassword: 'current',
         newPassword: 'long-enough',
+      }).success
+    ).toBe(true);
+    expect(
+      changePasswordRequestSchema.safeParse({
+        currentPassword: 'current',
+        newPassword: 'x'.repeat(72),
+      }).success
+    ).toBe(true);
+    expect(
+      changePasswordRequestSchema.safeParse({
+        currentPassword: 'current',
+        newPassword: 'x'.repeat(73),
+      }).success
+    ).toBe(false);
+    expect(
+      changePasswordRequestSchema.safeParse({
+        currentPassword: 'current',
+        newPassword: 'é'.repeat(37),
+      }).success
+    ).toBe(false);
+    expect(
+      loginRequestSchema.safeParse({
+        username: 'jane.doe',
+        password: 'x'.repeat(73),
       }).success
     ).toBe(true);
   });

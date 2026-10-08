@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { passwordSchema } from './password.js';
 import { isoUtcTimestampSchema } from './timestamps.js';
 
 export const roleSchema = z.enum(['admin', 'director', 'member']);
@@ -49,13 +50,13 @@ export type SafeUser = z.infer<typeof safeUserSchema>;
 
 export const credentialsSchema = z.object({
   username: z.string().min(1),
-  password: z.string().min(8),
+  password: passwordSchema,
 });
 export type Credentials = z.infer<typeof credentialsSchema>;
 
 const displayNameSchema = z.string().trim().min(1);
 const usernameSchema = z.string().trim().min(1);
-const suppliedPasswordSchema = z.string().min(8);
+const suppliedPasswordSchema = passwordSchema;
 
 const memberCreateUserRequestSchema = z.object({
   displayName: displayNameSchema,
