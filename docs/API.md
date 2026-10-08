@@ -67,6 +67,8 @@ All `/users` routes are authentication-required and admin-only. `q` is an option
 | `POST /users/:id/activate`       | No JSON body                       | `200 { "user": SafeUser }`                                            |
 | `POST /users/:id/deactivate`     | No JSON body                       | `200 { "user": SafeUser }`                                            |
 
+The API preserves at least one active administrator. `PATCH /users/:id` may not change the role of the last active administrator away from `admin`, and `POST /users/:id/deactivate` may not deactivate that account. These checks are atomic across concurrent user mutations. A rejected change returns `409 { "error": { "code": "LAST_ACTIVE_ADMIN_REQUIRED", "message": "At least one active administrator must remain." } }`. The UI should keep the user's current role/active state and show the message; it may retry after another administrator is active.
+
 Create requests require `displayName` and `role`; `username` and `password` are optional. Bulk rows use the same fields, and a missing row role defaults to `member`. Usernames are normalized to lowercase. When omitted, a username is generated from the normalized display name using a `firstname.lastname` pattern and numeric collision suffix. When a password is omitted, a random 10-character password is generated from an alphabet that omits ambiguous `0/O` and `1/l/I` characters. Supplied passwords must be at least 8 characters and no more than 72 UTF-8 bytes.
 
 Creation, bulk creation, and reset return credentials once in that response. Only password hashes are stored. Reads and updates never return credentials. Successful admin actions, including user list and admin-settings reads, write exactly one audit record; successful mutations insert it in the same transaction as the action. Authenticated `POST`, `PUT`, `PATCH`, or `DELETE` attempts under `/users` or `/admin` retain an audit row when rejected or failed, including CSRF, origin, authorization, validation, and resource denials. These rows contain the resolved actor, target, action, outcome, and safe error code; failure detail is `{}`. Denials with no valid actor, including anonymous or unauthenticated attempts, do not create durable audit rows; they are represented only by bounded, rate-limited security-event summaries with a safe reason code and count. No request bodies, headers, cookies, IPs, usernames, credentials, password hashes, tokens, generated credentials, or exception messages are included in those summaries. Deactivation is enforced on the next authenticated request, even for a previously issued cookie.
@@ -98,6 +100,7 @@ Errors use `{ "error": { "code": string, "message": string } }`.
 - `403 ORIGIN_NOT_ALLOWED` — request supplied an origin outside the exact allowlist.
 - `404 NOT_FOUND` — requested resource does not exist, including unknown routes.
 - `409 USERNAME_TAKEN` — requested username is already in use.
+- `409 LAST_ACTIVE_ADMIN_REQUIRED` — role change or deactivation would leave no active administrator.
 - `413 BODY_TOO_LARGE` — request exceeded its JSON size limit.
 - `429 RATE_LIMITED` — login lockout is active.
 - `500 INTERNAL_ERROR` — unexpected failure; internal database details are not returned.

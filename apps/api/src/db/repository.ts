@@ -1,5 +1,5 @@
 import { createClient, type Client } from '@libsql/client';
-import { and, asc, count, eq, like, or } from 'drizzle-orm';
+import { and, asc, count, eq, like, ne, or, sql } from 'drizzle-orm';
 import { drizzle, type LibSQLDatabase } from 'drizzle-orm/libsql';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -8,6 +8,10 @@ import { auditLog, settings, users } from './schema';
 import { runMigrations } from './migrate';
 
 export type UserRecord = typeof users.$inferSelect;
+export type ActiveAdminInvariantUpdateResult =
+  | { status: 'updated'; user: UserRecord }
+  | { status: 'not_found' }
+  | { status: 'last_active_admin' };
 export type UserPatch = Partial<
   Pick<
     UserRecord,
@@ -44,6 +48,10 @@ export interface RepositoryTransaction {
   findUserByUsername(username: string): Promise<UserRecord | null>;
   insertUser(user: UserRecord): Promise<void>;
   updateUser(id: string, patch: UserPatch): Promise<UserRecord | null>;
+  updateUserWithActiveAdminInvariant(
+    id: string,
+    patch: UserPatch
+  ): Promise<ActiveAdminInvariantUpdateResult>;
   countAdmins(): Promise<number>;
   getSetting(key: string): Promise<string | null>;
   setSetting(
@@ -76,6 +84,7 @@ type DatabaseTransaction = Parameters<
 type QuerySession = Database | DatabaseTransaction;
 
 const LOGIN_THROTTLE_BUSY_RETRIES = 12;
+const TRANSACTION_BUSY_RETRIES = 12;
 
 function isDatabaseBusy(error: unknown): boolean {
   return (
@@ -86,7 +95,42 @@ function isDatabaseBusy(error: unknown): boolean {
   );
 }
 
+async function beginWriteTransaction(client: Client) {
+  for (let retry = 0; ; retry += 1) {
+    try {
+      return await client.transaction('write');
+    } catch (error) {
+      if (!isDatabaseBusy(error) || retry >= TRANSACTION_BUSY_RETRIES) {
+        throw error;
+      }
+      await new Promise((resolve) =>
+        setTimeout(
+          resolve,
+          Math.min(10 * 2 ** retry, 250) + Math.floor(Math.random() * 10)
+        )
+      );
+    }
+  }
+}
+
+function createWriteClient(client: Client): Client {
+  return new Proxy(client, {
+    get(target, property) {
+      if (property === 'transaction') {
+        return (...args: Parameters<Client['transaction']>) =>
+          args.length === 0
+            ? beginWriteTransaction(target)
+            : target.transaction(...args);
+      }
+      const value = Reflect.get(target, property, target) as unknown;
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
 let loginThrottleWriteQueue = Promise.resolve();
+// Reduce local SQLite write contention; guarded mutations remain atomic in SQL.
+let repositoryTransactionWriteQueue = Promise.resolve();
 
 function repositoryOperations(session: QuerySession): RepositoryTransaction {
   return {
@@ -123,6 +167,36 @@ function repositoryOperations(session: QuerySession): RepositoryTransaction {
         .where(eq(users.id, id))
         .limit(1);
       return rows[0] ?? null;
+    },
+
+    async updateUserWithActiveAdminInvariant(id, patch) {
+      if (Object.keys(patch).length === 0) {
+        throw new Error('Repository updates must include at least one field');
+      }
+      const mayRemoveActiveAdmin =
+        (patch.role !== undefined && patch.role !== 'admin') ||
+        patch.isActive === false;
+      const where = mayRemoveActiveAdmin
+        ? and(
+            eq(users.id, id),
+            or(
+              ne(users.role, 'admin'),
+              eq(users.isActive, false),
+              sql`(SELECT COUNT(*) FROM ${users} WHERE ${users.role} = 'admin' AND ${users.isActive} = 1) > 1`
+            )
+          )
+        : eq(users.id, id);
+      const result = await session.update(users).set(patch).where(where).run();
+      const rows = await session
+        .select()
+        .from(users)
+        .where(eq(users.id, id))
+        .limit(1);
+      const user = rows[0];
+      if (Number(result.rowsAffected) > 0 && user) {
+        return { status: 'updated', user };
+      }
+      return user ? { status: 'last_active_admin' } : { status: 'not_found' };
     },
 
     async countAdmins() {
@@ -175,6 +249,8 @@ class DrizzleApiRepository implements ApiRepository {
   insertUser = (user: UserRecord) => this.operations.insertUser(user);
   updateUser = (id: string, patch: UserPatch) =>
     this.operations.updateUser(id, patch);
+  updateUserWithActiveAdminInvariant = (id: string, patch: UserPatch) =>
+    this.operations.updateUserWithActiveAdminInvariant(id, patch);
   countAdmins = () => this.operations.countAdmins();
   getSetting = (key: string) => this.operations.getSetting(key);
   setSetting = (
@@ -304,7 +380,20 @@ class DrizzleApiRepository implements ApiRepository {
   }
 
   async transaction<T>(work: (tx: RepositoryTransaction) => Promise<T>) {
-    return this.db.transaction(async (tx) => work(repositoryOperations(tx)));
+    const previousWrite = repositoryTransactionWriteQueue;
+    let releaseWrite!: () => void;
+    repositoryTransactionWriteQueue = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    await previousWrite;
+
+    try {
+      return await this.db.transaction(async (tx) =>
+        work(repositoryOperations(tx))
+      );
+    } finally {
+      releaseWrite();
+    }
   }
 
   async listUsers(query?: string) {
@@ -338,7 +427,7 @@ class DrizzleApiRepository implements ApiRepository {
 export async function createRepository(client: Client): Promise<ApiRepository> {
   const migrationDirectory = findMigrationsDirectory();
   await runMigrations(client, migrationDirectory);
-  const db = drizzle(client, { schema });
+  const db = drizzle(createWriteClient(client), { schema });
   return new DrizzleApiRepository(client, db);
 }
 
