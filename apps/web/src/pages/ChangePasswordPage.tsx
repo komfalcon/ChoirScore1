@@ -15,12 +15,17 @@ export function ChangePasswordPage() {
   const [submitting, setSubmitting] = useState(false);
   const navigate = useNavigate();
   const continueButtonRef = useRef<HTMLButtonElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
   const forced =
     status === 'forced-change' || Boolean(user?.mustChangePassword);
 
   useEffect(() => {
     if (success) continueButtonRef.current?.focus({ preventScroll: true });
   }, [success]);
+
+  useEffect(() => {
+    if (forced) headingRef.current?.focus({ preventScroll: true });
+  }, [forced]);
 
   function reportValidation(nextErrors: Record<string, string>) {
     setFieldErrors(nextErrors);
@@ -88,7 +93,7 @@ export function ChangePasswordPage() {
   return (
     <div className="app-page">
       <AppHeader />
-      <main className="change-password-main">
+      <main className="change-password-main" id="main-content" tabIndex={-1}>
         <section
           className="change-password-card"
           aria-labelledby="change-password-title"
@@ -97,7 +102,7 @@ export function ChangePasswordPage() {
             ⌑
           </div>
           <p className="eyebrow">ACCOUNT SECURITY</p>
-          <h1 id="change-password-title">
+          <h1 id="change-password-title" ref={headingRef} tabIndex={-1}>
             {forced ? 'Set a new password' : 'Change your password'}
           </h1>
           <p className="change-password-copy">

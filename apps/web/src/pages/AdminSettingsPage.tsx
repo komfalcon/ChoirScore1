@@ -65,7 +65,7 @@ export function AdminSettingsPage() {
   return (
     <div className="app-page">
       <AppHeader />
-      <main className="admin-settings-main">
+      <main className="admin-settings-main" id="main-content" tabIndex={-1}>
         <div className="admin-page-heading">
           <div>
             <p className="eyebrow">ADMINISTRATION · SECURITY</p>

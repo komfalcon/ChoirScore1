@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  normalizeUsername,
   parseBulkNameImport,
+  suggestBulkUsernames,
   suggestUsernameFromName,
   truncateUtf8Bytes,
   utf8ByteLength,
@@ -67,6 +69,69 @@ describe('user form validation', () => {
     expect(suggestUsernameFromName('Kōfi Mensah', ['KOFI.MENSAH'])).toBe(
       'kofi.mensah.2'
     );
+  });
+
+  it('reserves normalized candidates across sibling rows in one batch', () => {
+    const suggestions = suggestBulkUsernames([
+      {
+        rowId: 1,
+        displayName: 'Kōfi Mensah',
+        username: '',
+        usernameAuto: true,
+      },
+      {
+        rowId: 2,
+        displayName: 'Kofi Mensah',
+        username: '',
+        usernameAuto: true,
+      },
+    ]);
+
+    expect(suggestions).toEqual({
+      1: 'kofi.mensah',
+      2: 'kofi.mensah.2',
+    });
+    expect(normalizeUsername('  KOFI.MENSAH  ')).toBe('kofi.mensah');
+  });
+
+  it('reserves an account username even when the current search hides that account', () => {
+    const allAccounts = [
+      { displayName: 'Lina Hidden', username: 'lina.hidden' },
+    ];
+    const currentlyVisible = allAccounts.filter((account) =>
+      `${account.displayName} ${account.username}`
+        .toLocaleLowerCase('en-US')
+        .includes('another person')
+    );
+    expect(currentlyVisible).toEqual([]);
+
+    expect(
+      suggestBulkUsernames(
+        [
+          {
+            rowId: 7,
+            displayName: 'Lina Hidden',
+            username: '',
+            usernameAuto: true,
+          },
+        ],
+        allAccounts.map((account) => account.username)
+      )
+    ).toEqual({ 7: 'lina.hidden.2' });
+
+    const validation = validateBulkUserDrafts(
+      [
+        {
+          rowId: 7,
+          displayName: 'Lina Hidden',
+          username: 'LINA.HIDDEN',
+          role: 'director',
+          voicePart: 'none',
+        },
+      ],
+      allAccounts.map((account) => account.username)
+    );
+    expect(validation.errors[7]).toMatch(/already in use/i);
   });
 
   it('rejects bulk member rows without a voice part, short overrides, and duplicate usernames before submit', () => {

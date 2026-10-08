@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ApiError,
   apiFetch,
+  isUsernameTakenError,
   subscribeToPasswordChangeRequired,
 } from './apiClient';
 import { jsonRequest } from './api';
@@ -91,6 +92,30 @@ describe('apiFetch contract behavior', () => {
       code: 'INVALID_CREDENTIALS',
       message: 'Username or password is incorrect.',
     } satisfies Partial<ApiError>);
+  });
+
+  it('recognizes only the shared 409 USERNAME_TAKEN collision contract', () => {
+    expect(
+      isUsernameTakenError(
+        new ApiError(409, {
+          code: 'USERNAME_TAKEN',
+          message: 'The requested username is already in use.',
+        })
+      )
+    ).toBe(true);
+    expect(
+      isUsernameTakenError(
+        new ApiError(400, {
+          code: 'USERNAME_TAKEN',
+          message: 'Invalid request.',
+        })
+      )
+    ).toBe(false);
+    expect(
+      isUsernameTakenError(
+        new ApiError(409, { code: 'CONFLICT', message: 'Conflict.' })
+      )
+    ).toBe(false);
   });
 
   it('notifies the signed-in app when a later protected request requires password setup', async () => {

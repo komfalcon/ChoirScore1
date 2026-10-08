@@ -18,6 +18,14 @@ export class ApiError extends Error {
   }
 }
 
+export function isUsernameTakenError(error: unknown) {
+  return (
+    error instanceof ApiError &&
+    error.status === 409 &&
+    error.code === 'USERNAME_TAKEN'
+  );
+}
+
 type PasswordChangeRequiredListener = () => void;
 const passwordChangeRequiredListeners =
   new Set<PasswordChangeRequiredListener>();

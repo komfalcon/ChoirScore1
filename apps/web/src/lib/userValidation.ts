@@ -31,6 +31,17 @@ const VOICE_PART_ALIASES: Record<string, Exclude<VoicePart, 'none'>> = {
   bass: 'B',
 };
 
+export function normalizeUsername(username: string) {
+  return username.trim().normalize('NFKC').toLocaleLowerCase('en-US');
+}
+
+export interface BulkUsernameSuggestionDraft {
+  rowId: number;
+  displayName: string;
+  username: string;
+  usernameAuto: boolean;
+}
+
 export function utf8ByteLength(value: string) {
   return new TextEncoder().encode(value).length;
 }
@@ -59,16 +70,45 @@ export function suggestUsernameFromName(
       .toLocaleLowerCase('en-US')
       .replace(/[^a-z0-9]+/g, '.')
       .replace(/^\.+|\.+$/g, '') || 'user';
-  const taken = new Set(
-    takenUsernames.map((username) => username.trim().toLocaleLowerCase())
-  );
+  const taken = new Set(takenUsernames.map(normalizeUsername));
   let suggestion = base;
   let suffix = 2;
-  while (taken.has(suggestion.toLocaleLowerCase())) {
+  while (taken.has(normalizeUsername(suggestion))) {
     suggestion = `${base}.${suffix}`;
     suffix += 1;
   }
   return suggestion;
+}
+
+export function suggestBulkUsernames(
+  rows: BulkUsernameSuggestionDraft[],
+  takenUsernames: string[] = []
+) {
+  const reserved = new Set(
+    takenUsernames.map(normalizeUsername).filter(Boolean)
+  );
+
+  rows.forEach((row) => {
+    if (!row.usernameAuto && row.username.trim())
+      reserved.add(normalizeUsername(row.username));
+  });
+
+  const suggestions: Record<number, string> = {};
+  rows.forEach((row) => {
+    if (!row.usernameAuto) {
+      suggestions[row.rowId] = row.username;
+      return;
+    }
+    if (!row.displayName.trim()) {
+      suggestions[row.rowId] = '';
+      return;
+    }
+    const suggestion = suggestUsernameFromName(row.displayName, [...reserved]);
+    suggestions[row.rowId] = suggestion;
+    reserved.add(normalizeUsername(suggestion));
+  });
+
+  return suggestions;
 }
 
 export function validatePasswordOverride(password: string) {
@@ -100,18 +140,24 @@ export function validateUserIdentity(
   return issues.join(' ');
 }
 
-export function validateBulkUserDrafts(rows: BulkIdentityDraft[]) {
+export function validateBulkUserDrafts(
+  rows: BulkIdentityDraft[],
+  takenUsernames: string[] = []
+) {
   const errors: Record<number, string> = {};
   if (!rows.length)
     return { errors, message: 'Add at least one person to create.' };
 
+  const taken = new Set(takenUsernames.map(normalizeUsername));
   const seenUsernames = new Set<string>();
   for (const row of rows) {
     const issues: string[] = [];
     const identityError = validateUserIdentity(row, false);
     if (identityError) issues.push(identityError);
     if (row.username.trim()) {
-      const normalized = row.username.trim().toLocaleLowerCase();
+      const normalized = normalizeUsername(row.username);
+      if (taken.has(normalized))
+        issues.push('This username is already in use.');
       if (seenUsernames.has(normalized))
         issues.push('This username is repeated in the list.');
       seenUsernames.add(normalized);

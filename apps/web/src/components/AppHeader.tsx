@@ -30,6 +30,9 @@ export function AppHeader() {
 
   return (
     <header className="app-header">
+      <a className="skip-link" href="#main-content">
+        Skip to main content
+      </a>
       <Link
         className="brand"
         to={homePath}

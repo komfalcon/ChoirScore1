@@ -28,10 +28,13 @@ import type {
   VoicePart,
 } from '@choirscore/shared';
 import { apiJson, jsonRequest } from '../lib/api';
+import { isUsernameTakenError } from '../lib/apiClient';
 import { credentialsToCsv } from '../lib/credentialsExport';
 import { focusTrapBoundaryIndex } from '../lib/dialogFocus';
 import {
+  normalizeUsername,
   parseBulkNameImport,
+  suggestBulkUsernames,
   suggestUsernameFromName,
   validateBulkUserDrafts,
   validatePasswordOverride,
@@ -47,7 +50,11 @@ type DraftRoleFields = {
 };
 type EditDraft = DraftRoleFields & { aiEnabled: boolean; aiDailyLimit: string };
 type CreateDraft = DraftRoleFields & { password: string };
-type BulkDraft = DraftRoleFields & { rowId: number; password: string };
+type BulkDraft = DraftRoleFields & {
+  rowId: number;
+  password: string;
+  usernameAuto: boolean;
+};
 type Confirmation = {
   action: 'reset' | 'deactivate' | 'activate';
   user: SafeUser;
@@ -70,7 +77,7 @@ function newDraft(): DraftRoleFields {
 }
 
 function makeBulkRow(rowId: number): BulkDraft {
-  return { ...newDraft(), rowId, password: '' };
+  return { ...newDraft(), rowId, password: '', usernameAuto: true };
 }
 
 function newCreateDraft(): CreateDraft {
@@ -93,6 +100,10 @@ function errorText(error: unknown) {
   return error instanceof Error
     ? error.message
     : 'Something went wrong. Please try again.';
+}
+
+function usernameTakenMessage() {
+  return 'This username is already in use. Choose another username and try again.';
 }
 
 function identityFieldErrors(
@@ -314,6 +325,9 @@ function FormIdentityFields({
   disabled,
   suggestUsername = false,
   takenUsernames = [],
+  suggestedUsernameOverride,
+  usernameAutoManaged,
+  onUsernameChange,
   fieldErrors = {},
   onChange,
 }: {
@@ -322,15 +336,17 @@ function FormIdentityFields({
   disabled?: boolean;
   suggestUsername?: boolean;
   takenUsernames?: string[];
+  suggestedUsernameOverride?: string;
+  usernameAutoManaged?: boolean;
+  onUsernameChange?: (username: string) => void;
   fieldErrors?: Record<string, string>;
   onChange: (next: DraftRoleFields) => void;
 }) {
   const displayNameError = fieldErrors[`${prefix}-display-name`];
   const usernameError = fieldErrors[`${prefix}-username`];
-  const suggestedUsername = suggestUsernameFromName(
-    draft.displayName,
-    takenUsernames
-  );
+  const suggestedUsername =
+    suggestedUsernameOverride ??
+    suggestUsernameFromName(draft.displayName, takenUsernames);
   const usernameDescription = [
     suggestUsername ? `${prefix}-username-help` : '',
     usernameError ? `${prefix}-username-error` : '',
@@ -349,7 +365,8 @@ function FormIdentityFields({
           onChange={(event) => {
             const displayName = event.target.value;
             const stillSuggested =
-              draft.username === '' || draft.username === suggestedUsername;
+              usernameAutoManaged ??
+              (draft.username === '' || draft.username === suggestedUsername);
             onChange({
               ...draft,
               displayName,
@@ -384,9 +401,11 @@ function FormIdentityFields({
           spellCheck={false}
           value={draft.username}
           disabled={disabled}
-          onChange={(event) =>
-            onChange({ ...draft, username: event.target.value })
-          }
+          onChange={(event) => {
+            const username = event.target.value;
+            if (onUsernameChange) onUsernameChange(username);
+            else onChange({ ...draft, username });
+          }}
           required
           aria-invalid={usernameError ? true : undefined}
           aria-describedby={usernameDescription || undefined}
@@ -551,6 +570,7 @@ export function AdminUsersPage() {
   }
 
   const takenUsernames = users.map((user) => user.username);
+  const bulkSuggestions = suggestBulkUsernames(bulkRows, takenUsernames);
 
   function clearFieldError(...fieldIds: string[]) {
     setFieldErrors((current) => {
@@ -562,32 +582,27 @@ export function AdminUsersPage() {
 
   useEffect(() => {
     let current = true;
-    const timer = window.setTimeout(
-      () => {
-        setLoading(true);
-        setLoadError('');
-        const params = new URLSearchParams();
-        params.set('q', query.trim());
-        void apiJson<UserListResponse>(`/users?${params.toString()}`)
-          .then(
-            (result) => {
-              if (current) setUsers(result.users);
-            },
-            (error) => {
-              if (current) setLoadError(errorText(error));
-            }
-          )
-          .finally(() => {
-            if (current) setLoading(false);
-          });
-      },
-      query ? 220 : 0
-    );
+    const timer = window.setTimeout(() => {
+      setLoading(true);
+      setLoadError('');
+      void apiJson<UserListResponse>('/users')
+        .then(
+          (result) => {
+            if (current) setUsers(result.users);
+          },
+          (error) => {
+            if (current) setLoadError(errorText(error));
+          }
+        )
+        .finally(() => {
+          if (current) setLoading(false);
+        });
+    }, 0);
     return () => {
       current = false;
       window.clearTimeout(timer);
     };
-  }, [query, refreshToken]);
+  }, [refreshToken]);
 
   useEffect(() => {
     if (!credentials) return undefined;
@@ -595,7 +610,12 @@ export function AdminUsersPage() {
     return () => document.body.classList.remove('credentials-print-mode');
   }, [credentials]);
 
+  const normalizedQuery = query.trim().toLocaleLowerCase('en-US');
   const visibleUsers = users.filter((user) => {
+    const searchableText =
+      `${user.displayName} ${user.username}`.toLocaleLowerCase('en-US');
+    if (normalizedQuery && !searchableText.includes(normalizedQuery))
+      return false;
     if (statusFilter === 'active') return user.isActive;
     if (statusFilter === 'inactive') return !user.isActive;
     return true;
@@ -712,16 +732,33 @@ export function AdminUsersPage() {
       });
       setRefreshToken((token) => token + 1);
     } catch (error) {
-      setFormError(errorText(error));
+      if (isUsernameTakenError(error)) {
+        setFieldErrors({ 'create-username': usernameTakenMessage() });
+        setFormError('Choose an available username and try again.');
+        focusInvalidField('create-username');
+      } else {
+        setFormError(errorText(error));
+      }
     } finally {
       setSaving(false);
     }
   }
 
+  function refreshBulkSuggestions(rows: BulkDraft[]) {
+    const suggestions = suggestBulkUsernames(rows, takenUsernames);
+    return rows.map((row) =>
+      row.usernameAuto
+        ? { ...row, username: suggestions[row.rowId] ?? '' }
+        : row
+    );
+  }
+
   function updateBulkRow(rowId: number, next: DraftRoleFields) {
     setBulkRows((rows) =>
-      rows.map((row) =>
-        row.rowId === rowId ? { ...row, ...next, rowId } : row
+      refreshBulkSuggestions(
+        rows.map((row) =>
+          row.rowId === rowId ? { ...row, ...next, rowId } : row
+        )
       )
     );
     setBulkRowErrors((errors) => ({ ...errors, [rowId]: '' }));
@@ -733,6 +770,32 @@ export function AdminUsersPage() {
     setFormError('');
   }
 
+  function updateBulkUsername(
+    rowId: number,
+    username: string,
+    currentSuggestion: string
+  ) {
+    setBulkRows((rows) =>
+      refreshBulkSuggestions(
+        rows.map((row) =>
+          row.rowId === rowId
+            ? {
+                ...row,
+                username,
+                usernameAuto:
+                  !username.trim() ||
+                  normalizeUsername(username) ===
+                    normalizeUsername(currentSuggestion),
+              }
+            : row
+        )
+      )
+    );
+    setBulkRowErrors((errors) => ({ ...errors, [rowId]: '' }));
+    clearFieldError(`bulk-${rowId}-username`);
+    setFormError('');
+  }
+
   function handleBulkImport() {
     const parsed = parseBulkNameImport(bulkImportText);
     if (parsed.errors.length) {
@@ -741,9 +804,10 @@ export function AdminUsersPage() {
     }
     const importedRows: BulkDraft[] = parsed.rows.map((row) => ({
       ...row,
-      username: suggestUsernameFromName(row.displayName, takenUsernames),
+      username: '',
       rowId: nextRowId.current++,
       password: '',
+      usernameAuto: true,
     }));
     setBulkRows((existing) => {
       const nonEmptyRows = existing.filter(
@@ -754,9 +818,9 @@ export function AdminUsersPage() {
           row.voicePart ||
           row.role !== 'member'
       );
-      return nonEmptyRows.length
-        ? [...nonEmptyRows, ...importedRows]
-        : importedRows;
+      return refreshBulkSuggestions(
+        nonEmptyRows.length ? [...nonEmptyRows, ...importedRows] : importedRows
+      );
     });
     setBulkImportError('');
     setBulkRowErrors({});
@@ -766,15 +830,18 @@ export function AdminUsersPage() {
 
   async function handleBulkCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const validation = validateBulkUserDrafts(bulkRows);
+    const validation = validateBulkUserDrafts(bulkRows, takenUsernames);
     setBulkRowErrors(validation.errors);
     const errors: Record<string, string> = {};
     const seenUsernames = new Set<string>();
+    const accountUsernames = new Set(takenUsernames.map(normalizeUsername));
     for (const row of bulkRows) {
       const prefix = `bulk-${row.rowId}`;
       Object.assign(errors, identityFieldErrors(row, prefix));
-      const username = row.username.trim().toLocaleLowerCase();
-      if (username && seenUsernames.has(username)) {
+      const username = normalizeUsername(row.username);
+      if (username && accountUsernames.has(username)) {
+        errors[`${prefix}-username`] = usernameTakenMessage();
+      } else if (username && seenUsernames.has(username)) {
         errors[`${prefix}-username`] = 'This username is repeated in the list.';
       }
       if (username) seenUsernames.add(username);
@@ -813,7 +880,24 @@ export function AdminUsersPage() {
       });
       setRefreshToken((token) => token + 1);
     } catch (error) {
-      setFormError(errorText(error));
+      if (isUsernameTakenError(error)) {
+        const message =
+          'One or more usernames in this batch are already in use. Review and change the usernames, then try again.';
+        const collisionErrors = Object.fromEntries(
+          bulkRows.map((row) => [
+            `bulk-${row.rowId}-username`,
+            'A username in this batch is already in use. Review this username.',
+          ])
+        );
+        setFieldErrors(collisionErrors);
+        setFormError(message);
+        const firstRow = bulkRows[0];
+        focusInvalidField(
+          firstRow ? `bulk-${firstRow.rowId}-username` : 'bulk-add-row'
+        );
+      } else {
+        setFormError(errorText(error));
+      }
     } finally {
       setSaving(false);
     }
@@ -872,7 +956,13 @@ export function AdminUsersPage() {
       });
       setRefreshToken((token) => token + 1);
     } catch (error) {
-      setFormError(errorText(error));
+      if (isUsernameTakenError(error)) {
+        setFieldErrors({ 'edit-username': usernameTakenMessage() });
+        setFormError('Choose an available username and try again.');
+        focusInvalidField('edit-username');
+      } else {
+        setFormError(errorText(error));
+      }
     } finally {
       setSaving(false);
     }
@@ -976,7 +1066,7 @@ export function AdminUsersPage() {
   return (
     <div className="app-page">
       <AppHeader />
-      <main className="admin-users-main">
+      <main className="admin-users-main" id="main-content" tabIndex={-1}>
         <div className="admin-page-heading">
           <div>
             <p className="eyebrow">ADMINISTRATION · ACCESS</p>
@@ -1482,7 +1572,10 @@ export function AdminUsersPage() {
                     <button
                       className="bulk-row__remove"
                       type="button"
+                      id={`bulk-${row.rowId}-remove`}
                       onClick={() => {
+                        const nextRow =
+                          bulkRows[index + 1] ?? bulkRows[index - 1];
                         setBulkRows((rows) =>
                           rows.filter((item) => item.rowId !== row.rowId)
                         );
@@ -1490,6 +1583,17 @@ export function AdminUsersPage() {
                           const next = { ...errors };
                           delete next[row.rowId];
                           return next;
+                        });
+                        window.requestAnimationFrame(() => {
+                          const target = document.getElementById(
+                            nextRow
+                              ? `bulk-${nextRow.rowId}-remove`
+                              : 'bulk-add-row'
+                          );
+                          if (target instanceof HTMLElement) {
+                            target.focus();
+                            target.scrollIntoView({ block: 'nearest' });
+                          }
                         });
                       }}
                       aria-label={`Remove account ${index + 1}`}
@@ -1502,8 +1606,17 @@ export function AdminUsersPage() {
                     prefix={`bulk-${row.rowId}`}
                     suggestUsername
                     takenUsernames={takenUsernames}
+                    suggestedUsernameOverride={bulkSuggestions[row.rowId] ?? ''}
+                    usernameAutoManaged={row.usernameAuto}
                     fieldErrors={fieldErrors}
                     onChange={(next) => updateBulkRow(row.rowId, next)}
+                    onUsernameChange={(username) =>
+                      updateBulkUsername(
+                        row.rowId,
+                        username,
+                        bulkSuggestions[row.rowId] ?? ''
+                      )
+                    }
                   />
                   <PasswordOverrideField
                     id={`bulk-${row.rowId}-password-override`}
