@@ -424,6 +424,75 @@ describe('M1 API security and auth', () => {
     }
   });
 
+  it('atomically limits concurrent attempts for one pair across repository instances', async () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), 'choirscore-concurrent-throttle-')
+    );
+    testDatabaseDirectories.push(directory);
+    const databasePath = join(directory, 'shared.sqlite');
+    const firstRepository = await createRepository(
+      createClient({ url: `file:${databasePath}` })
+    );
+    const secondRepository = await createRepository(
+      createClient({ url: `file:${databasePath}` })
+    );
+    const instances = [
+      new LoginThrottle(firstRepository, () => clock),
+      new LoginThrottle(secondRepository, () => clock),
+    ];
+
+    try {
+      const outcomes = await Promise.all(
+        Array.from({ length: 20 }, (_, index) =>
+          instances[index % instances.length]!.consume(
+            '203.0.113.22',
+            'parallel.user'
+          )
+        )
+      );
+      expect(outcomes.filter(Boolean)).toHaveLength(5);
+      expect(outcomes.filter((allowed) => !allowed)).toHaveLength(15);
+    } finally {
+      firstRepository.close();
+      secondRepository.close();
+    }
+  }, 30_000);
+
+  it('fails after bounded SQLITE_BUSY retries without partially consuming a pair', async () => {
+    const lockClient = createClient({ url: `file:${primaryTestDatabasePath}` });
+    const lock = await lockClient.transaction('write');
+    try {
+      await lock.execute({
+        sql: `INSERT INTO login_throttle
+          (pair_key, window_started_at, attempts, locked_until, expires_at)
+          VALUES (?, ?, 1, 0, ?)`,
+        args: ['test-write-lock', clock, clock + 60_000],
+      });
+      await expect(
+        throttle.consume('203.0.113.23', 'busy.user')
+      ).rejects.toMatchObject({ code: 'SQLITE_BUSY' });
+    } finally {
+      await lock.rollback();
+      lock.close();
+      lockClient.close();
+    }
+
+    const recoveryRepository = await createRepository(
+      createClient({ url: `file:${primaryTestDatabasePath}` })
+    );
+    try {
+      const recoveryThrottle = new LoginThrottle(
+        recoveryRepository,
+        () => clock
+      );
+      expect(await recoveryThrottle.consume('203.0.113.23', 'busy.user')).toBe(
+        true
+      );
+    } finally {
+      recoveryRepository.close();
+    }
+  }, 30_000);
+
   it('allows a new pair when the database already contains 10,000 active pairs', async () => {
     const saturationClient = createClient({
       url: `file:${primaryTestDatabasePath}`,

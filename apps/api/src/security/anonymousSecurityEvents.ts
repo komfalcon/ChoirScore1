@@ -49,6 +49,7 @@ export class AnonymousSecurityEvents {
       bucket = { count: 1, emitAfter: now + this.intervalMs };
       this.buckets.set(reason, bucket);
       this.emit(reason, bucket.count);
+      bucket.count = 0;
       return;
     }
 

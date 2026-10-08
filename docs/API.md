@@ -109,7 +109,7 @@ Errors use `{ "error": { "code": string, "message": string } }`.
 - [x] Cost-12 bcrypt, password byte limit preventing silent truncation, minimum 8-character chosen passwords and one-time readable generated credentials.
 - [x] Secure 7-day HttpOnly/SameSite=Lax cookie, active-user lookup per authenticated request.
 - [x] Forced-change gate allows only change-password and logout; `/auth/me` is explicitly blocked.
-- [x] Login throttle threshold, lockout and recovery, shared repository/restart persistence, and safe behavior with 10,000 existing pairs are tested.
+- [x] Login throttle threshold, lockout and recovery, concurrent attempts across repository instances, bounded `SQLITE_BUSY` retry/exhaustion behavior, restart persistence, and safe behavior with 10,000 existing pairs are tested.
 - [x] Exact CORS allowlist, Helmet, CSRF header and request-size limits are route-tested.
 - [x] Successful admin actions and authenticated admin mutation attempts create redacted audit rows; unauthenticated denials create none and use bounded, rate-limited, redacted aggregate telemetry.
 - [x] Deactivation immediately blocks the next authenticated request.

@@ -75,6 +75,19 @@ type DatabaseTransaction = Parameters<
 >[0];
 type QuerySession = Database | DatabaseTransaction;
 
+const LOGIN_THROTTLE_BUSY_RETRIES = 12;
+
+function isDatabaseBusy(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    error.code === 'SQLITE_BUSY'
+  );
+}
+
+let loginThrottleWriteQueue = Promise.resolve();
+
 function repositoryOperations(session: QuerySession): RepositoryTransaction {
   return {
     async findUserById(id) {
@@ -179,14 +192,24 @@ class DrizzleApiRepository implements ApiRepository {
     maxAttempts: number,
     lockoutMs: number
   ) {
-    const transaction = await this.client.transaction('write');
+    const previousWrite = loginThrottleWriteQueue;
+    let releaseWrite!: () => void;
+    loginThrottleWriteQueue = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    await previousWrite;
+
     try {
-      await transaction.execute({
-        sql: 'DELETE FROM login_throttle WHERE expires_at <= ?',
-        args: [now],
-      });
-      const result = await transaction.execute({
-        sql: `INSERT INTO login_throttle
+      for (let retry = 0; ; retry += 1) {
+        let transaction: Awaited<ReturnType<Client['transaction']>> | undefined;
+        try {
+          transaction = await this.client.transaction('write');
+          await transaction.execute({
+            sql: 'DELETE FROM login_throttle WHERE expires_at <= ?',
+            args: [now],
+          });
+          const result = await transaction.execute({
+            sql: `INSERT INTO login_throttle
           (pair_key, window_started_at, attempts, locked_until, expires_at)
           VALUES (?, ?, 1, 0, ?)
           ON CONFLICT(pair_key) DO UPDATE SET
@@ -232,29 +255,51 @@ class DrizzleApiRepository implements ApiRepository {
               ELSE excluded.window_started_at + ?
             END
           RETURNING locked_until`,
-        args: [
-          pairKey,
-          now,
-          now + windowMs,
-          windowMs,
-          windowMs,
-          maxAttempts,
-          windowMs,
-          maxAttempts,
-          lockoutMs,
-          windowMs,
-          maxAttempts,
-          windowMs,
-          lockoutMs,
-        ],
-      });
-      await transaction.commit();
-      return Number(result.rows[0]?.locked_until ?? 0) <= now;
-    } catch (error) {
-      await transaction.rollback();
-      throw error;
+            args: [
+              pairKey,
+              now,
+              now + windowMs,
+              windowMs,
+              windowMs,
+              maxAttempts,
+              windowMs,
+              maxAttempts,
+              lockoutMs,
+              windowMs,
+              maxAttempts,
+              windowMs,
+              lockoutMs,
+            ],
+          });
+          await transaction.commit();
+          return Number(result.rows[0]?.locked_until ?? 0) <= now;
+        } catch (error) {
+          if (transaction) {
+            try {
+              await transaction.rollback();
+            } catch {
+              // Preserve the original error when rollback also fails.
+            }
+          }
+          if (!isDatabaseBusy(error) || retry >= LOGIN_THROTTLE_BUSY_RETRIES) {
+            throw error;
+          }
+          await new Promise((resolve) =>
+            setTimeout(
+              resolve,
+              Math.min(10 * 2 ** retry, 250) + Math.floor(Math.random() * 10)
+            )
+          );
+        } finally {
+          try {
+            transaction?.close();
+          } catch {
+            // Preserve retry behavior after busy errors during commit or rollback.
+          }
+        }
+      }
     } finally {
-      transaction.close();
+      releaseWrite();
     }
   }
 
