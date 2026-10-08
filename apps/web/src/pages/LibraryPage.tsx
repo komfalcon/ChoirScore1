@@ -76,12 +76,12 @@ export function LibraryWorkspace() {
         <h2 id="library-empty-title">Your scores will find their place here</h2>
         <p className="library-empty__copy">
           The responsive library layout is ready. Score cards, search,
-          visibility filters, and imports will be connected after the shared
-          score summary and API contract are agreed.
+          visibility filters, and imports will be connected after the score API
+          handlers are integrated and reviewed.
         </p>
         <p className="library-contract-note" id="library-contract-note">
           Score data is not connected yet; these controls are intentionally
-          inactive until the M2 contract is finalized.
+          inactive until the M2 API handlers are available.
         </p>
       </section>
     </main>

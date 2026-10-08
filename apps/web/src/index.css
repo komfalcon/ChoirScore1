@@ -2846,3 +2846,121 @@ a:focus-visible {
     transition: none;
   }
 }
+
+/* Contract-backed M2 data-state components (kept separate until API handlers land). */
+.score-data-state {
+  margin: 1rem 0;
+  padding: 1.2rem 1.35rem;
+  border: 1px solid #dfe5dc;
+  border-radius: 1rem;
+  background: rgb(255 255 255 / 92%);
+  color: #42564a;
+  line-height: 1.6;
+}
+.score-data-state h2 {
+  margin: 0 0 0.35rem;
+  color: var(--ink);
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 1.25rem;
+  font-weight: 500;
+}
+.score-data-state p {
+  margin: 0;
+}
+.score-card-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr));
+  gap: 1rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.score-card {
+  height: 100%;
+  padding: 1.25rem;
+  border: 1px solid #dfe5dc;
+  border-radius: 1rem;
+  background: rgb(255 255 255 / 92%);
+  box-shadow: 0 12px 30px rgb(34 54 44 / 5%);
+}
+.score-card__heading,
+.score-detail-summary__heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.score-card h2,
+.score-detail-summary h2 {
+  margin: 0;
+  color: var(--ink);
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: 1.4rem;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+}
+.score-card__visibility,
+.score-detail-summary__version {
+  flex: 0 0 auto;
+  color: #53685a;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+.score-card__composer,
+.score-card__parts,
+.score-card__meta,
+.score-detail-summary__heading p {
+  margin: 0.55rem 0 0;
+  color: #53645b;
+  font-size: 0.86rem;
+  line-height: 1.55;
+}
+.score-card__meta {
+  color: #718077;
+  font-size: 0.77rem;
+}
+.score-detail-summary {
+  padding: clamp(1.2rem, 4vw, 2rem);
+  border: 1px solid #dfe5dc;
+  border-radius: 1.15rem;
+  background: #fff;
+}
+.score-detail-summary__heading .eyebrow {
+  margin: 0 0 0.45rem;
+}
+.score-detail-summary__version {
+  padding-top: 0.3rem;
+}
+.score-detail-summary__parts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 1.2rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+.score-detail-summary__parts li {
+  padding: 0.4rem 0.7rem;
+  border: 1px solid #dce6dc;
+  border-radius: 999px;
+  background: #f7faf5;
+  color: #43594a;
+  font-size: 0.8rem;
+}
+.score-read-only-note {
+  margin: 1rem 0 0;
+  padding: 0.75rem 0.9rem;
+  border-left: 3px solid #8a7440;
+  border-radius: 0.3rem;
+  background: #fbf7ea;
+  color: #5b4d2d;
+  font-size: 0.84rem;
+  line-height: 1.55;
+}
+@media (max-width: 520px) {
+  .score-detail-summary__heading {
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+}

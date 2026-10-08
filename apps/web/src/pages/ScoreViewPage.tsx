@@ -51,16 +51,16 @@ export function StaffViewerWorkspace() {
             </div>
             <h3>Score details will appear here</h3>
             <p>
-              MusicXML loading and score metadata are held until the shared
-              model and score API contract are finalized. No placeholder score
-              is shown in place of real repertoire.
+              MusicXML loading and score metadata are waiting for the M2 score
+              API handlers. No placeholder score is shown in place of real
+              repertoire.
             </p>
           </div>
         </div>
       </section>
 
       <p className="viewer-contract-note">
-        This view is intentionally limited to staff notation structure. Sol-fa,
+        This view is prepared against the shared score contract. Sol-fa,
         playback, editing, and AI remain outside this M2 UI pass.
       </p>
     </main>
