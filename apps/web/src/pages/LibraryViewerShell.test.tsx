@@ -74,7 +74,7 @@ describe('M2 library and staff viewer integration shell', () => {
     expect(html).toContain('Loading scores…');
   });
 
-  it('renders connected score details and title/composer editing without deferred features', () => {
+  it('renders the Sol-fa primary view, staff toggle and title/composer editing', () => {
     const html = renderToStaticMarkup(
       <MemoryRouter>
         <StaffViewerWorkspace
@@ -85,11 +85,13 @@ describe('M2 library and staff viewer integration shell', () => {
     );
 
     expect(html).toContain('<h1>Morning Light</h1>');
-    expect(html).toContain('Notation');
-    expect(html).toContain('Download MusicXML');
+    expect(html).toContain('Tonic Sol-fa');
+    expect(html).toContain('Staff view');
+    expect(html).toContain('Doh is C');
+    expect(html).toContain('Print Sol-fa');
     expect(html).toContain('Edit title &amp; composer');
-    expect(html).toContain('Staff notation for Morning Light');
-    expect(html).not.toContain('Tonic Sol-fa');
+    expect(html).not.toContain('Staff notation for Morning Light');
+    expect(html).not.toContain('Download MusicXML');
     expect(html).not.toContain('Playback');
     expect(html).not.toContain('Edit score');
     expect(html).not.toContain('AI tools');
