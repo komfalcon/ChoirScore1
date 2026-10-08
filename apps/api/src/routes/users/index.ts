@@ -44,6 +44,14 @@ function notFound() {
   return new ApiError(404, 'NOT_FOUND', 'The requested user was not found.');
 }
 
+function lastActiveAdminRequired() {
+  return new ApiError(
+    409,
+    'LAST_ACTIVE_ADMIN_REQUIRED',
+    'At least one active administrator must remain.'
+  );
+}
+
 function assertBodyless(request: Request) {
   if (request.body !== undefined) throw invalidPayload();
 }
@@ -178,9 +186,14 @@ export function createUsersRouter(repository: ApiRepository) {
           role: roleVoice.data.role,
           voicePart: roleVoice.data.voicePart,
         };
-        const result = await tx.updateUser(current.id, patch);
-        if (!result) throw notFound();
-        return toSafeUser(result);
+        const result = await tx.updateUserWithActiveAdminInvariant(
+          current.id,
+          patch
+        );
+        if (result.status === 'not_found') throw notFound();
+        if (result.status === 'last_active_admin')
+          throw lastActiveAdminRequired();
+        return toSafeUser(result.user);
       }
     );
     return res
@@ -246,9 +259,14 @@ export function createUsersRouter(repository: ApiRepository) {
       req.params.id,
       {},
       async (tx) => {
-        const updated = await tx.updateUser(req.params.id, { isActive: false });
-        if (!updated) throw notFound();
-        return toSafeUser(updated);
+        const result = await tx.updateUserWithActiveAdminInvariant(
+          req.params.id,
+          { isActive: false }
+        );
+        if (result.status === 'not_found') throw notFound();
+        if (result.status === 'last_active_admin')
+          throw lastActiveAdminRequired();
+        return toSafeUser(result.user);
       }
     );
     return res.status(200).json(userResponseSchema.parse({ user }));

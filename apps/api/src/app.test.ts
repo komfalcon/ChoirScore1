@@ -672,6 +672,100 @@ describe('M1 admin users, roles and audit', () => {
     expect(changed.body.user.voicePart).toBe('T');
   });
 
+  it('rejects demotion or deactivation of the last active admin with a stable conflict', async () => {
+    const admin = (await repository.findUserByUsername('admin'))!;
+    const { cookie } = await login();
+
+    const demotion = await stateChanging(
+      withCookie(request(app).patch(`/users/${admin.id}`), cookie)
+    ).send({ role: 'member', voicePart: 'S' });
+    expect(demotion.status).toBe(409);
+    expect(demotion.body.error).toEqual({
+      code: 'LAST_ACTIVE_ADMIN_REQUIRED',
+      message: 'At least one active administrator must remain.',
+    });
+    expect(await repository.findUserById(admin.id)).toMatchObject({
+      role: 'admin',
+      isActive: true,
+    });
+
+    const deactivation = await stateChanging(
+      withCookie(request(app).post(`/users/${admin.id}/deactivate`), cookie)
+    );
+    expect(deactivation.status).toBe(409);
+    expect(deactivation.body.error.code).toBe('LAST_ACTIVE_ADMIN_REQUIRED');
+    expect(await repository.findUserById(admin.id)).toMatchObject({
+      role: 'admin',
+      isActive: true,
+    });
+
+    const rejected = (await repository.listAuditEntries()).filter(
+      (entry) => entry.outcome === 'rejected'
+    );
+    expect(rejected.map((entry) => [entry.action, entry.errorCode])).toEqual([
+      ['users.update', 'LAST_ACTIVE_ADMIN_REQUIRED'],
+      ['users.deactivate', 'LAST_ACTIVE_ADMIN_REQUIRED'],
+    ]);
+  });
+
+  it('allows demotion and deactivation while another active admin remains', async () => {
+    const { cookie } = await login();
+    const demotionTarget = await insertUser('second.admin', 'admin', 'none');
+    const deactivationTarget = await insertUser('third.admin', 'admin', 'none');
+
+    const demotion = await stateChanging(
+      withCookie(request(app).patch(`/users/${demotionTarget.id}`), cookie)
+    ).send({ role: 'director' });
+    expect(demotion.status).toBe(200);
+    expect(demotion.body.user.role).toBe('director');
+
+    const deactivation = await stateChanging(
+      withCookie(
+        request(app).post(`/users/${deactivationTarget.id}/deactivate`),
+        cookie
+      )
+    );
+    expect(deactivation.status).toBe(200);
+    expect(deactivation.body.user.isActive).toBe(false);
+    expect(
+      (await repository.listUsers()).filter(
+        (user) => user.role === 'admin' && user.isActive
+      )
+    ).toHaveLength(1);
+  });
+
+  it('serializes competing admin removals across repository instances', async () => {
+    const secondAdmin = await insertUser('concurrent.admin', 'admin', 'none');
+    const secondRepository = await createRepository(
+      createClient({ url: `file:${primaryTestDatabasePath}` })
+    );
+    try {
+      const admin = (await repository.findUserByUsername('admin'))!;
+      const results = await Promise.all([
+        repository.transaction((tx) =>
+          tx.updateUserWithActiveAdminInvariant(admin.id, { role: 'director' })
+        ),
+        secondRepository.transaction((tx) =>
+          tx.updateUserWithActiveAdminInvariant(secondAdmin.id, {
+            isActive: false,
+          })
+        ),
+      ]);
+
+      expect(results.map((result) => result.status).sort()).toEqual([
+        'last_active_admin',
+        'updated',
+      ]);
+      expect(
+        (await repository.listUsers()).filter(
+          (user) => user.role === 'admin' && user.isActive
+        )
+      ).toHaveLength(1);
+    } finally {
+      secondRepository.close();
+    }
+  });
+
   it('audits authenticated rejected admin mutations with only actor, target, action, outcome, and safe error code', async () => {
     const { cookie } = await login();
     const adminId = (await repository.findUserByUsername('admin'))!.id;
