@@ -1,4 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server';
+import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import { ScoreLibraryResults } from './ScoreLibraryResults';
 import {
@@ -22,9 +23,9 @@ describe('ScoreLibraryResults', () => {
         state={{ status: 'ready', response: emptyScoreLibraryResponse }}
       />
     );
-    expect(html).toContain('No scores yet');
+    expect(html).toContain('No scores match your search');
     expect(html).toContain(
-      'Scores available to your account will appear here.'
+      'Try another title, composer, or visibility filter.'
     );
   });
 
@@ -58,11 +59,14 @@ describe('ScoreLibraryResults', () => {
 
   it('renders only score-summary data from the contract when ready', () => {
     const html = renderToStaticMarkup(
-      <ScoreLibraryResults
-        state={{ status: 'ready', response: scoreLibraryResponse }}
-      />
+      <MemoryRouter>
+        <ScoreLibraryResults
+          state={{ status: 'ready', response: scoreLibraryResponse }}
+        />
+      </MemoryRouter>
     );
     expect(html).toContain('Morning Light');
+    expect(html).toContain('href="/score/score-1"');
     expect(html).toContain('Traditional');
     expect(html).toContain('Soprano');
     expect(html).toContain('1 measure · 1 part');

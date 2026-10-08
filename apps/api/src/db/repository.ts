@@ -1,10 +1,30 @@
 import { createClient, type Client } from '@libsql/client';
-import { and, asc, count, eq, like, ne, or, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  inArray,
+  like,
+  lt,
+  ne,
+  or,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 import { drizzle, type LibSQLDatabase } from 'drizzle-orm/libsql';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import * as schema from './schema';
-import { auditLog, settings, users } from './schema';
+import {
+  auditLog,
+  scoreAccess,
+  scoreVersions,
+  scores,
+  settings,
+  users,
+} from './schema';
 import { runMigrations } from './migrate';
 
 export type UserRecord = typeof users.$inferSelect;
@@ -42,6 +62,50 @@ export interface AuditInput {
 }
 
 export type AuditRecord = typeof auditLog.$inferSelect;
+export type ScoreRecord = typeof scores.$inferSelect;
+export type ScoreVersionRecord = typeof scoreVersions.$inferSelect;
+export type ScoreAccessRecord = typeof scoreAccess.$inferSelect;
+
+export interface ScoreRowWithVersion {
+  score: ScoreRecord;
+  version: ScoreVersionRecord;
+  creatorDisplayName: string;
+  hasAccess: boolean;
+  accessCanEdit: boolean;
+}
+
+export interface ScoreListCriteria {
+  userId: string;
+  role: UserRecord['role'];
+  q?: string;
+  mine?: boolean;
+  visibility?: ScoreRecord['visibility'];
+  cursor?: { updatedAt: string; id: string };
+  limit: number;
+}
+
+export type ScoreAccessReplacementResult =
+  | {
+      status: 'updated';
+      users: Array<{ userId: string; displayName: string; canEdit: boolean }>;
+    }
+  | { status: 'not_found' }
+  | { status: 'not_shared' }
+  | { status: 'inactive_recipients' }
+  | { status: 'forbidden' };
+
+export type ScoreMutationResult =
+  | { status: 'updated'; score: ScoreRecord }
+  | { status: 'not_found' }
+  | { status: 'forbidden' };
+export type ScoreCreationResult =
+  { status: 'created' } | { status: 'forbidden' };
+export type ScoreVersionCreationResult =
+  { status: 'created' } | { status: 'not_found' } | { status: 'forbidden' };
+
+export type ScorePatch = Partial<
+  Pick<ScoreRecord, 'title' | 'composer' | 'visibility' | 'updatedAt'>
+>;
 
 export interface RepositoryTransaction {
   findUserById(id: string): Promise<UserRecord | null>;
@@ -74,6 +138,32 @@ export interface ApiRepository extends RepositoryTransaction {
   transaction<T>(work: (tx: RepositoryTransaction) => Promise<T>): Promise<T>;
   listUsers(query?: string): Promise<UserRecord[]>;
   listAuditEntries(): Promise<AuditRecord[]>;
+  listScoreRows(criteria: ScoreListCriteria): Promise<ScoreRowWithVersion[]>;
+  findScoreRow(id: string, userId: string): Promise<ScoreRowWithVersion | null>;
+  createScoreWithVersion(
+    score: ScoreRecord,
+    version: ScoreVersionRecord,
+    actorId: string,
+    audit?: AuditInput
+  ): Promise<ScoreCreationResult>;
+  patchScore(
+    id: string,
+    patch: ScorePatch,
+    actorId: string,
+    audit?: AuditInput
+  ): Promise<ScoreMutationResult>;
+  replaceScoreAccess(
+    scoreId: string,
+    grants: Array<{ userId: string; canEdit: boolean }>,
+    actorId: string,
+    audit?: AuditInput
+  ): Promise<ScoreAccessReplacementResult>;
+  createScoreVersion(
+    version: ScoreVersionRecord,
+    updatedAt: string,
+    actorId: string,
+    audit?: AuditInput
+  ): Promise<ScoreVersionCreationResult>;
   close(): void;
 }
 
@@ -230,6 +320,57 @@ function repositoryOperations(session: QuerySession): RepositoryTransaction {
     async insertAudit(entry) {
       await session.insert(auditLog).values(entry).run();
     },
+  };
+}
+
+interface ScoreWriteAuthorization {
+  score: ScoreRecord;
+  isActive: boolean;
+  canEdit: boolean;
+  canManageAccess: boolean;
+  canChangeVisibility: boolean;
+  canSetChoirVisibility: boolean;
+}
+
+async function scoreWriteAuthorization(
+  session: QuerySession,
+  scoreId: string,
+  actorId: string
+): Promise<ScoreWriteAuthorization | null> {
+  const rows = await session
+    .select({
+      score: scores,
+      actorRole: users.role,
+      actorIsActive: users.isActive,
+      accessCanEdit: sql<number>`COALESCE((
+        SELECT score_access_for_actor.can_edit
+        FROM score_access AS score_access_for_actor
+        WHERE score_access_for_actor.score_id = ${scores.id}
+          AND score_access_for_actor.user_id = ${actorId}
+      ), 0)`,
+    })
+    .from(scores)
+    .innerJoin(users, eq(users.id, actorId))
+    .where(eq(scores.id, scoreId))
+    .limit(1);
+  const row = rows[0];
+  if (!row) return null;
+
+  const isOwner = row.score.createdBy === actorId;
+  const isPrivileged =
+    row.actorRole === 'admin' || row.actorRole === 'director';
+  const isActive = row.actorIsActive;
+  return {
+    score: row.score,
+    isActive,
+    canEdit:
+      isActive &&
+      (isOwner ||
+        isPrivileged ||
+        (row.score.visibility === 'shared' && Number(row.accessCanEdit) === 1)),
+    canManageAccess: isActive && (isOwner || isPrivileged),
+    canChangeVisibility: isActive && (isOwner || isPrivileged),
+    canSetChoirVisibility: isActive && isPrivileged,
   };
 }
 
@@ -417,6 +558,282 @@ class DrizzleApiRepository implements ApiRepository {
       .from(auditLog)
       .orderBy(asc(auditLog.createdAt))
       .all();
+  }
+
+  async listScoreRows(criteria: ScoreListCriteria) {
+    const filters: SQL[] = [];
+    if (criteria.role !== 'admin' && criteria.role !== 'director') {
+      filters.push(
+        or(
+          eq(scores.createdBy, criteria.userId),
+          eq(scores.visibility, 'choir'),
+          and(
+            eq(scores.visibility, 'shared'),
+            sql`EXISTS (
+              SELECT 1 FROM score_access AS score_access_for_viewer
+              WHERE score_access_for_viewer.score_id = ${scores.id}
+                AND score_access_for_viewer.user_id = ${criteria.userId}
+            )`
+          )
+        )!
+      );
+    }
+    if (criteria.q) {
+      filters.push(sql`(
+        instr(lower(${scores.title}), lower(${criteria.q})) > 0
+        OR instr(lower(coalesce(${scores.composer}, '')), lower(${criteria.q})) > 0
+      )`);
+    }
+    if (criteria.mine) filters.push(eq(scores.createdBy, criteria.userId));
+    if (criteria.visibility) {
+      filters.push(eq(scores.visibility, criteria.visibility));
+    }
+    if (criteria.cursor) {
+      filters.push(
+        or(
+          lt(scores.updatedAt, criteria.cursor.updatedAt),
+          and(
+            eq(scores.updatedAt, criteria.cursor.updatedAt),
+            lt(scores.id, criteria.cursor.id)
+          )
+        )!
+      );
+    }
+
+    return this.db
+      .select({
+        score: scores,
+        version: scoreVersions,
+        creatorDisplayName: users.displayName,
+        hasAccess: sql<number>`EXISTS (
+          SELECT 1 FROM score_access AS score_access_for_viewer
+          WHERE score_access_for_viewer.score_id = ${scores.id}
+            AND score_access_for_viewer.user_id = ${criteria.userId}
+        )`,
+        accessCanEdit: sql<number>`COALESCE((
+          SELECT score_access_for_viewer.can_edit
+          FROM score_access AS score_access_for_viewer
+          WHERE score_access_for_viewer.score_id = ${scores.id}
+            AND score_access_for_viewer.user_id = ${criteria.userId}
+        ), 0)`,
+      })
+      .from(scores)
+      .innerJoin(scoreVersions, eq(scores.currentVersionId, scoreVersions.id))
+      .innerJoin(users, eq(scores.createdBy, users.id))
+      .where(and(...filters))
+      .orderBy(desc(scores.updatedAt), desc(scores.id))
+      .limit(criteria.limit)
+      .all()
+      .then((rows) =>
+        rows.map((row) => ({
+          ...row,
+          hasAccess: Number(row.hasAccess) === 1,
+          accessCanEdit: Number(row.accessCanEdit) === 1,
+        }))
+      );
+  }
+
+  async findScoreRow(
+    id: string,
+    userId: string
+  ): Promise<ScoreRowWithVersion | null> {
+    const rows = await this.db
+      .select({
+        score: scores,
+        version: scoreVersions,
+        creatorDisplayName: users.displayName,
+        hasAccess: sql<number>`EXISTS (
+          SELECT 1 FROM score_access AS score_access_for_viewer
+          WHERE score_access_for_viewer.score_id = ${scores.id}
+            AND score_access_for_viewer.user_id = ${userId}
+        )`,
+        accessCanEdit: sql<number>`COALESCE((
+          SELECT score_access_for_viewer.can_edit
+          FROM score_access AS score_access_for_viewer
+          WHERE score_access_for_viewer.score_id = ${scores.id}
+            AND score_access_for_viewer.user_id = ${userId}
+        ), 0)`,
+      })
+      .from(scores)
+      .innerJoin(scoreVersions, eq(scores.currentVersionId, scoreVersions.id))
+      .innerJoin(users, eq(scores.createdBy, users.id))
+      .where(eq(scores.id, id))
+      .limit(1);
+    const row = rows[0];
+    return row
+      ? {
+          ...row,
+          hasAccess: Number(row.hasAccess) === 1,
+          accessCanEdit: Number(row.accessCanEdit) === 1,
+        }
+      : null;
+  }
+
+  async createScoreWithVersion(
+    score: ScoreRecord,
+    version: ScoreVersionRecord,
+    actorId: string,
+    audit?: AuditInput
+  ) {
+    return await this.db.transaction(async (tx) => {
+      const actors = await tx
+        .select({ role: users.role, isActive: users.isActive })
+        .from(users)
+        .where(eq(users.id, actorId))
+        .limit(1);
+      const actor = actors[0];
+      if (
+        !actor ||
+        !actor.isActive ||
+        (score.visibility !== 'private' && actor.role === 'member') ||
+        score.createdBy !== actorId ||
+        version.createdBy !== actorId ||
+        version.scoreId !== score.id
+      ) {
+        return { status: 'forbidden' } as const;
+      }
+      await tx
+        .insert(scores)
+        .values({ ...score, currentVersionId: null })
+        .run();
+      await tx.insert(scoreVersions).values(version).run();
+      await tx
+        .update(scores)
+        .set({ currentVersionId: version.id })
+        .where(eq(scores.id, score.id))
+        .run();
+      if (audit) await tx.insert(auditLog).values(audit).run();
+      return { status: 'created' } as const;
+    });
+  }
+
+  async patchScore(
+    id: string,
+    patch: ScorePatch,
+    actorId: string,
+    audit?: AuditInput
+  ): Promise<ScoreMutationResult> {
+    return this.db.transaction(async (tx) => {
+      const authorization = await scoreWriteAuthorization(tx, id, actorId);
+      if (!authorization) return { status: 'not_found' };
+      if (!authorization.isActive) return { status: 'forbidden' };
+
+      const changesMetadata =
+        patch.title !== undefined || patch.composer !== undefined;
+      const changesVisibility = patch.visibility !== undefined;
+      if (
+        (changesMetadata && !authorization.canEdit) ||
+        (changesVisibility && !authorization.canChangeVisibility) ||
+        (patch.visibility === 'choir' &&
+          !authorization.canSetChoirVisibility) ||
+        (!changesMetadata && !changesVisibility && !authorization.canEdit)
+      ) {
+        return { status: 'forbidden' };
+      }
+
+      const previousVisibility = authorization.score.visibility;
+      const nextVisibility = patch.visibility ?? previousVisibility;
+      await tx.update(scores).set(patch).where(eq(scores.id, id)).run();
+      if (
+        previousVisibility !== nextVisibility &&
+        (previousVisibility === 'shared' || nextVisibility === 'shared')
+      ) {
+        await tx.delete(scoreAccess).where(eq(scoreAccess.scoreId, id)).run();
+      }
+      const updated = await tx
+        .select()
+        .from(scores)
+        .where(eq(scores.id, id))
+        .limit(1);
+      if (!updated[0]) return { status: 'not_found' };
+      if (audit) await tx.insert(auditLog).values(audit).run();
+      return { status: 'updated', score: updated[0] };
+    });
+  }
+
+  async replaceScoreAccess(
+    scoreId: string,
+    grants: Array<{ userId: string; canEdit: boolean }>,
+    actorId: string,
+    audit?: AuditInput
+  ): Promise<ScoreAccessReplacementResult> {
+    return this.db.transaction(async (tx) => {
+      const authorization = await scoreWriteAuthorization(tx, scoreId, actorId);
+      if (!authorization) return { status: 'not_found' };
+      if (!authorization.isActive || !authorization.canManageAccess) {
+        return { status: 'forbidden' };
+      }
+      if (authorization.score.visibility !== 'shared') {
+        return { status: 'not_shared' };
+      }
+
+      const recipientIds = grants.map((grant) => grant.userId);
+      const recipients = recipientIds.length
+        ? await tx
+            .select({ id: users.id, displayName: users.displayName })
+            .from(users)
+            .where(
+              and(inArray(users.id, recipientIds), eq(users.isActive, true))
+            )
+        : [];
+      if (recipients.length !== recipientIds.length) {
+        return { status: 'inactive_recipients' };
+      }
+
+      await tx
+        .delete(scoreAccess)
+        .where(eq(scoreAccess.scoreId, scoreId))
+        .run();
+      if (grants.length) {
+        await tx
+          .insert(scoreAccess)
+          .values(grants.map((grant) => ({ ...grant, scoreId })))
+          .run();
+      }
+      const byId = new Map(
+        recipients.map((recipient) => [recipient.id, recipient])
+      );
+      const usersWithAccess = grants
+        .map((grant) => ({
+          userId: grant.userId,
+          displayName: byId.get(grant.userId)!.displayName,
+          canEdit: grant.canEdit,
+        }))
+        .sort((left, right) =>
+          left.displayName.localeCompare(right.displayName)
+        );
+      if (audit) await tx.insert(auditLog).values(audit).run();
+      return {
+        status: 'updated',
+        users: usersWithAccess,
+      };
+    });
+  }
+
+  async createScoreVersion(
+    version: ScoreVersionRecord,
+    updatedAt: string,
+    actorId: string,
+    audit?: AuditInput
+  ): Promise<ScoreVersionCreationResult> {
+    return this.db.transaction(async (tx) => {
+      const authorization = await scoreWriteAuthorization(
+        tx,
+        version.scoreId,
+        actorId
+      );
+      if (!authorization) return { status: 'not_found' };
+      if (!authorization.canEdit) return { status: 'forbidden' };
+
+      await tx.insert(scoreVersions).values(version).run();
+      await tx
+        .update(scores)
+        .set({ currentVersionId: version.id, updatedAt })
+        .where(eq(scores.id, version.scoreId))
+        .run();
+      if (audit) await tx.insert(auditLog).values(audit).run();
+      return { status: 'created' };
+    });
   }
 
   close() {

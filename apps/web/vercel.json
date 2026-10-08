@@ -1,9 +1,13 @@
 {
-  "rewrites": [
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "routes": [
     {
-      "source": "/api/:path*",
-      "destination": "https://PXXL_API_URL_PLACEHOLDER/:path*"
-    },
+      "src": "/api/(.*)",
+      "dest": "${PXXL_API_URL}/$1",
+      "env": ["PXXL_API_URL"]
+    }
+  ],
+  "rewrites": [
     {
       "source": "/:path*",
       "destination": "/index.html"

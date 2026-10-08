@@ -541,3 +541,27 @@ export type CreateScoreFromModelRequest = z.input<
 export type ParsedCreateScoreFromModelRequest = z.output<
   typeof createScoreFromModelRequestSchema
 >;
+
+/** POST /scores/:id/versions saves a new immutable model version. */
+export const createScoreVersionRequestSchema = z
+  .object({
+    model: scoreModelSchema,
+    note: z.string().trim().max(256).optional(),
+  })
+  .strict();
+export type CreateScoreVersionRequest = z.input<
+  typeof createScoreVersionRequestSchema
+>;
+export type ParsedCreateScoreVersionRequest = z.output<
+  typeof createScoreVersionRequestSchema
+>;
+
+export const createScoreVersionResponseSchema = z
+  .object({
+    score: scoreSummarySchema,
+    versionId: z.string().min(1),
+  })
+  .strict();
+export type CreateScoreVersionResponse = z.infer<
+  typeof createScoreVersionResponseSchema
+>;

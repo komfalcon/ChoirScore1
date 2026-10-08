@@ -47,6 +47,41 @@ function identifyAttempt(req: Request): AdminMutationAuditAttempt | null {
   if (path === '/admin' || path.startsWith('/admin/')) {
     return { action: 'admin.mutation', targetType: 'admin', targetId: null };
   }
+  if (path === '/scores' && method === 'POST') {
+    return { action: 'scores.create', targetType: 'score', targetId: null };
+  }
+  const scoreRoute = /^\/scores\/([^/]+)(?:\/(versions|access))?$/.exec(path);
+  if (scoreRoute) {
+    const [, scoreId, operation] = scoreRoute;
+    if (method === 'PATCH' && !operation) {
+      return {
+        action: 'scores.update',
+        targetType: 'score',
+        targetId: scoreId!,
+      };
+    }
+    if (method === 'POST' && operation === 'versions') {
+      return {
+        action: 'scores.version.create',
+        targetType: 'score',
+        targetId: scoreId!,
+      };
+    }
+    if (method === 'PUT' && operation === 'access') {
+      return {
+        action: 'scores.access.update',
+        targetType: 'score',
+        targetId: scoreId!,
+      };
+    }
+  }
+  if (path === '/scores' || path.startsWith('/scores/')) {
+    return {
+      action: 'scores.mutation',
+      targetType: 'score',
+      targetId: path.split('/')[2] || null,
+    };
+  }
   if (path === '/users' || path.startsWith('/users/')) {
     return { action: 'users.mutation', targetType: 'users', targetId: null };
   }
@@ -64,16 +99,24 @@ export function adminMutationAuditMiddleware(
     if (!attempt) return next();
 
     const request = req as RequestWithContext;
-    request.adminMutationAuditAttempt = attempt;
+    const isScoreMutation = attempt.targetType === 'score';
+    if (!isScoreMutation) request.adminMutationAuditAttempt = attempt;
     const sessionToken = request.cookies?.[SESSION_COOKIE] as unknown;
     const claims = verifySessionToken(sessionToken, config.jwtSecret);
+    let actor: Awaited<ReturnType<ApiRepository['findUserById']>> = null;
     if (claims) {
       try {
-        const actor = await repository.findUserById(claims.userId);
-        if (actor?.isActive) request.adminMutationActorId = actor.id;
+        actor = await repository.findUserById(claims.userId);
       } catch {
         // Attribution is best effort; the normal auth middleware remains authoritative.
       }
+    }
+    if (isScoreMutation) {
+      if (!actor?.isActive || actor.role !== 'admin') return next();
+      request.adminMutationAuditAttempt = attempt;
+      request.adminMutationActorId = actor.id;
+    } else if (actor?.isActive) {
+      request.adminMutationActorId = actor.id;
     }
     res.locals.recordAdminMutationFailure = async (
       status: number,
