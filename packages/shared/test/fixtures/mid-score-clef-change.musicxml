@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="4.0">
+  <work><work-title>Mid-score clef regression</work-title></work>
+  <part-list><score-part id="voice-x"><part-name>Voice</part-name></score-part></part-list>
+  <part id="voice-x">
+    <measure number="1">
+      <attributes><divisions>1</divisions><clef><sign>G</sign><line>2</line></clef></attributes>
+      <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note>
+      <attributes><clef><sign>F</sign><line>4</line></clef></attributes>
+      <note><pitch><step>C</step><octave>3</octave></pitch><duration>1</duration></note>
+    </measure>
+  </part>
+</score-partwise>

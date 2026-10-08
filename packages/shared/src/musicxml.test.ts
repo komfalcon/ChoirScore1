@@ -11,6 +11,8 @@ import {
 } from './musicxml.js';
 import {
   scoreContentWriteErrorResponseSchema,
+  scoreDetailSchema,
+  scoreImportResultSchema,
   scorePartSummariesFromModel,
   scoreSummarySchema,
   type ScoreImportWarningCode,
@@ -19,6 +21,17 @@ import { scoreModelSchema } from './scoreModel.js';
 
 const fixture = readFileSync(
   new URL('../test/fixtures/musescore-4.7.5-satb.musicxml', import.meta.url),
+  'utf8'
+);
+const midScoreClefChangeFixture = readFileSync(
+  new URL('../test/fixtures/mid-score-clef-change.musicxml', import.meta.url),
+  'utf8'
+);
+const additionalTempoMarkingFixture = readFileSync(
+  new URL(
+    '../test/fixtures/additional-tempo-marking.musicxml',
+    import.meta.url
+  ),
   'utf8'
 );
 
@@ -96,6 +109,28 @@ function expectOpaqueReadOnly(
     canEditContent: false,
     preservation: result.preservation,
   });
+  const importResponse = scoreImportResultSchema.parse({
+    score: summary,
+    versionId: 'version-1',
+    warnings: result.warnings,
+  });
+  expect(importResponse.warnings).toContainEqual(
+    expect.objectContaining({ code: warningCode })
+  );
+  const { preservation: _sourcePreservation, ...wireModelInput } = result.model;
+  const detail = scoreDetailSchema.parse({
+    ...summary,
+    currentVersionId: 'version-1',
+    version: {
+      id: 'version-1',
+      note: null,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      createdBy: { id: 'user-1', displayName: 'Test User' },
+    },
+    model: scoreModelSchema.parse(wireModelInput),
+    musicXml: xml,
+  });
+  expect(detail).toMatchObject({ canEditContent: false, musicXml: xml });
   expect(result.model.preservation?.requiresSourcePreservation).toBe(true);
   expect(result.model.preservation?.sourceXml).toBe(xml);
   expect(modelToMusicXml(result.model)).toBe(xml);
@@ -322,6 +357,42 @@ describe('MusicXML converters', () => {
       expect.objectContaining({ code: 'UNSUPPORTED_TEMPO_PRESERVED' })
     );
     expect(unsupported.preservation.state).toBe('opaque_constructs_preserved');
+  });
+
+  it('preserves mid-score clef changes and rejects editing their lossy model projection', () => {
+    const result = musicXmlToModel(midScoreClefChangeFixture);
+    expect(result.model.parts[0]?.clef).toBe('treble');
+    expect(result.warnings).toContainEqual({
+      code: 'MID_SCORE_CLEF_CHANGE_PRESERVED',
+      message:
+        'Mid-score clef changes are not represented over time; the original XML is preserved.',
+      partId: 'voice-x',
+      measure: 1,
+      path: '/score-partwise/part/measure/attributes/clef',
+    });
+    expectOpaqueReadOnly(
+      midScoreClefChangeFixture,
+      result,
+      'MID_SCORE_CLEF_CHANGE_PRESERVED'
+    );
+  });
+
+  it('preserves additional tempo directions after the first valid tempo', () => {
+    const result = musicXmlToModel(additionalTempoMarkingFixture);
+    expect(result.model.tempo).toBe(120);
+    expect(result.warnings).toContainEqual({
+      code: 'ADDITIONAL_TEMPO_MARKING_PRESERVED',
+      message:
+        'Additional tempo markings are not represented in the shared model; the original XML is preserved.',
+      partId: 'voice-x',
+      measure: 1,
+      path: '/score-partwise/part/measure/direction',
+    });
+    expectOpaqueReadOnly(
+      additionalTempoMarkingFixture,
+      result,
+      'ADDITIONAL_TEMPO_MARKING_PRESERVED'
+    );
   });
 
   it('marks a G clef with octave-change 1 read-only instead of exporting ordinary treble', () => {

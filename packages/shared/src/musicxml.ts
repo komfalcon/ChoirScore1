@@ -402,6 +402,16 @@ function parseClef(
   return 'treble';
 }
 
+function clefSourceSignature(node: OrderedNode): string {
+  const sign = childText(node, 'sign')?.trim().toUpperCase() ?? '';
+  const lineText = childText(node, 'line')?.trim();
+  const octaveChangeText = childText(node, 'clef-octave-change')?.trim();
+  const line = parseInteger(lineText) ?? lineText ?? '';
+  const octaveChange = parseInteger(octaveChangeText) ?? octaveChangeText ?? '';
+  const staffNumber = parseInteger(attribute(node, 'number')) ?? 1;
+  return JSON.stringify([sign, line, octaveChange, staffNumber]);
+}
+
 function parseNote(
   node: OrderedNode,
   divisions: number,
@@ -589,9 +599,13 @@ function readKeyAndTime(
 }
 
 function parseTempo(root: OrderedNode, warnings: ScoreImportWarning[]): number {
+  let firstTempo: number | undefined;
+  let warnedAdditionalTempo = false;
   for (const part of children(root, 'part')) {
+    const partId = attribute(part, 'id');
     for (const measure of children(part, 'measure')) {
       for (const direction of children(measure, 'direction')) {
+        let directionTempo: number | undefined;
         const sound = firstChild(direction, 'sound');
         const soundTempoText = attribute(sound, 'tempo')?.trim();
         if (soundTempoText !== undefined) {
@@ -601,72 +615,97 @@ function parseTempo(root: OrderedNode, warnings: ScoreImportWarning[]): number {
             soundTempo >= 20 &&
             soundTempo <= 300
           ) {
-            return soundTempo;
+            directionTempo = soundTempo;
+          } else {
+            issue(
+              warnings,
+              'UNSUPPORTED_TEMPO_PRESERVED',
+              'Sound tempo is not an integer from 20 to 300 BPM; the source is preserved and 90 BPM is used in the model when no supported tempo is available.',
+              {
+                partId,
+                path: '/score-partwise/part/measure/direction/sound/@tempo',
+              }
+            );
           }
+        }
+
+        if (directionTempo === undefined) {
+          const metronome = firstChild(
+            firstChild(direction, 'direction-type'),
+            'metronome'
+          );
+          const perMinuteText = childText(metronome, 'per-minute')?.trim();
+          if (perMinuteText === undefined) continue;
+
+          const beatUnit = childText(metronome, 'beat-unit')
+            ?.trim()
+            .toLowerCase();
+          const quarterUnitsByBeatUnit: Record<string, number> = {
+            longa: 16,
+            breve: 8,
+            whole: 4,
+            half: 2,
+            quarter: 1,
+            eighth: 0.5,
+            '16th': 0.25,
+            '32nd': 0.125,
+            '64th': 0.0625,
+            '128th': 0.03125,
+            '256th': 0.015625,
+            '512th': 0.0078125,
+            '1024th': 0.00390625,
+          };
+          const baseQuarterUnits = beatUnit
+            ? quarterUnitsByBeatUnit[beatUnit]
+            : undefined;
+          const dots = children(metronome, 'beat-unit-dot').length;
+          const dotFactor = dots === 0 ? 1 : 2 - 1 / 2 ** dots;
+          const perMinute = Number(perMinuteText);
+          const quarterTempo =
+            baseQuarterUnits === undefined
+              ? Number.NaN
+              : perMinute * baseQuarterUnits * dotFactor;
+          const roundedTempo = Math.round(quarterTempo);
+          if (
+            Number.isFinite(quarterTempo) &&
+            Math.abs(quarterTempo - roundedTempo) < 1e-8 &&
+            roundedTempo >= 20 &&
+            roundedTempo <= 300
+          ) {
+            directionTempo = roundedTempo;
+          } else {
+            issue(
+              warnings,
+              'UNSUPPORTED_TEMPO_PRESERVED',
+              'Metronome beat-unit/per-minute cannot be represented as an integer from 20 to 300 quarter-note BPM; the source is preserved and 90 BPM is used in the model when no supported tempo is available.',
+              {
+                partId,
+                path: '/score-partwise/part/measure/direction/direction-type/metronome',
+              }
+            );
+          }
+        }
+
+        if (directionTempo === undefined) continue;
+        if (firstTempo === undefined) {
+          firstTempo = directionTempo;
+        } else if (!warnedAdditionalTempo) {
           issue(
             warnings,
-            'UNSUPPORTED_TEMPO_PRESERVED',
-            'Sound tempo is not an integer from 20 to 300 BPM; the source is preserved and 90 BPM is used in the model.',
-            { path: '/score-partwise/part/measure/direction/sound/@tempo' }
+            'ADDITIONAL_TEMPO_MARKING_PRESERVED',
+            'Additional tempo markings are not represented in the shared model; the original XML is preserved.',
+            {
+              partId,
+              measure: parseInteger(attribute(measure, 'number')),
+              path: '/score-partwise/part/measure/direction',
+            }
           );
+          warnedAdditionalTempo = true;
         }
-
-        const metronome = firstChild(
-          firstChild(direction, 'direction-type'),
-          'metronome'
-        );
-        const perMinuteText = childText(metronome, 'per-minute')?.trim();
-        if (perMinuteText === undefined) continue;
-
-        const beatUnit = childText(metronome, 'beat-unit')
-          ?.trim()
-          .toLowerCase();
-        const quarterUnitsByBeatUnit: Record<string, number> = {
-          longa: 16,
-          breve: 8,
-          whole: 4,
-          half: 2,
-          quarter: 1,
-          eighth: 0.5,
-          '16th': 0.25,
-          '32nd': 0.125,
-          '64th': 0.0625,
-          '128th': 0.03125,
-          '256th': 0.015625,
-          '512th': 0.0078125,
-          '1024th': 0.00390625,
-        };
-        const baseQuarterUnits = beatUnit
-          ? quarterUnitsByBeatUnit[beatUnit]
-          : undefined;
-        const dots = children(metronome, 'beat-unit-dot').length;
-        const dotFactor = dots === 0 ? 1 : 2 - 1 / 2 ** dots;
-        const perMinute = Number(perMinuteText);
-        const quarterTempo =
-          baseQuarterUnits === undefined
-            ? Number.NaN
-            : perMinute * baseQuarterUnits * dotFactor;
-        const roundedTempo = Math.round(quarterTempo);
-        if (
-          Number.isFinite(quarterTempo) &&
-          Math.abs(quarterTempo - roundedTempo) < 1e-8 &&
-          roundedTempo >= 20 &&
-          roundedTempo <= 300
-        ) {
-          return roundedTempo;
-        }
-        issue(
-          warnings,
-          'UNSUPPORTED_TEMPO_PRESERVED',
-          'Metronome beat-unit/per-minute cannot be represented as an integer from 20 to 300 quarter-note BPM; the source is preserved and 90 BPM is used in the model.',
-          {
-            path: '/score-partwise/part/measure/direction/direction-type/metronome',
-          }
-        );
       }
     }
   }
-  return 90;
+  return firstTempo ?? 90;
 }
 
 function buildPart(
@@ -679,7 +718,9 @@ function buildPart(
   const partName = partNames.get(partId)?.trim();
   let divisions = 1;
   let clef: ScoreClef = 'treble';
-  let sawClef = false;
+  let activeClefSignature: string | undefined;
+  let sawNote = false;
+  let warnedMidScoreClefChange = false;
   const measures = children(part, 'measure').map((measure, measureIndex) => {
     const measureNumber =
       parseInteger(attribute(measure, 'number')) ?? measureIndex + 1;
@@ -693,11 +734,40 @@ function buildPart(
       if (name === 'attributes') {
         const nextDivisions = numericText(event, 'divisions');
         if (nextDivisions && nextDivisions > 0) divisions = nextDivisions;
-        if (!sawClef) {
-          const clefNode = firstChild(event, 'clef');
-          if (clefNode) {
-            clef = parseClef(clefNode, warnings, partId);
-            sawClef = true;
+        for (const clefNode of children(event, 'clef')) {
+          const signature = clefSourceSignature(clefNode);
+          const parsedClef = parseClef(clefNode, warnings, partId);
+          if (activeClefSignature === undefined) {
+            activeClefSignature = signature;
+            clef = parsedClef;
+            if (sawNote && !warnedMidScoreClefChange) {
+              issue(
+                warnings,
+                'MID_SCORE_CLEF_CHANGE_PRESERVED',
+                'A clef first introduced after musical content is not represented over time; the original XML is preserved.',
+                {
+                  partId,
+                  measure: measureNumber,
+                  path: '/score-partwise/part/measure/attributes/clef',
+                }
+              );
+              warnedMidScoreClefChange = true;
+            }
+          } else if (signature !== activeClefSignature) {
+            if (!warnedMidScoreClefChange) {
+              issue(
+                warnings,
+                'MID_SCORE_CLEF_CHANGE_PRESERVED',
+                'Mid-score clef changes are not represented over time; the original XML is preserved.',
+                {
+                  partId,
+                  measure: measureNumber,
+                  path: '/score-partwise/part/measure/attributes/clef',
+                }
+              );
+              warnedMidScoreClefChange = true;
+            }
+            activeClefSignature = signature;
           }
         }
       } else if (name === 'backup' || name === 'forward') {
@@ -707,6 +777,7 @@ function buildPart(
           name === 'backup' ? Math.max(0, cursor - amount) : cursor + amount;
         previousOnset = cursor;
       } else if (name === 'note') {
+        sawNote = true;
         const parsed = parseNote(
           event,
           divisions,
