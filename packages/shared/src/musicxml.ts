@@ -384,15 +384,20 @@ function parseClef(
 ): ScoreClef {
   const sign = childText(node, 'sign')?.trim().toUpperCase();
   const line = parseInteger(childText(node, 'line'));
-  const octaveChange = parseInteger(childText(node, 'clef-octave-change'));
+  const octaveChangeText = childText(node, 'clef-octave-change')?.trim();
+  const octaveChange = parseInteger(octaveChangeText);
+  const hasNoEffectiveOctaveChange =
+    octaveChangeText === undefined || octaveChange === 0;
   if (sign === 'G' && line === 2 && octaveChange === -1) return 'treble8vb';
-  if (sign === 'G' && line === 2) return 'treble';
-  if (sign === 'F' && line === 4) return 'bass';
+  if (sign === 'G' && line === 2 && hasNoEffectiveOctaveChange) {
+    return 'treble';
+  }
+  if (sign === 'F' && line === 4 && hasNoEffectiveOctaveChange) return 'bass';
   issue(
     warnings,
     'UNSUPPORTED_CLEF_PRESERVED',
-    `Clef ${sign ?? 'unknown'}${line ? ` on line ${line}` : ''} is not represented; the original XML is preserved and treble is used in the model.`,
-    { partId }
+    `Clef ${sign ?? 'unknown'}${line ? ` on line ${line}` : ''}${octaveChangeText === undefined ? '' : ` with octave change ${octaveChangeText}`} is not represented; the original XML is preserved and treble is used in the model.`,
+    { partId, path: '/score-partwise/part/measure/attributes/clef' }
   );
   return 'treble';
 }
@@ -884,16 +889,46 @@ export function musicXmlToModel(xml: string): MusicXmlConversionResult {
 
   const work = firstChild(root, 'work');
   const identification = firstChild(root, 'identification');
-  const title =
-    childText(work, 'work-title')?.trim() ||
-    childText(root, 'movement-title')?.trim() ||
-    'Untitled score';
-  let composer: string | null = null;
-  for (const creator of children(identification, 'creator')) {
-    if (attribute(creator, 'type')?.toLowerCase() === 'composer') {
-      composer = rawText(creator)?.trim() || null;
-      break;
-    }
+  const workTitles = children(work, 'work-title')
+    .map((node) => rawText(node)?.trim() ?? '')
+    .filter(Boolean);
+  const movementTitles = children(root, 'movement-title')
+    .map((node) => rawText(node)?.trim() ?? '')
+    .filter(Boolean);
+  const title = workTitles[0] ?? movementTitles[0] ?? 'Untitled score';
+  const hasAdditionalTitle =
+    workTitles.length > 1 ||
+    movementTitles.length > (workTitles.length > 0 ? 0 : 1);
+  if (hasAdditionalTitle) {
+    issue(
+      warnings,
+      'ADDITIONAL_TITLE_PRESERVED',
+      'Additional work or movement title values are not represented separately; the original XML is preserved.',
+      {
+        path:
+          workTitles.length > 1
+            ? '/score-partwise/work/work-title'
+            : '/score-partwise/movement-title',
+      }
+    );
+  }
+
+  const creatorNodes = children(identification, 'creator');
+  const composerNode = creatorNodes.find(
+    (creator) =>
+      attribute(creator, 'type')?.toLowerCase() === 'composer' &&
+      Boolean(rawText(creator)?.trim())
+  );
+  const composer = rawText(composerNode)?.trim() || null;
+  for (const creator of creatorNodes) {
+    if (creator === composerNode || !rawText(creator)?.trim()) continue;
+    const creatorType = attribute(creator, 'type')?.trim() || 'unspecified';
+    issue(
+      warnings,
+      'UNMODELED_CREATOR_CREDIT_PRESERVED',
+      `Creator credit type ${creatorType} is not represented separately; the original XML is preserved.`,
+      { path: '/score-partwise/identification/creator' }
+    );
   }
   const settings = readKeyAndTime(root, warnings);
   const modelWithoutPreservation = scoreModelSchema.safeParse({

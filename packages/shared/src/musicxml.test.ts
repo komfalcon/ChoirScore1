@@ -6,9 +6,15 @@ import {
   MusicXmlConversionError,
   modelToMusicXml,
   musicXmlToModel,
+  type MusicXmlConversionResult,
   type MusicXmlConversionErrorCode,
 } from './musicxml.js';
-import { scorePartSummariesFromModel } from './scoreContracts.js';
+import {
+  scoreContentWriteErrorResponseSchema,
+  scorePartSummariesFromModel,
+  scoreSummarySchema,
+  type ScoreImportWarningCode,
+} from './scoreContracts.js';
 import { scoreModelSchema } from './scoreModel.js';
 
 const fixture = readFileSync(
@@ -42,6 +48,74 @@ function expectExportError(
     return;
   }
   throw new Error(`Expected MusicXmlConversionError with code ${code}.`);
+}
+
+function expectOpaqueReadOnly(
+  xml: string,
+  result: MusicXmlConversionResult,
+  warningCode: ScoreImportWarningCode
+): void {
+  expect(result.warnings).toContainEqual(
+    expect.objectContaining({ code: warningCode })
+  );
+  expect(result.preservation).toMatchObject({
+    state: 'opaque_constructs_preserved',
+    readOnlyReason: 'UNSUPPORTED_MUSICXML_CONSTRUCTS_PRESERVED',
+  });
+  expect(result.preservation.preservedConstructs).toContainEqual(
+    expect.objectContaining({ code: warningCode })
+  );
+  const partIds = result.model.parts.map((part) => part.id);
+  const summary = scoreSummarySchema.parse({
+    id: 'opaque-import',
+    title: result.model.title,
+    composer: result.model.composer,
+    key: result.model.key,
+    time: result.model.time,
+    partIds,
+    parts: scorePartSummariesFromModel({ parts: result.model.parts }),
+    partCount: partIds.length,
+    measureCount: Math.max(
+      ...result.model.parts.map((part) => part.measures.length)
+    ),
+    visibility: 'private',
+    creator: { id: 'user-1', displayName: 'Test User' },
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    isOwner: true,
+    canView: true,
+    canEdit: true,
+    canEditContent: false,
+    canManageAccess: true,
+    canChangeVisibility: true,
+    canSetChoirVisibility: false,
+    preservation: result.preservation,
+  });
+  expect(summary).toMatchObject({
+    canEdit: true,
+    canEditContent: false,
+    preservation: result.preservation,
+  });
+  expect(result.model.preservation?.requiresSourcePreservation).toBe(true);
+  expect(result.model.preservation?.sourceXml).toBe(xml);
+  expect(modelToMusicXml(result.model)).toBe(xml);
+  expectExportError(
+    () =>
+      modelToMusicXml({
+        ...result.model,
+        title: `${result.model.title} edited`,
+      }),
+    'PRESERVATION_CONTEXT_CHANGED'
+  );
+  expect(
+    scoreContentWriteErrorResponseSchema.parse({
+      error: {
+        code: 'SCORE_CONTENT_READ_ONLY',
+        message: 'Opaque MusicXML content is preserved.',
+        preservation: result.preservation,
+      },
+    }).error.code
+  ).toBe('SCORE_CONTENT_READ_ONLY');
 }
 
 function tempoOnlyXml(perMinute: string, beatUnit = 'quarter'): string {
@@ -248,6 +322,64 @@ describe('MusicXML converters', () => {
       expect.objectContaining({ code: 'UNSUPPORTED_TEMPO_PRESERVED' })
     );
     expect(unsupported.preservation.state).toBe('opaque_constructs_preserved');
+  });
+
+  it('marks a G clef with octave-change 1 read-only instead of exporting ordinary treble', () => {
+    const xml = tempoOnlyXml('120').replace(
+      '<divisions>1</divisions>',
+      '<divisions>1</divisions><clef><sign>G</sign><line>2</line><clef-octave-change>1</clef-octave-change></clef>'
+    );
+    const result = musicXmlToModel(xml);
+    expect(result.model.parts[0]?.clef).toBe('treble');
+    expect(result.warnings).toContainEqual(
+      expect.objectContaining({
+        code: 'UNSUPPORTED_CLEF_PRESERVED',
+        path: '/score-partwise/part/measure/attributes/clef',
+      })
+    );
+    expectOpaqueReadOnly(xml, result, 'UNSUPPORTED_CLEF_PRESERVED');
+
+    const bassXml = tempoOnlyXml('120').replace(
+      '<divisions>1</divisions>',
+      '<divisions>1</divisions><clef><sign>F</sign><line>4</line><clef-octave-change>1</clef-octave-change></clef>'
+    );
+    const bassResult = musicXmlToModel(bassXml);
+    expect(bassResult.warnings).toContainEqual(
+      expect.objectContaining({ code: 'UNSUPPORTED_CLEF_PRESERVED' })
+    );
+    expectOpaqueReadOnly(bassXml, bassResult, 'UNSUPPORTED_CLEF_PRESERVED');
+  });
+
+  it('marks work and movement titles read-only when the movement title is not modeled', () => {
+    const xml = tempoOnlyXml('120').replace(
+      '<part-list>',
+      '<work><work-title>Full Work</work-title></work><movement-title>Movement I</movement-title><part-list>'
+    );
+    const result = musicXmlToModel(xml);
+    expect(result.model.title).toBe('Full Work');
+    expect(result.warnings).toContainEqual(
+      expect.objectContaining({
+        code: 'ADDITIONAL_TITLE_PRESERVED',
+        path: '/score-partwise/movement-title',
+      })
+    );
+    expectOpaqueReadOnly(xml, result, 'ADDITIONAL_TITLE_PRESERVED');
+  });
+
+  it('marks non-composer creator credits read-only instead of discarding them', () => {
+    const xml = tempoOnlyXml('120').replace(
+      '<part-list>',
+      '<identification><creator type="composer">Composer Name</creator><creator type="lyricist">Lyricist Name</creator></identification><part-list>'
+    );
+    const result = musicXmlToModel(xml);
+    expect(result.model.composer).toBe('Composer Name');
+    expect(result.warnings).toContainEqual(
+      expect.objectContaining({
+        code: 'UNMODELED_CREATOR_CREDIT_PRESERVED',
+        path: '/score-partwise/identification/creator',
+      })
+    );
+    expectOpaqueReadOnly(xml, result, 'UNMODELED_CREATOR_CREDIT_PRESERVED');
   });
 
   it('warns and marks the source read-only for unsupported attributes such as print-object="no"', () => {
