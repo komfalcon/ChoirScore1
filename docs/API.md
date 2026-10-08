@@ -117,3 +117,11 @@ Errors use `{ "error": { "code": string, "message": string } }`.
 - [x] Successful admin actions and authenticated admin mutation attempts create redacted audit rows; unauthenticated denials create none and use bounded, rate-limited, redacted aggregate telemetry.
 - [x] Deactivation immediately blocks the next authenticated request.
 - [ ] Owner-deferred live Vercel-to-Pxxl check: **pending, not passed**.
+
+## M1 integrated lifecycle acceptance
+
+On 2026-10-08, the API-backed lifecycle passed on integrated `main` at `f185f8f71b4aeb3abc34a10b0a27ca465969df57` using a fresh, disposable file-backed SQLite database. Bootstrap admin creation/login and first-login password change returned `200`; admin member creation returned `201` with forced password change enabled; member login returned `200`; `/auth/me` before changing the password returned `403 PASSWORD_CHANGE_REQUIRED`; password change returned `200`; the member's existing session worked before deactivation (`200`); admin deactivation returned `200` with `isActive=false`; and the first request after deactivation, using that same member cookie, returned `401 UNAUTHENTICATED`. The API suite on this exact SHA passed **31/31 tests**.
+
+This lifecycle run used the create response to obtain the member's initial credentials for login, but did not independently assert the credentials-only-once behavior. That behavior is covered by the exact-main `writes exactly one redacted audit record for every successful admin route action` integration test: create, bulk-create, and reset responses include credentials, while the later normal user-list response omits password hashes and the known credential values; audits and application logs are also checked for secret leakage. Actual credential values are not recorded in this documentation.
+
+The acceptance run used local SQLite and in-process API requests; it did not exercise the browser UI or production deployment. It does not verify cross-process contention or real Turso/Pxxl database locking. The owner-deferred Vercel-to-Pxxl live-host check remains **pending, not passed**.
