@@ -34,6 +34,13 @@ const additionalTempoMarkingFixture = readFileSync(
   ),
   'utf8'
 );
+const singleDirectionMultipleTempoMarkingsFixture = readFileSync(
+  new URL(
+    '../test/fixtures/single-direction-multiple-tempo-markings.musicxml',
+    import.meta.url
+  ),
+  'utf8'
+);
 
 function expectConversionError(
   input: string,
@@ -390,6 +397,24 @@ describe('MusicXML converters', () => {
     });
     expectOpaqueReadOnly(
       additionalTempoMarkingFixture,
+      result,
+      'ADDITIONAL_TEMPO_MARKING_PRESERVED'
+    );
+  });
+
+  it('preserves multiple tempo markings inside a single direction', () => {
+    const result = musicXmlToModel(singleDirectionMultipleTempoMarkingsFixture);
+    expect(result.model.tempo).toBe(120);
+    expect(result.warnings).toContainEqual({
+      code: 'ADDITIONAL_TEMPO_MARKING_PRESERVED',
+      message:
+        'Additional tempo markings are not represented in the shared model; the original XML is preserved.',
+      partId: 'voice-x',
+      measure: 1,
+      path: '/score-partwise/part/measure/direction',
+    });
+    expectOpaqueReadOnly(
+      singleDirectionMultipleTempoMarkingsFixture,
       result,
       'ADDITIONAL_TEMPO_MARKING_PRESERVED'
     );

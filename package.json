@@ -3,14 +3,16 @@
   "private": true,
   "version": "0.0.0",
   "workspaces": [
-    "apps/*",
-    "packages/*"
+    "packages/*",
+    "apps/*"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "dev": "npm run dev --workspace @choirscore/web",
     "lint": "npm run lint --workspaces --if-present",
+    "pretest": "npm run build --workspace @choirscore/shared",
     "test": "npm run test --workspaces --if-present",
+    "pretypecheck": "npm run build --workspace @choirscore/shared",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "format": "prettier --check .",
     "format:write": "prettier --write ."

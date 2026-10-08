@@ -598,6 +598,62 @@ function readKeyAndTime(
   return result ?? { fifths: 0, mode: 'major', beats: 4, beatType: 4 };
 }
 
+function parseMetronomeTempo(
+  metronome: OrderedNode,
+  warnings: ScoreImportWarning[],
+  partId: string | undefined
+): number | undefined {
+  const perMinuteText = childText(metronome, 'per-minute')?.trim();
+  if (perMinuteText === undefined) return undefined;
+
+  const beatUnit = childText(metronome, 'beat-unit')?.trim().toLowerCase();
+  const quarterUnitsByBeatUnit: Record<string, number> = {
+    longa: 16,
+    breve: 8,
+    whole: 4,
+    half: 2,
+    quarter: 1,
+    eighth: 0.5,
+    '16th': 0.25,
+    '32nd': 0.125,
+    '64th': 0.0625,
+    '128th': 0.03125,
+    '256th': 0.015625,
+    '512th': 0.0078125,
+    '1024th': 0.00390625,
+  };
+  const baseQuarterUnits = beatUnit
+    ? quarterUnitsByBeatUnit[beatUnit]
+    : undefined;
+  const dots = children(metronome, 'beat-unit-dot').length;
+  const dotFactor = dots === 0 ? 1 : 2 - 1 / 2 ** dots;
+  const perMinute = Number(perMinuteText);
+  const quarterTempo =
+    baseQuarterUnits === undefined
+      ? Number.NaN
+      : perMinute * baseQuarterUnits * dotFactor;
+  const roundedTempo = Math.round(quarterTempo);
+  if (
+    Number.isFinite(quarterTempo) &&
+    Math.abs(quarterTempo - roundedTempo) < 1e-8 &&
+    roundedTempo >= 20 &&
+    roundedTempo <= 300
+  ) {
+    return roundedTempo;
+  }
+
+  issue(
+    warnings,
+    'UNSUPPORTED_TEMPO_PRESERVED',
+    'Metronome beat-unit/per-minute cannot be represented as an integer from 20 to 300 quarter-note BPM; the source is preserved and 90 BPM is used in the model when no supported tempo is available.',
+    {
+      partId,
+      path: '/score-partwise/part/measure/direction/direction-type/metronome',
+    }
+  );
+  return undefined;
+}
+
 function parseTempo(root: OrderedNode, warnings: ScoreImportWarning[]): number {
   let firstTempo: number | undefined;
   let warnedAdditionalTempo = false;
@@ -605,17 +661,17 @@ function parseTempo(root: OrderedNode, warnings: ScoreImportWarning[]): number {
     const partId = attribute(part, 'id');
     for (const measure of children(part, 'measure')) {
       for (const direction of children(measure, 'direction')) {
-        let directionTempo: number | undefined;
+        let soundTempo: number | undefined;
         const sound = firstChild(direction, 'sound');
         const soundTempoText = attribute(sound, 'tempo')?.trim();
         if (soundTempoText !== undefined) {
-          const soundTempo = Number(soundTempoText);
+          const parsedSoundTempo = Number(soundTempoText);
           if (
-            Number.isInteger(soundTempo) &&
-            soundTempo >= 20 &&
-            soundTempo <= 300
+            Number.isInteger(parsedSoundTempo) &&
+            parsedSoundTempo >= 20 &&
+            parsedSoundTempo <= 300
           ) {
-            directionTempo = soundTempo;
+            soundTempo = parsedSoundTempo;
           } else {
             issue(
               warnings,
@@ -629,78 +685,40 @@ function parseTempo(root: OrderedNode, warnings: ScoreImportWarning[]): number {
           }
         }
 
-        if (directionTempo === undefined) {
-          const metronome = firstChild(
-            firstChild(direction, 'direction-type'),
-            'metronome'
-          );
-          const perMinuteText = childText(metronome, 'per-minute')?.trim();
-          if (perMinuteText === undefined) continue;
-
-          const beatUnit = childText(metronome, 'beat-unit')
-            ?.trim()
-            .toLowerCase();
-          const quarterUnitsByBeatUnit: Record<string, number> = {
-            longa: 16,
-            breve: 8,
-            whole: 4,
-            half: 2,
-            quarter: 1,
-            eighth: 0.5,
-            '16th': 0.25,
-            '32nd': 0.125,
-            '64th': 0.0625,
-            '128th': 0.03125,
-            '256th': 0.015625,
-            '512th': 0.0078125,
-            '1024th': 0.00390625,
-          };
-          const baseQuarterUnits = beatUnit
-            ? quarterUnitsByBeatUnit[beatUnit]
-            : undefined;
-          const dots = children(metronome, 'beat-unit-dot').length;
-          const dotFactor = dots === 0 ? 1 : 2 - 1 / 2 ** dots;
-          const perMinute = Number(perMinuteText);
-          const quarterTempo =
-            baseQuarterUnits === undefined
-              ? Number.NaN
-              : perMinute * baseQuarterUnits * dotFactor;
-          const roundedTempo = Math.round(quarterTempo);
-          if (
-            Number.isFinite(quarterTempo) &&
-            Math.abs(quarterTempo - roundedTempo) < 1e-8 &&
-            roundedTempo >= 20 &&
-            roundedTempo <= 300
-          ) {
-            directionTempo = roundedTempo;
-          } else {
-            issue(
+        const directionTempos = soundTempo === undefined ? [] : [soundTempo];
+        let matchedSoundMetronome = false;
+        for (const directionType of children(direction, 'direction-type')) {
+          for (const metronome of children(directionType, 'metronome')) {
+            const metronomeTempo = parseMetronomeTempo(
+              metronome,
               warnings,
-              'UNSUPPORTED_TEMPO_PRESERVED',
-              'Metronome beat-unit/per-minute cannot be represented as an integer from 20 to 300 quarter-note BPM; the source is preserved and 90 BPM is used in the model when no supported tempo is available.',
-              {
-                partId,
-                path: '/score-partwise/part/measure/direction/direction-type/metronome',
-              }
+              partId
             );
+            if (metronomeTempo === undefined) continue;
+            if (soundTempo === metronomeTempo && !matchedSoundMetronome) {
+              matchedSoundMetronome = true;
+              continue;
+            }
+            directionTempos.push(metronomeTempo);
           }
         }
 
-        if (directionTempo === undefined) continue;
-        if (firstTempo === undefined) {
-          firstTempo = directionTempo;
-        } else if (!warnedAdditionalTempo) {
-          issue(
-            warnings,
-            'ADDITIONAL_TEMPO_MARKING_PRESERVED',
-            'Additional tempo markings are not represented in the shared model; the original XML is preserved.',
-            {
-              partId,
-              measure: parseInteger(attribute(measure, 'number')),
-              path: '/score-partwise/part/measure/direction',
-            }
-          );
-          warnedAdditionalTempo = true;
+        for (const directionTempo of directionTempos) {
+          if (firstTempo === undefined) {
+            firstTempo = directionTempo;
+          } else if (!warnedAdditionalTempo) {
+            issue(
+              warnings,
+              'ADDITIONAL_TEMPO_MARKING_PRESERVED',
+              'Additional tempo markings are not represented in the shared model; the original XML is preserved.',
+              {
+                partId,
+                measure: parseInteger(attribute(measure, 'number')),
+                path: '/score-partwise/part/measure/direction',
+              }
+            );
+            warnedAdditionalTempo = true;
+          }
         }
       }
     }
