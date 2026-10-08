@@ -970,6 +970,14 @@ a:focus-visible {
   gap: 0.3rem;
   white-space: nowrap;
 }
+.last-admin-action-note {
+  flex-basis: 100%;
+  color: #59635d;
+  font-size: 0.68rem;
+  line-height: 1.4;
+  text-align: right;
+  white-space: normal;
+}
 .user-cards {
   display: none;
 }
@@ -1881,6 +1889,9 @@ a:focus-visible {
     justify-content: flex-start;
     padding-top: 0.65rem;
     border-top: 1px solid #edf0eb;
+  }
+  .user-card .last-admin-action-note {
+    text-align: left;
   }
   .login-main {
     grid-template-columns: minmax(0, 1fr);

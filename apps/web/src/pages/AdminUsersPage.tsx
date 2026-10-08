@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useRef,
   useState,
   type KeyboardEvent,
@@ -30,6 +31,13 @@ import type {
 } from '@choirscore/shared';
 import { apiJson, jsonRequest } from '../lib/api';
 import { isUsernameTakenError } from '../lib/apiClient';
+import {
+  getLastActiveAdminFeedback,
+  isDeactivationBlocked,
+  isLastActiveAdmin,
+  isRoleChangeBlocked,
+  LAST_ACTIVE_ADMIN_ERROR_MESSAGE,
+} from '../lib/adminUserSafety';
 import { getBulkUsernameTakenFeedback } from '../lib/bulkUserErrors';
 import { credentialsToCsv } from '../lib/credentialsExport';
 import { focusTrapBoundaryIndex } from '../lib/dialogFocus';
@@ -234,16 +242,18 @@ function Modal({
   );
 }
 
-function RoleAndVoiceFields({
+export function RoleAndVoiceFields({
   draft,
   prefix,
   disabled,
+  lockAdminRole = false,
   fieldErrors = {},
   onChange,
 }: {
   draft: DraftRoleFields;
   prefix: string;
   disabled?: boolean;
+  lockAdminRole?: boolean;
   fieldErrors?: Record<string, string>;
   onChange: (next: DraftRoleFields) => void;
 }) {
@@ -257,8 +267,12 @@ function RoleAndVoiceFields({
           id={`${prefix}-role`}
           value={draft.role}
           disabled={disabled}
+          aria-describedby={
+            lockAdminRole ? `${prefix}-role-lock-help` : undefined
+          }
           onChange={(event) => {
             const role = event.target.value as Role;
+            if (lockAdminRole && role !== 'admin') return;
             onChange({
               ...draft,
               role,
@@ -266,10 +280,19 @@ function RoleAndVoiceFields({
             });
           }}
         >
-          <option value="member">Choir member</option>
-          <option value="director">Director</option>
+          <option value="member" disabled={lockAdminRole}>
+            Choir member
+          </option>
+          <option value="director" disabled={lockAdminRole}>
+            Director
+          </option>
           <option value="admin">Administrator</option>
         </select>
+        {lockAdminRole ? (
+          <span className="field-help" id={`${prefix}-role-lock-help`}>
+            {LAST_ACTIVE_ADMIN_ERROR_MESSAGE}
+          </span>
+        ) : null}
       </div>
       <div className="field">
         <label htmlFor={`${prefix}-voice`}>Voice part</label>
@@ -325,6 +348,7 @@ function FormIdentityFields({
   draft,
   prefix,
   disabled,
+  lockAdminRole = false,
   suggestUsername = false,
   takenUsernames = [],
   suggestedUsernameOverride,
@@ -336,6 +360,7 @@ function FormIdentityFields({
   draft: DraftRoleFields;
   prefix: string;
   disabled?: boolean;
+  lockAdminRole?: boolean;
   suggestUsername?: boolean;
   takenUsernames?: string[];
   suggestedUsernameOverride?: string;
@@ -429,6 +454,7 @@ function FormIdentityFields({
         draft={draft}
         prefix={prefix}
         disabled={disabled}
+        lockAdminRole={lockAdminRole}
         fieldErrors={fieldErrors}
         onChange={onChange}
       />
@@ -478,15 +504,18 @@ function PasswordOverrideField({
   );
 }
 
-function UserActions({
+export function UserActions({
   user,
+  isOnlyActiveAdmin = false,
   onEdit,
   onAction,
 }: {
   user: SafeUser;
+  isOnlyActiveAdmin?: boolean;
   onEdit: () => void;
   onAction: (action: Confirmation['action'], user: SafeUser) => void;
 }) {
+  const restrictionId = useId();
   return (
     <div className="user-actions">
       <button
@@ -510,6 +539,8 @@ function UserActions({
           className="button button--danger-quiet button--small"
           type="button"
           onClick={() => onAction('deactivate', user)}
+          disabled={isOnlyActiveAdmin}
+          aria-describedby={isOnlyActiveAdmin ? restrictionId : undefined}
           aria-label={`Deactivate ${user.displayName}`}
         >
           Deactivate
@@ -524,6 +555,11 @@ function UserActions({
           Reactivate
         </button>
       )}
+      {isOnlyActiveAdmin ? (
+        <span className="last-admin-action-note" id={restrictionId}>
+          {LAST_ACTIVE_ADMIN_ERROR_MESSAGE}
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -897,6 +933,11 @@ export function AdminUsersPage() {
   async function handleEdit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!editUser || !editDraft) return;
+    if (isRoleChangeBlocked(editUser, editDraft.role, users)) {
+      setFieldErrors({});
+      setFormError(LAST_ACTIVE_ADMIN_ERROR_MESSAGE);
+      return;
+    }
     const identityValidation = validateUserIdentity(editDraft, true);
     if (identityValidation) {
       const errors = identityFieldErrors(editDraft, 'edit');
@@ -947,7 +988,12 @@ export function AdminUsersPage() {
       });
       setRefreshToken((token) => token + 1);
     } catch (error) {
-      if (isUsernameTakenError(error)) {
+      const lastActiveAdminFeedback = getLastActiveAdminFeedback(error);
+      if (lastActiveAdminFeedback) {
+        setFieldErrors(lastActiveAdminFeedback.fieldErrors);
+        setFormError(lastActiveAdminFeedback.message);
+        setRefreshToken((token) => token + 1);
+      } else if (isUsernameTakenError(error)) {
         setFieldErrors({ 'edit-username': usernameTakenMessage() });
         setFormError('Choose an available username and try again.');
         focusInvalidField('edit-username');
@@ -962,6 +1008,11 @@ export function AdminUsersPage() {
   async function confirmAction() {
     if (!confirmation) return;
     const { action, user } = confirmation;
+    if (action === 'deactivate' && isDeactivationBlocked(user, users)) {
+      setFieldErrors({});
+      setFormError(LAST_ACTIVE_ADMIN_ERROR_MESSAGE);
+      return;
+    }
     setActionBusy(true);
     setFormError('');
     try {
@@ -1001,7 +1052,14 @@ export function AdminUsersPage() {
         );
       }
     } catch (error) {
-      setFormError(errorText(error));
+      const lastActiveAdminFeedback = getLastActiveAdminFeedback(error);
+      if (action === 'deactivate' && lastActiveAdminFeedback) {
+        setFieldErrors(lastActiveAdminFeedback.fieldErrors);
+        setFormError(lastActiveAdminFeedback.message);
+        setRefreshToken((token) => token + 1);
+      } else {
+        setFormError(errorText(error));
+      }
     } finally {
       setActionBusy(false);
     }
@@ -1321,6 +1379,7 @@ export function AdminUsersPage() {
                         <td>
                           <UserActions
                             user={user}
+                            isOnlyActiveAdmin={isLastActiveAdmin(user, users)}
                             onEdit={() => openEdit(user)}
                             onAction={openConfirmation}
                           />
@@ -1367,6 +1426,7 @@ export function AdminUsersPage() {
                     </div>
                     <UserActions
                       user={user}
+                      isOnlyActiveAdmin={isLastActiveAdmin(user, users)}
                       onEdit={() => openEdit(user)}
                       onAction={openConfirmation}
                     />
@@ -1704,6 +1764,7 @@ export function AdminUsersPage() {
             <FormIdentityFields
               draft={editDraft}
               prefix="edit"
+              lockAdminRole={isLastActiveAdmin(editUser, users)}
               fieldErrors={fieldErrors}
               onChange={(next) => {
                 setEditDraft((current) =>
@@ -1848,6 +1909,11 @@ export function AdminUsersPage() {
               )}
             </p>
           </div>
+          {confirmation.action === 'deactivate' &&
+          isDeactivationBlocked(confirmation.user, users) &&
+          !formError ? (
+            <FormAlert message={LAST_ACTIVE_ADMIN_ERROR_MESSAGE} />
+          ) : null}
           {formError ? (
             <div className="form-alert form-alert--error" role="alert">
               {formError}
@@ -1866,7 +1932,11 @@ export function AdminUsersPage() {
               className={`button ${confirmation.action === 'deactivate' ? 'button--danger' : 'button--primary'}`}
               type="button"
               onClick={() => void confirmAction()}
-              disabled={actionBusy}
+              disabled={
+                actionBusy ||
+                (confirmation.action === 'deactivate' &&
+                  isDeactivationBlocked(confirmation.user, users))
+              }
             >
               {actionBusy
                 ? 'Please wait…'
