@@ -755,11 +755,10 @@ a:focus-visible {
   line-height: 1;
 }
 .user-stat div span {
-  overflow: hidden;
   color: var(--muted);
   font-size: 0.75rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.3;
+  white-space: normal;
 }
 
 .users-panel {
