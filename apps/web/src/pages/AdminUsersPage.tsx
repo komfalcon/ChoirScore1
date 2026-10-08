@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from 'react';
 import { AppHeader } from '../components/AppHeader';
+import { FormAlert } from '../components/FormAlert';
 import type {
   BulkCreateUsersRequest,
   BulkCreateUsersResponse,
@@ -29,6 +30,7 @@ import type {
 } from '@choirscore/shared';
 import { apiJson, jsonRequest } from '../lib/api';
 import { isUsernameTakenError } from '../lib/apiClient';
+import { getBulkUsernameTakenFeedback } from '../lib/bulkUserErrors';
 import { credentialsToCsv } from '../lib/credentialsExport';
 import { focusTrapBoundaryIndex } from '../lib/dialogFocus';
 import {
@@ -880,21 +882,10 @@ export function AdminUsersPage() {
       });
       setRefreshToken((token) => token + 1);
     } catch (error) {
-      if (isUsernameTakenError(error)) {
-        const message =
-          'One or more usernames in this batch are already in use. Review and change the usernames, then try again.';
-        const collisionErrors = Object.fromEntries(
-          bulkRows.map((row) => [
-            `bulk-${row.rowId}-username`,
-            'A username in this batch is already in use. Review this username.',
-          ])
-        );
-        setFieldErrors(collisionErrors);
-        setFormError(message);
-        const firstRow = bulkRows[0];
-        focusInvalidField(
-          firstRow ? `bulk-${firstRow.rowId}-username` : 'bulk-add-row'
-        );
+      const usernameTakenFeedback = getBulkUsernameTakenFeedback(error);
+      if (usernameTakenFeedback) {
+        setFieldErrors(usernameTakenFeedback.fieldErrors);
+        setFormError(usernameTakenFeedback.formError);
       } else {
         setFormError(errorText(error));
       }
@@ -1787,11 +1778,7 @@ export function AdminUsersPage() {
                 </span>
               ) : null}
             </div>
-            {formError ? (
-              <div className="form-alert form-alert--error" role="alert">
-                {formError}
-              </div>
-            ) : null}
+            {formError ? <FormAlert message={formError} /> : null}
             <div className="modal-actions">
               <button
                 className="button button--quiet"
