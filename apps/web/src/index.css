@@ -513,6 +513,8 @@ a:focus-visible {
 }
 
 .app-header .brand {
+  min-width: 44px;
+  min-height: 44px;
   flex: 0 0 auto;
 }
 .app-nav {
@@ -524,7 +526,8 @@ a:focus-visible {
 }
 .app-nav__link {
   display: inline-flex;
-  min-height: 2.7rem;
+  min-width: 44px;
+  min-height: 44px;
   align-items: center;
   padding: 0.55rem 0.8rem;
   border-radius: 0.75rem;
@@ -550,6 +553,10 @@ a:focus-visible {
   align-items: center;
   gap: 0.65rem;
   margin-left: auto;
+}
+.app-header__account .button {
+  min-width: 44px;
+  min-height: 44px;
 }
 .account-avatar,
 .person-avatar {
@@ -2422,9 +2429,11 @@ a:focus-visible {
   margin-inline: auto;
   padding-block: clamp(2rem, 5vw, 4.25rem) 3.5rem;
 }
-.library-main:focus,
-.viewer-main:focus {
-  outline: none;
+.library-main:focus-visible,
+.viewer-main:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 4px;
+  border-radius: 0.75rem;
 }
 .library-heading,
 .viewer-heading {
@@ -2741,7 +2750,7 @@ a:focus-visible {
     display: none;
   }
   .app-header .app-nav__link {
-    min-height: 2.65rem;
+    min-height: 44px;
     flex: 0 0 auto;
     padding-inline: 0.72rem;
   }
@@ -2821,7 +2830,7 @@ a:focus-visible {
     font-size: 0.97rem;
   }
   .app-header .app-header__account .button {
-    min-height: 2.15rem;
+    min-height: 44px;
     padding-inline: 0.55rem;
     font-size: 0.72rem;
   }
