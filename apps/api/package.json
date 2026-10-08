@@ -16,7 +16,7 @@
     "@libsql/client": "^0.15.15",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
-    "drizzle-orm": "^0.44.6",
+    "drizzle-orm": "^0.45.3",
     "express": "^5.1.0",
     "helmet": "^8.1.0"
   },
@@ -25,9 +25,9 @@
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.3",
     "@types/node": "^24.6.0",
+    "@types/supertest": "^6.0.3",
     "supertest": "^7.1.4",
     "tsx": "^4.20.5",
-    "typescript": "^5.9.3",
-    "@types/supertest": "^6.0.3"
+    "typescript": "^5.9.3"
   }
 }
