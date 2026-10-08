@@ -3,6 +3,7 @@ import type {
   ScoreLibraryResponse,
   ScoreSummary,
 } from '@choirscore/shared';
+import { Link } from 'react-router-dom';
 
 export type ScoreLibraryState =
   | { status: 'loading' }
@@ -14,24 +15,30 @@ type Props = { state: ScoreLibraryState };
 function ScoreCard({ score }: { score: ScoreSummary }) {
   return (
     <li className="score-card-list__item">
-      <article className="score-card" aria-labelledby={`score-${score.id}`}>
-        <div className="score-card__heading">
-          <h2 id={`score-${score.id}`}>{score.title}</h2>
-          <span className="score-card__visibility">{score.visibility}</span>
-        </div>
-        <p className="score-card__composer">
-          {score.composer ?? 'Composer not listed'}
-        </p>
-        <p className="score-card__parts">
-          {score.parts.map((part) => part.label).join(' · ')}
-        </p>
-        <p className="score-card__meta">
-          {score.measureCount}{' '}
-          {score.measureCount === 1 ? 'measure' : 'measures'}
-          {' · '}
-          {score.partCount} {score.partCount === 1 ? 'part' : 'parts'}
-        </p>
-      </article>
+      <Link
+        className="score-card-link"
+        to={`/score/${encodeURIComponent(score.id)}`}
+        aria-label={`Open ${score.title}`}
+      >
+        <article className="score-card" aria-labelledby={`score-${score.id}`}>
+          <div className="score-card__heading">
+            <h2 id={`score-${score.id}`}>{score.title}</h2>
+            <span className="score-card__visibility">{score.visibility}</span>
+          </div>
+          <p className="score-card__composer">
+            {score.composer ?? 'Composer not listed'}
+          </p>
+          <p className="score-card__parts">
+            {score.parts.map((part) => part.label).join(' · ')}
+          </p>
+          <p className="score-card__meta">
+            {score.measureCount}{' '}
+            {score.measureCount === 1 ? 'measure' : 'measures'}
+            {' · '}
+            {score.partCount} {score.partCount === 1 ? 'part' : 'parts'}
+          </p>
+        </article>
+      </Link>
     </li>
   );
 }
@@ -77,9 +84,9 @@ export function ScoreLibraryResults({ state }: Props) {
   if (state.response.scores.length === 0) {
     return (
       <section className="library-empty" role="status">
-        <h2>No scores yet</h2>
+        <h2>No scores match your search</h2>
         <p className="library-empty__copy">
-          Scores available to your account will appear here.
+          Try another title, composer, or visibility filter.
         </p>
       </section>
     );
