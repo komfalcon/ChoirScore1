@@ -8,20 +8,72 @@ import { LibraryPage } from './pages/LibraryPage';
 import { LoginPage } from './pages/LoginPage';
 import { ScoreEditPage } from './pages/ScoreEditPage';
 import { ScoreViewPage } from './pages/ScoreViewPage';
+import { AuthGate, AuthProvider } from './lib/auth';
 
 export function App() {
   return (
-    <Routes>
-      <Route path="/" element={<HealthPage />} />
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="/change-password" element={<ChangePasswordPage />} />
-      <Route path="/library" element={<LibraryPage />} />
-      <Route path="/score/:id" element={<ScoreViewPage />} />
-      <Route path="/score/:id/edit" element={<ScoreEditPage />} />
-      <Route path="/admin/users" element={<AdminUsersPage />} />
-      <Route path="/admin/usage" element={<AdminUsagePage />} />
-      <Route path="/admin/settings" element={<AdminSettingsPage />} />
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+    <AuthProvider>
+      <Routes>
+        <Route path="/" element={<HealthPage />} />
+        <Route path="/login" element={<LoginPage />} />
+        <Route
+          path="/change-password"
+          element={
+            <AuthGate>
+              <ChangePasswordPage />
+            </AuthGate>
+          }
+        />
+        <Route
+          path="/library"
+          element={
+            <AuthGate>
+              <LibraryPage />
+            </AuthGate>
+          }
+        />
+        <Route
+          path="/score/:id"
+          element={
+            <AuthGate>
+              <ScoreViewPage />
+            </AuthGate>
+          }
+        />
+        <Route
+          path="/score/:id/edit"
+          element={
+            <AuthGate>
+              <ScoreEditPage />
+            </AuthGate>
+          }
+        />
+        <Route
+          path="/admin/users"
+          element={
+            <AuthGate adminOnly>
+              <AdminUsersPage />
+            </AuthGate>
+          }
+        />
+        <Route
+          path="/admin/usage"
+          element={
+            <AuthGate adminOnly>
+              <AdminUsagePage />
+            </AuthGate>
+          }
+        />
+        <Route
+          path="/admin/settings"
+          element={
+            <AuthGate adminOnly>
+              <AdminSettingsPage />
+            </AuthGate>
+          }
+        />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </AuthProvider>
   );
 }
