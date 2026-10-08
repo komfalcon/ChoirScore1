@@ -13,7 +13,7 @@ import { adminMutationAuditMiddleware } from './middleware/adminMutationAudit';
 import { createAdminRouter } from './routes/admin';
 import { aiRouter } from './routes/ai';
 import { createAuthRouter } from './routes/auth';
-import { scoresRouter } from './routes/scores';
+import { createScoresRouter } from './routes/scores';
 import { createUsersRouter } from './routes/users';
 import { LoginThrottle } from './security/loginThrottle';
 import { structuredLogger, type StructuredLogger } from './audit';
@@ -79,7 +79,7 @@ export function createApp({
     createAuthRouter({ repository, config, throttle: loginThrottle })
   );
   app.use('/users', createUsersRouter(repository));
-  app.use('/scores', scoresRouter);
+  app.use('/scores', createScoresRouter(repository, config.jwtSecret));
   app.use('/ai', aiRouter);
   app.use('/admin', createAdminRouter(repository));
 
