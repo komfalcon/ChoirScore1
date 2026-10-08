@@ -13,9 +13,9 @@ export function HealthPage() {
     let current = true;
     setHealth('checking');
 
-    void checkApiHealth((path) =>
-      apiFetch(path, { signal: controller.signal })
-    ).then(
+    void checkApiHealth((path, init) => apiFetch(path, init), {
+      signal: controller.signal,
+    }).then(
       () => {
         if (current) setHealth('available');
       },
