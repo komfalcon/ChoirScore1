@@ -1,5 +1,6 @@
 import { createClient } from '@libsql/client';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { createServer, request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { deflateRawSync } from 'node:zlib';
@@ -418,6 +419,61 @@ describe('M2 score API routes', () => {
     expect(finalDetail.body.score.title).toBe('Shared hymn');
   });
 
+  it('rechecks creator role inside the creation transaction after demotion', async () => {
+    const originalCreate = repository.createScoreWithVersion.bind(repository);
+    const createSpy = vi
+      .spyOn(repository, 'createScoreWithVersion')
+      .mockImplementation(async (score, version, actorId) => {
+        await repository.updateUser(actors.director.id, {
+          role: 'member',
+          voicePart: 'S',
+        });
+        return await originalCreate(score, version, actorId);
+      });
+
+    const staleCreate = await asActor(
+      request(app).post('/scores'),
+      actors.director,
+      true
+    ).send({ model: MODEL, visibility: 'choir' });
+
+    expect(staleCreate.status).toBe(403);
+    expect(staleCreate.body.error.code).toBe('FORBIDDEN');
+    createSpy.mockRestore();
+    const rows = await repository.listScoreRows({
+      userId: actors.admin.id,
+      role: 'admin',
+      limit: 10,
+    });
+    expect(rows).toHaveLength(0);
+  });
+
+  it('rechecks creator activity inside the creation transaction after multipart parsing', async () => {
+    const originalCreate = repository.createScoreWithVersion.bind(repository);
+    const createSpy = vi
+      .spyOn(repository, 'createScoreWithVersion')
+      .mockImplementation(async (score, version, actorId) => {
+        await repository.updateUser(actorId, { isActive: false });
+        return await originalCreate(score, version, actorId);
+      });
+
+    const staleCreate = await asActor(
+      request(app).post('/scores'),
+      actors.owner,
+      true
+    ).attach('file', Buffer.from(CLEAN_XML), 'inactive.xml');
+
+    expect(staleCreate.status).toBe(403);
+    expect(staleCreate.body.error.code).toBe('FORBIDDEN');
+    createSpy.mockRestore();
+    const rows = await repository.listScoreRows({
+      userId: actors.admin.id,
+      role: 'admin',
+      limit: 10,
+    });
+    expect(rows).toHaveLength(0);
+  });
+
   it('imports MusicXML and MXL, rejects unsupported extensions, unsafe paths, DTDs, and files over 6 MiB', async () => {
     const malformedMultipart = await asActor(
       request(app).post('/scores'),
@@ -515,6 +571,90 @@ describe('M2 score API routes', () => {
     expect(tooLarge.status).toBe(413);
     expect(tooLarge.body.error.code).toBe('BODY_TOO_LARGE');
   });
+
+  it('rejects an over-limit chunked multipart request before its body completes', async () => {
+    const server = createServer(app);
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('The test HTTP server did not bind to a TCP port.');
+    }
+
+    try {
+      const boundary = 'choirscore-chunked-limit-test';
+      const response = await new Promise<{
+        statusCode: number | undefined;
+        headers: import('node:http').IncomingHttpHeaders;
+        body: string;
+      }>((resolve, reject) => {
+        let responseReceived = false;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 3000);
+        const client = httpRequest(
+          {
+            hostname: '127.0.0.1',
+            port: address.port,
+            path: '/scores',
+            method: 'POST',
+            signal: controller.signal,
+            headers: {
+              'Content-Type': `multipart/form-data; boundary=${boundary}`,
+              'Transfer-Encoding': 'chunked',
+              Cookie: actorCookie(actors.owner.id),
+              'X-Requested-With': 'choirscore',
+            },
+          },
+          (incoming) => {
+            responseReceived = true;
+            const chunks: Buffer[] = [];
+            incoming.on('data', (chunk: Buffer | string) =>
+              chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+            );
+            incoming.on('end', () => {
+              clearTimeout(timer);
+              resolve({
+                statusCode: incoming.statusCode,
+                headers: incoming.headers,
+                body: Buffer.concat(chunks).toString('utf8'),
+              });
+            });
+          }
+        );
+        client.on('error', (error) => {
+          if (!responseReceived) {
+            clearTimeout(timer);
+            reject(
+              new Error(
+                'The oversized chunked request was not rejected promptly.',
+                { cause: error }
+              )
+            );
+          }
+        });
+        client.flushHeaders();
+        client.write(
+          `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="large.xml"\r\nContent-Type: application/xml\r\n\r\n`
+        );
+        client.write(Buffer.alloc(6 * 1024 * 1024 + 128 * 1024, 0x61));
+      });
+
+      expect(response.statusCode).toBe(413);
+      expect(response.headers.connection).toBe('close');
+      expect(JSON.parse(response.body).error.code).toBe('BODY_TOO_LARGE');
+      const rows = await repository.listScoreRows({
+        userId: actors.admin.id,
+        role: 'admin',
+        limit: 10,
+      });
+      expect(rows).toHaveLength(0);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 10_000);
 
   it('preserves opaque imports for viewing/export and maps edited version attempts to HTTP 409', async () => {
     const imported = await asActor(

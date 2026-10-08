@@ -237,6 +237,7 @@ export function createScoresRouter(
       });
     } catch (error) {
       if (error instanceof ScoreImportFailure) {
+        if (error.code === 'BODY_TOO_LARGE') res.set('Connection', 'close');
         return sendScoreImportFailure(
           res,
           error.status,
@@ -636,7 +637,7 @@ async function persistNewScore(args: {
   const scoreId = newId();
   const versionId = newId();
   const now = new Date().toISOString();
-  await args.repository.createScoreWithVersion(
+  const creation = await args.repository.createScoreWithVersion(
     {
       id: scoreId,
       title: args.title,
@@ -654,8 +655,17 @@ async function persistNewScore(args: {
       note: args.note,
       createdBy: args.user.id,
       createdAt: now,
-    }
+    },
+    args.user.id
   );
+  if (creation.status === 'forbidden') {
+    return await sendApiError(
+      args.res,
+      403,
+      'FORBIDDEN',
+      'Your account no longer has permission to create this score.'
+    );
+  }
   const row = await args.repository.findScoreRow(scoreId, args.user.id);
   if (!row) throw new Error('New score could not be read after creation');
   const converted = musicXmlToModel(args.musicXml);

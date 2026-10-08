@@ -83,16 +83,26 @@ export async function readMultipartScoreUpload(
     let fileBytes: Buffer | undefined;
     let failure: ScoreImportFailure | undefined;
     let receivedBytes = 0;
+    let settled = false;
     const fail = (error: ScoreImportFailure) => {
       failure ??= error;
     };
 
-    request.on('data', (chunk: Buffer | string) => {
+    const abort = (error: ScoreImportFailure) => {
+      if (settled) return;
+      settled = true;
+      request.off('data', onRequestData);
+      request.unpipe(parser);
+      parser.destroy();
+      request.pause();
+      reject(error);
+    };
+    const onRequestData = (chunk: Buffer | string) => {
       receivedBytes += Buffer.isBuffer(chunk)
         ? chunk.byteLength
         : Buffer.byteLength(chunk);
       if (receivedBytes > MAX_UPLOAD_BYTES + MAX_MULTIPART_OVERHEAD) {
-        fail(
+        abort(
           new ScoreImportFailure(
             413,
             'BODY_TOO_LARGE',
@@ -100,7 +110,8 @@ export async function readMultipartScoreUpload(
           )
         );
       }
-    });
+    };
+    request.on('data', onRequestData);
 
     parser.on('field', (name, value, info) => {
       if (info.nameTruncated || info.valueTruncated) {
@@ -206,6 +217,9 @@ export async function readMultipartScoreUpload(
       )
     );
     parser.on('finish', () => {
+      request.off('data', onRequestData);
+      if (settled) return;
+      settled = true;
       if (failure) {
         reject(failure);
       } else if (!fileName || !fileBytes) {

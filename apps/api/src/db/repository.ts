@@ -98,7 +98,8 @@ export type ScoreMutationResult =
   | { status: 'updated'; score: ScoreRecord }
   | { status: 'not_found' }
   | { status: 'forbidden' };
-
+export type ScoreCreationResult =
+  { status: 'created' } | { status: 'forbidden' };
 export type ScoreVersionCreationResult =
   { status: 'created' } | { status: 'not_found' } | { status: 'forbidden' };
 
@@ -141,8 +142,9 @@ export interface ApiRepository extends RepositoryTransaction {
   findScoreRow(id: string, userId: string): Promise<ScoreRowWithVersion | null>;
   createScoreWithVersion(
     score: ScoreRecord,
-    version: ScoreVersionRecord
-  ): Promise<void>;
+    version: ScoreVersionRecord,
+    actorId: string
+  ): Promise<ScoreCreationResult>;
   patchScore(
     id: string,
     patch: ScorePatch,
@@ -665,9 +667,26 @@ class DrizzleApiRepository implements ApiRepository {
 
   async createScoreWithVersion(
     score: ScoreRecord,
-    version: ScoreVersionRecord
+    version: ScoreVersionRecord,
+    actorId: string
   ) {
-    await this.db.transaction(async (tx) => {
+    return await this.db.transaction(async (tx) => {
+      const actors = await tx
+        .select({ role: users.role, isActive: users.isActive })
+        .from(users)
+        .where(eq(users.id, actorId))
+        .limit(1);
+      const actor = actors[0];
+      if (
+        !actor ||
+        !actor.isActive ||
+        (score.visibility !== 'private' && actor.role === 'member') ||
+        score.createdBy !== actorId ||
+        version.createdBy !== actorId ||
+        version.scoreId !== score.id
+      ) {
+        return { status: 'forbidden' } as const;
+      }
       await tx
         .insert(scores)
         .values({ ...score, currentVersionId: null })
@@ -678,6 +697,7 @@ class DrizzleApiRepository implements ApiRepository {
         .set({ currentVersionId: version.id })
         .where(eq(scores.id, score.id))
         .run();
+      return { status: 'created' } as const;
     });
   }
 
