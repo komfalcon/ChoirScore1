@@ -7,13 +7,13 @@ export const userSchema = z.object({
   username: z.string(),
   role: roleSchema,
   mustChangePassword: z.boolean(),
-  isActive: z.boolean()
+  isActive: z.boolean(),
 });
 
 export const scoreSchema = z.object({
   id: z.string(),
   title: z.string(),
-  composer: z.string().nullable().optional()
+  composer: z.string().nullable().optional(),
 });
 
 export type Role = z.infer<typeof roleSchema>;

@@ -3,12 +3,14 @@
 Scaffold-only monorepo for a private choir score app.
 
 ## Project structure
+
 - `apps/web` - React + Vite + TypeScript + Tailwind
 - `apps/api` - Node.js + Express + TypeScript
 - `packages/shared` - shared Zod schemas and TypeScript types
 - `docs` - product/API/decision docs placeholders
 
 ## Local development
+
 1. Install dependencies:
    ```bash
    npm install
@@ -23,6 +25,7 @@ Scaffold-only monorepo for a private choir score app.
    ```
 
 ## Build and test
+
 ```bash
 npm run build
 npm run test
@@ -32,12 +35,14 @@ npm run lint
 ## Deploy
 
 ### Vercel (web)
+
 - Root directory: `apps/web`
 - Build command: `npm run build`
 - Output directory: `dist`
 - Ensure `apps/web/vercel.json` points `/api/*` rewrites to your Pxxl API URL.
 
 ### Pxxl (api)
+
 - Root directory: `apps/api`
 - Build command: `npm run build`
 - Start command: `npm run start`

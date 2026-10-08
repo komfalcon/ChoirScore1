@@ -18,14 +18,14 @@ export function createApp() {
   app.use(
     cors({
       origin: allowedOrigin ? [allowedOrigin] : false,
-      credentials: true
+      credentials: true,
     })
   );
   app.use(cookieParser());
   app.use(express.json({ limit: '1mb' }));
   app.use(requestIdMiddleware);
 
-  app.get('/healthz', (_req, res) => {
+  app.get(['/healthz', '/api/healthz'], (_req, res) => {
     res.status(200).json({ ok: true });
   });
 

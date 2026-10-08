@@ -11,7 +11,7 @@ if (!databaseUrl) {
 
 const turso = createClient({
   url: databaseUrl,
-  authToken: process.env.DATABASE_AUTH_TOKEN
+  authToken: process.env.DATABASE_AUTH_TOKEN,
 });
 
 export const db = drizzle(turso, { schema });
