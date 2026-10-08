@@ -82,9 +82,111 @@ Both routes are authentication-required and admin-only. The setting belongs on A
 
 ## Database and M1 boundaries
 
-The API accesses SQLite/libSQL via a Drizzle-backed repository layer. Schema changes are migration-backed. The initial migration defines the PRD data tables and constraints/indexes; this M1 adds working bootstrap, auth, users, settings, and audit behavior only. There are **no M2 score-library, MusicXML, AI-job, playback, or editor routes** in this change. All persisted timestamps are ISO-8601 UTC strings.
+The API accesses SQLite/libSQL via a Drizzle-backed repository layer. Schema changes are migration-backed. The initial migration defines the PRD data tables and constraints/indexes; M1 added working bootstrap, auth, users, settings, and audit behavior. This M2 shared foundation adds score schemas and MusicXML string converters, **not HTTP route handlers**. The exact route contract is documented below; persistence, authorization middleware, multipart/MXL processing, library UI and viewer are follow-on work. All persisted timestamps are ISO-8601 UTC strings.
 
-JSON request bodies are limited to 1 MB by default and 6 MB for `/scores/*` upload requests. Helmet security headers are enabled. CORS accepts only exact origins from the comma-delimited `ALLOWED_ORIGIN` environment setting; wildcard origins are not used. Requests with no browser `Origin` are not given CORS permission headers.
+JSON request bodies are limited to 1 MB by default. The score upload contract caps the uploaded file at 6 MiB (6,291,456 bytes); actual multipart parsing, MXL archive extraction, decompressed-size/entry-count limits, persistence and route enforcement belong to the follow-on API/import PR. Helmet security headers are enabled. CORS accepts only exact origins from the comma-delimited `ALLOWED_ORIGIN` environment setting; wildcard origins are not used. Requests with no browser `Origin` are not given CORS permission headers.
+
+## M2 shared score model, converters and API contract
+
+This section is the shared contract for the library, viewer and follow-on API implementation, grounded in PRD §§1.2, 7, 10.3, 12 and 14. The foundation PR implements shared schemas and XML-string conversion only; it does **not** implement any `/scores` route or upload endpoint. The web client calls `/api/...`; the Express route paths below omit the `/api` rewrite prefix.
+
+### Exact shared Zod exports
+
+All names below are exported from the `@choirscore/shared` package root (`packages/shared/src/index.ts`). Types are inferred from the corresponding Zod schemas. Input aliases reflect fields that Zod defaults; parsed/output aliases include those defaults.
+
+**Model (`scoreModel.ts`):**
+
+- `scoreKeyModeSchema` / `ScoreKeyMode`, `scoreKeySchema` / `ScoreKey`, `scoreTimeSchema` / `ScoreTime`, `scoreClefSchema` / `ScoreClef`, `scoreSyllabicSchema` / `ScoreSyllabic`, `scoreLyricSchema` / `ScoreLyric`, `scoreTupletSchema` / `ScoreTuplet`, and `scorePitchSchema`.
+- `scoreNoteSchema` / `ScoreNote` / `ScoreNoteInput`, `scoreMeasureSchema` / `ScoreMeasure` / `ScoreMeasureInput`, and `scorePartSchema` / `ScorePart` / `ScorePartInput`.
+- `scoreModelSchema` / `ScoreModel` / `ScoreModelInput` and the identical public-wire alias `scoreModelWireSchema` / `ScoreModelWire` / `ScoreModelWireInput`. Voice, staff, chord, lyric, onset, ties and tuplet ratio fields are represented; unsupported MusicXML markup is not put in this wire model.
+
+**Library, detail, access and visibility (`scoreContracts.ts`):**
+
+- `scoreVisibilitySchema` / `ScoreVisibility`, `scoreCreatorSchema` / `ScoreCreator`, and `scoreAccessFlagsSchema` / `ScoreAccessFlags`.
+- `scoreSummarySchema` / `ScoreSummary`; `scoreListFiltersSchema` / `ScoreListFilters` / `ParsedScoreListFilters`; `scoreListQuerySchema` / `ScoreListQuery` / `ParsedScoreListQuery`; and `scoreLibraryResponseSchema` / `ScoreLibraryResponse`.
+- `scoreDetailSchema` / `ScoreDetail`, `scoreDetailResponseSchema` / `ScoreDetailResponse`, and `scoreVersionSummarySchema` / `ScoreVersionSummary`.
+- `scoreVisibilityUpdateRequestSchema` / `ScoreVisibilityUpdateRequest`, `patchScoreRequestSchema` / `PatchScoreRequest` / `ParsedPatchScoreRequest`, and `patchScoreResponseSchema` / `PatchScoreResponse`.
+- `scoreAccessUserRequestSchema` / `ScoreAccessUserRequest` / `ParsedScoreAccessUserRequest`, `putScoreAccessRequestSchema` / `PutScoreAccessRequest` / `ParsedPutScoreAccessRequest`, `scoreAccessUserSchema` / `ScoreAccessUser`, and `scoreAccessResponseSchema` / `ScoreAccessResponse`.
+
+**Create/import and export:**
+
+- `createScoreFromModelRequestSchema` / `CreateScoreFromModelRequest` / `ParsedCreateScoreFromModelRequest`.
+- `scoreImportFormFieldsSchema` / `ScoreImportFormFields` / `ParsedScoreImportFormFields`; `scoreImportWarningCodeSchema` / `ScoreImportWarningCode`; `scoreImportWarningSchema` / `ScoreImportWarning`; and `scoreImportResultSchema` / `ScoreImportResult`.
+- `scoreImportErrorCodeSchema` / `ScoreImportErrorCode`, `scoreImportValidationIssueCodeSchema` / `ScoreImportValidationIssueCode`, `scoreImportValidationIssueSchema` / `ScoreImportValidationIssue`, and `scoreImportErrorResponseSchema` / `ScoreImportErrorResponse`.
+- `scoreExportFormatSchema` / `ScoreExportFormat`, `scoreExportQuerySchema` / `ScoreExportQuery`, `musicXmlExportBodySchema` / `MusicXmlExportBody`, and `musicXmlExportHeadersSchema` / `MusicXmlExportHeaders`.
+- Converter exports from `musicxml.ts`: `musicXmlToModel(xml)`, `modelToMusicXml(model)`, `MAX_MUSICXML_BYTES`, `MAX_XML_ELEMENT_DEPTH`, `musicXmlConversionResultSchema` / `MusicXmlConversionResult`, `musicXmlConversionErrorCodeSchema` / `MusicXmlConversionErrorCode`, `MusicXmlConversionError`, and `preservedScoreModelSchema` / `PreservedScoreModel`. **Do not use `PreservedScoreModel` as an API payload**: its preservation sidecar contains the original XML and is converter-internal; `ScoreModel`/`ScoreModelWire` remain strict, sidecar-free wire shapes.
+
+### Score summary and list semantics
+
+`ScoreSummary` is the exact card payload: `{ id, title, composer, key, time, partIds, partCount, measureCount, visibility, creator, createdAt, updatedAt, isOwner, canView, canEdit, canManageAccess, canChangeVisibility, canSetChoirVisibility }`. `creator` is exactly `{ id, displayName }`. `key` is `{ fifths, mode }`, `time` is `{ beats, beatType }`; they are normalized from the shared model. `partIds` follow MusicXML part order, `partCount` equals `partIds.length`, and `measureCount` is the maximum measure count across parts. Timestamps are ISO-8601 UTC. All returned summaries are accessible to the requester (`canView: true`); inaccessible scores are not included. **Offline availability is client-derived cache state and is not an API field.**
+
+`GET /scores` accepts the following independent filters; they combine with AND:
+
+- `q`: trimmed, non-empty, case-insensitive substring search across title and composer (maximum 120 characters).
+- `mine=true`: restrict to scores whose creator is the caller. `mine=false` or omission applies no creator restriction; this facet combines with `visibility` and is not an exclusive scope enum.
+- `visibility=private|choir|shared`: optional visibility filter. Omission applies no visibility filter.
+- `limit`: integer 1–100; defaults to 20. `cursor` is an opaque string and must be sent back unchanged.
+
+Default list scope is **all scores accessible to the active caller**. Stable order is `updatedAt DESC, id DESC`. The response intentionally has no total count: the client continues while `nextCursor` is non-null.
+
+| Method and path                          | Request                                                                                                                                                                                                                                                                                                                                                                                | Success                                                                                                                                                                                        |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /scores`                            | Query above (`scoreListQuerySchema`)                                                                                                                                                                                                                                                                                                                                                   | `200 { "scores": ScoreSummary[], "nextCursor": string \| null }` (`scoreLibraryResponseSchema`)                                                                                                |
+| `POST /scores` (file import)             | `multipart/form-data`: required file field `file`; optional text field `visibility` (`private` default). Accept `.musicxml`, `.xml`, `.mxl` extensions case-insensitively; uploaded file ≤6 MiB. `scoreImportFormFieldsSchema` validates the optional text field; the runtime `File`/multipart transport is documented here rather than coupled to a browser-specific Zod `File` type. | `201 { "score": ScoreSummary, "versionId": string, "warnings": ScoreImportWarning[] }` (`scoreImportResultSchema`)                                                                             |
+| `POST /scores` (model create)            | `application/json` `{ "model": ScoreModel, "visibility"?: ScoreVisibility }` (`createScoreFromModelRequestSchema`; default `private`)                                                                                                                                                                                                                                                  | Same `201` `ScoreImportResult` envelope                                                                                                                                                        |
+| `GET /scores/:id`                        | No body                                                                                                                                                                                                                                                                                                                                                                                | `200 { "score": ScoreDetail }` (`scoreDetailResponseSchema`); detail extends `ScoreSummary` with `currentVersionId`, `version`, parsed `model`, and original current-version `musicXml` string |
+| `PATCH /scores/:id`                      | Non-empty JSON subset `{ "title"?: string, "composer"?: string \| null, "visibility"?: ScoreVisibility }` (`patchScoreRequestSchema`)                                                                                                                                                                                                                                                  | `200 { "score": ScoreSummary }` (`patchScoreResponseSchema`)                                                                                                                                   |
+| `PUT /scores/:id/access`                 | Replace list: `{ "users": [{ "userId": string, "canEdit"?: boolean }] }`; duplicate IDs are invalid; empty array removes all grants. (`putScoreAccessRequestSchema`)                                                                                                                                                                                                                   | `200 { "scoreId": string, "visibility": "shared", "users": [{ "userId": string, "displayName": string, "canEdit": boolean }] }` (`scoreAccessResponseSchema`)                                  |
+| `GET /scores/:id/export?format=musicxml` | `scoreExportQuerySchema`                                                                                                                                                                                                                                                                                                                                                               | `200` **raw MusicXML body**, not JSON (the intentional download exception to the general JSON response envelope); see exact headers below (`musicXmlExportBodySchema`)                         |
+
+The detail response’s outer `title` and `composer` are the current score metadata. The `model` is the current musical projection, with its title/composer aligned to that metadata. `musicXml` is the stored current-version source and may retain the imported work/creator text if metadata was changed later. These are deliberate distinct roles: cards use outer metadata, the viewer uses MusicXML, and model consumers use the shared model.
+
+### Authorization matrix (all score routes require an active user)
+
+| Visibility / actor | View                                                        | Edit score                                                                                        | Manage shared access           |
+| ------------------ | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------ |
+| `private`          | Creator/owner, admin, director                              | Creator/owner, admin, director                                                                    | Creator/owner, admin, director |
+| `choir`            | Every active choir user                                     | Creator/owner, admin, director                                                                    | Creator/owner, admin, director |
+| `shared`           | Creator/owner, admin, director, and users in `score_access` | Creator/owner, admin, director; an explicit shared user only when that grant has `can_edit: true` | Creator/owner, admin, director |
+
+Role and transition rules:
+
+- `admin` can manage all scores. `director` can create, edit and publish any score. `member` can create a **private** score and edit their own scores.
+- A member-created score starts `private`; a member may not create directly as `shared`. Its owner may later `PATCH /scores/:id` to `visibility: "shared"`, then manage explicit grants with `PUT /scores/:id/access`. Admin/director may manage any score; only admin/director may create or change a score to `choir`.
+- `isOwner` means the caller is the score creator. `canEdit`, `canManageAccess`, `canChangeVisibility` and `canSetChoirVisibility` are server-computed flags; the last is true only for admin/director. Owners may change visibility between `private` and `shared`; they cannot set `choir`.
+- `PUT /scores/:id/access` is valid only while visibility is `shared`; otherwise return `409 SCORE_NOT_SHARED`. Changing away from `shared` revokes and clears the prior explicit grants; switching back starts with no grants. Grant recipients must be active accounts. An explicit shared user’s `can_edit` flag governs only that user’s edit permission.
+- Deleted, inactive, or otherwise unauthorized callers cannot use score routes. Return the same `404 NOT_FOUND` for an unknown or inaccessible score ID, so the API does not reveal private score existence. State-changing routes also require `X-Requested-With: choirscore`.
+
+### Import errors and validation envelope
+
+Import errors retain the normal JSON envelope. The import-specific schema is `scoreImportErrorResponseSchema`: `{ "error": { "code": ScoreImportErrorCode, "message": string, "issues"?: ScoreImportValidationIssue[] } }`; each issue is `{ "code": ScoreImportValidationIssueCode, "message": string, "path"?: string }`.
+
+| HTTP status | Codes / meaning                                                                                                                                                                                                                                                           |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `400`       | `VALIDATION_ERROR` (missing file or invalid request fields), `UNSUPPORTED_FILE_TYPE`, `INVALID_MXL_ARCHIVE`, `MISSING_CONTAINER_XML`, `UNSAFE_CONTAINER_PATH`, `MALFORMED_XML`, `XML_DEPTH_LIMIT`, `DOCTYPE_NOT_ALLOWED`, `UNSUPPORTED_ROOT`, `NO_PARTS`, `INVALID_SCORE` |
+| `401`       | `UNAUTHENTICATED` (shared API error envelope)                                                                                                                                                                                                                             |
+| `403`       | `FORBIDDEN`, including a disallowed visibility transition (shared API error envelope)                                                                                                                                                                                     |
+| `404`       | `NOT_FOUND` for unknown or inaccessible scores                                                                                                                                                                                                                            |
+| `409`       | `SCORE_NOT_SHARED` for access-list replacement when the score is not shared                                                                                                                                                                                               |
+| `413`       | `BODY_TOO_LARGE` when the uploaded file exceeds 6 MiB                                                                                                                                                                                                                     |
+
+`ScoreImportResult.warnings` is an array of `ScoreImportWarning` with `code`, `message`, and optional `path`, `partId`, `measure`, `noteIndex`. Warning codes are `UNSUPPORTED_CONSTRUCT_PRESERVED`, `UNSUPPORTED_PITCH_PRESERVED`, `UNSUPPORTED_GRACE_NOTE_PRESERVED`, `UNSUPPORTED_CLEF_PRESERVED`, `UNSUPPORTED_KEY_MODE_PRESERVED`, `UNSUPPORTED_TIME_SIGNATURE_PRESERVED`, `MID_SCORE_ATTRIBUTES_PRESERVED`, and `MULTIPLE_LYRICS_PRESERVED`. Validation errors do not echo uploaded XML. The upload/MXL security implementation and route tests are intentionally left to the follow-on API PR for Ang’s review.
+
+### MusicXML export headers and filename
+
+`GET /scores/:id/export?format=musicxml` returns the exact current-version MusicXML string (not an export JSON wrapper):
+
+- `Content-Type: application/vnd.recordare.musicxml+xml; charset=utf-8` (`musicXmlExportHeadersSchema.contentType`).
+- `Content-Disposition: attachment; filename="<slug>.musicxml"`; `<slug>` is derived from title by Unicode NFKD normalization, lowercasing, stripping combining marks, replacing each run outside ASCII `a-z0-9` with `-`, collapsing/trimming hyphens, truncating to 80 characters, and using `score` if empty. The final ASCII filename matches `musicXmlExportHeadersSchema.filename`.
+- Unknown/inaccessible score IDs return the same `404 NOT_FOUND` as `GET /scores/:id`.
+
+### Converter and dependency choices
+
+- The shared package pins `fast-xml-parser@5.11.2` exactly. The converter uses preserve-order parsing so MusicXML event order (including interleaved `note`, `backup` and `forward` elements) is not collapsed into unordered objects; entity processing, HTML entities and parser value coercion are disabled. It serializes canonical XML itself rather than relying on a lossy object-to-XML builder.
+- The converter accepts MusicXML strings, enforces a 6 MiB UTF-8 byte limit and a 256-element depth limit. It strips and never dereferences only the standard external MusicXML partwise DTD identifier; internal entity declarations, internal subsets and other DTDs are rejected. MXL archive extraction and the HTTP file-ingestion pipeline are outside this PR.
+- Unsupported elements are reported as typed warnings and remain in a private preservation sidecar with the exact original source string. Unchanged imported models export byte-for-byte source XML. If a model with opaque preserved markup has changed, `modelToMusicXml` fails closed with `PRESERVATION_CONTEXT_CHANGED` rather than silently discarding unsupported source content. New models use canonical MusicXML output.
+- `packages/shared/test/fixtures/musescore-4.7.5-satb.musicxml` is a repo-authored four-part test tune exported by the official MuseScore Studio 4.7.5 Linux build; the `<software>` metadata records that exporter. One valid `<other-notation>` sentinel was added after export solely to assert unsupported-markup preservation. Tests cover four parts/clefs, normalized key/time, measures, lyrics, ties, triplet timing, security rejection, exact unchanged-source round trip and canonical model round trip.
+- The M2 acceptance work after this foundation remains separate: route/file/MXL handling with Ang’s security review; score library/search/visibility route tests; Fry’s responsive library and OSMD viewer; and MusicXML download route. M2 acceptance is not claimed until those pieces pass together.
 
 ## Errors
 
