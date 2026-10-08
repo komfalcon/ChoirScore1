@@ -78,7 +78,18 @@ for (const width of [320, 390]) {
       await expect(main).toBeFocused();
       await expect
         .poll(() =>
-          main.evaluate((element) => element.matches(':focus-visible'))
+          main.evaluate((element) => {
+            const style = window.getComputedStyle(element);
+            return (
+              document.activeElement === element &&
+              element.matches(':focus-visible') &&
+              style.outlineStyle === 'solid' &&
+              Number.parseFloat(style.outlineWidth) >= 3 &&
+              style.outlineOffset === '4px' &&
+              style.outlineColor !== 'transparent' &&
+              style.outlineColor !== 'rgba(0, 0, 0, 0)'
+            );
+          })
         )
         .toBe(true);
 
