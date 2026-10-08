@@ -85,9 +85,17 @@ a:focus-visible {
     var(--canvas);
 }
 
-.skip-link {
-  position: fixed;
+.skip-link-slot {
+  position: relative;
   z-index: 10;
+}
+
+.skip-link-slot:focus-within {
+  min-height: 4rem;
+}
+
+.skip-link {
+  position: absolute;
   top: 0.75rem;
   left: 0.75rem;
   padding: 0.75rem 1rem;
@@ -96,6 +104,7 @@ a:focus-visible {
   background: var(--ink);
   color: white;
   text-decoration: none;
+  white-space: nowrap;
 }
 
 .skip-link:focus {
@@ -159,6 +168,10 @@ a:focus-visible {
   font-size: 0.8rem;
   font-weight: 650;
   letter-spacing: 0.01em;
+}
+
+.private-label__compact {
+  display: none;
 }
 
 .private-label__dot,
@@ -454,6 +467,14 @@ a:focus-visible {
     gap: 0.4rem;
     padding-inline: 0.55rem;
     font-size: 0.67rem;
+  }
+
+  .private-label__full {
+    display: none;
+  }
+
+  .private-label__compact {
+    display: inline;
   }
 }
 

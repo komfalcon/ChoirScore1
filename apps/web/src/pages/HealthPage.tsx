@@ -45,9 +45,11 @@ export function HealthPage() {
 
   return (
     <div className="health-page">
-      <a className="skip-link" href="#main-content">
-        Skip to main content
-      </a>
+      <div className="skip-link-slot">
+        <a className="skip-link" href="#main-content">
+          Skip to main content
+        </a>
+      </div>
 
       <header className="site-header">
         <a className="brand" href="/" aria-label="ChoirScore home">
@@ -60,7 +62,8 @@ export function HealthPage() {
         </a>
         <span className="private-label">
           <span className="private-label__dot" aria-hidden="true" />
-          Private choir workspace
+          <span className="private-label__full">Private choir workspace</span>
+          <span className="private-label__compact">Private choir</span>
         </span>
       </header>
 
