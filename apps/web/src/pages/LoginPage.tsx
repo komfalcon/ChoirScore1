@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { AuthLoading, useAuth } from '../lib/auth';
+import { utf8ByteLength } from '../lib/userValidation';
 
 export function LoginPage() {
   const { status, user, signIn } = useAuth();
@@ -30,6 +31,10 @@ export function LoginPage() {
     const cleanUsername = username.trim();
     if (!cleanUsername || !password) {
       setError('Enter your username and password to continue.');
+      return;
+    }
+    if (utf8ByteLength(password) > 72) {
+      setError('Invalid username or password.');
       return;
     }
     setSubmitting(true);

@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AppHeader } from '../components/AppHeader';
 import { useAuth } from '../lib/auth';
+import { utf8ByteLength } from '../lib/userValidation';
 
 export function ChangePasswordPage() {
   const { user, status, changePassword } = useAuth();
@@ -25,6 +26,10 @@ export function ChangePasswordPage() {
     }
     if (newPassword.length < 8) {
       setError('Your new password must be at least 8 characters.');
+      return;
+    }
+    if (utf8ByteLength(newPassword) > 72) {
+      setError('Your new password must be no more than 72 UTF-8 bytes.');
       return;
     }
     if (newPassword !== confirmPassword) {

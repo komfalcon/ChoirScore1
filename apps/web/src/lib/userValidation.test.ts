@@ -44,6 +44,15 @@ describe('user form validation', () => {
     expect(validatePasswordOverride('12345678')).toBe('');
   });
 
+  it('measures the maximum password size in UTF-8 bytes', () => {
+    expect(validatePasswordOverride('a'.repeat(72))).toBe('');
+    expect(validatePasswordOverride('a'.repeat(73))).toMatch(/72 UTF-8 bytes/i);
+    expect(validatePasswordOverride('😀'.repeat(18))).toBe('');
+    expect(validatePasswordOverride('😀'.repeat(19))).toMatch(
+      /72 UTF-8 bytes/i
+    );
+  });
+
   it('rejects bulk member rows without a voice part, short overrides, and duplicate usernames before submit', () => {
     const result = validateBulkUserDrafts([
       {

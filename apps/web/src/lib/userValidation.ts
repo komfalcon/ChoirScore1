@@ -31,10 +31,17 @@ const VOICE_PART_ALIASES: Record<string, Exclude<VoicePart, 'none'>> = {
   bass: 'B',
 };
 
+export function utf8ByteLength(value: string) {
+  return new TextEncoder().encode(value).length;
+}
+
 export function validatePasswordOverride(password: string) {
-  return password.length > 0 && password.length < 8
-    ? 'A password override must be at least 8 characters, or left blank to generate one.'
-    : '';
+  if (!password) return '';
+  if (password.length < 8)
+    return 'A password override must be at least 8 characters, or left blank to generate one.';
+  if (utf8ByteLength(password) > 72)
+    return 'A password override must be no more than 72 UTF-8 bytes.';
+  return '';
 }
 
 export function validateUserIdentity(
