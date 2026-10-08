@@ -5,7 +5,8 @@ export interface CredentialExportRow {
 }
 
 function csvCell(value: string) {
-  return `"${value.replaceAll('"', '""')}"`;
+  const safeValue = /^[\s\uFEFF]*[=+\-@]/u.test(value) ? `'${value}` : value;
+  return `"${safeValue.replaceAll('"', '""')}"`;
 }
 
 export function credentialsToCsv(rows: CredentialExportRow[]) {

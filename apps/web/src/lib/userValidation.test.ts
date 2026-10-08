@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   parseBulkNameImport,
+  suggestUsernameFromName,
+  truncateUtf8Bytes,
+  utf8ByteLength,
   validateBulkUserDrafts,
   validatePasswordOverride,
   validateUserIdentity,
@@ -50,6 +53,19 @@ describe('user form validation', () => {
     expect(validatePasswordOverride('😀'.repeat(18))).toBe('');
     expect(validatePasswordOverride('😀'.repeat(19))).toMatch(
       /72 UTF-8 bytes/i
+    );
+  });
+
+  it('truncates password input only at complete Unicode code points', () => {
+    const truncated = truncateUtf8Bytes(`${'a'.repeat(68)}😀x`, 72);
+    expect(truncated).toBe(`${'a'.repeat(68)}😀`);
+    expect(utf8ByteLength(truncated)).toBe(72);
+  });
+
+  it('suggests a visible, editable username and avoids known collisions', () => {
+    expect(suggestUsernameFromName('Kōfi Mensah')).toBe('kofi.mensah');
+    expect(suggestUsernameFromName('Kōfi Mensah', ['KOFI.MENSAH'])).toBe(
+      'kofi.mensah.2'
     );
   });
 

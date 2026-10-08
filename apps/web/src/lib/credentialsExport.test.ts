@@ -26,4 +26,26 @@ describe('credentials CSV export', () => {
       '\uFEFF"Display name","Username","Password"'
     );
   });
+
+  it('prefixes spreadsheet formula markers in every exported field', () => {
+    const csv = credentialsToCsv([
+      {
+        displayName: '=SUM(1,1)',
+        username: '+cmd',
+        password: '-1+1',
+      },
+      {
+        displayName: '@mention',
+        username: '\t=HYPERLINK("bad")',
+        password: 'ordinary-password',
+      },
+    ]);
+
+    expect(csv).toContain('"\'=SUM(1,1)"');
+    expect(csv).toContain('"\'+cmd"');
+    expect(csv).toContain('"\'-1+1"');
+    expect(csv).toContain('"\'@mention"');
+    expect(csv).toContain('"\'\t=HYPERLINK(""bad"")"');
+    expect(csv).toContain('"ordinary-password"');
+  });
 });

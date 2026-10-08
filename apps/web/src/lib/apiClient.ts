@@ -18,6 +18,19 @@ export class ApiError extends Error {
   }
 }
 
+type PasswordChangeRequiredListener = () => void;
+const passwordChangeRequiredListeners =
+  new Set<PasswordChangeRequiredListener>();
+
+export function subscribeToPasswordChangeRequired(
+  listener: PasswordChangeRequiredListener
+) {
+  passwordChangeRequiredListeners.add(listener);
+  return () => {
+    passwordChangeRequiredListeners.delete(listener);
+  };
+}
+
 export function getApiBaseUrl() {
   return import.meta.env.VITE_API_BASE ?? DEFAULT_API_BASE;
 }
@@ -59,7 +72,17 @@ export async function apiFetch(path: string, init: RequestInit = {}) {
             message: `The request failed with status ${response.status}.`,
           };
 
-    throw new ApiError(response.status, body);
+    const error = new ApiError(response.status, body);
+    if (error.status === 403 && error.code === 'PASSWORD_CHANGE_REQUIRED') {
+      for (const listener of passwordChangeRequiredListeners) {
+        try {
+          listener();
+        } catch {
+          // Preserve the API error even if an observer fails.
+        }
+      }
+    }
+    throw error;
   }
 
   return response;

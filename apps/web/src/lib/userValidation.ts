@@ -35,6 +35,42 @@ export function utf8ByteLength(value: string) {
   return new TextEncoder().encode(value).length;
 }
 
+export function truncateUtf8Bytes(value: string, maxBytes: number) {
+  let result = '';
+  let bytes = 0;
+  for (const character of value) {
+    const characterBytes = utf8ByteLength(character);
+    if (bytes + characterBytes > maxBytes) break;
+    result += character;
+    bytes += characterBytes;
+  }
+  return result;
+}
+
+export function suggestUsernameFromName(
+  displayName: string,
+  takenUsernames: string[] = []
+) {
+  const base =
+    displayName
+      .trim()
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLocaleLowerCase('en-US')
+      .replace(/[^a-z0-9]+/g, '.')
+      .replace(/^\.+|\.+$/g, '') || 'user';
+  const taken = new Set(
+    takenUsernames.map((username) => username.trim().toLocaleLowerCase())
+  );
+  let suggestion = base;
+  let suffix = 2;
+  while (taken.has(suggestion.toLocaleLowerCase())) {
+    suggestion = `${base}.${suffix}`;
+    suffix += 1;
+  }
+  return suggestion;
+}
+
 export function validatePasswordOverride(password: string) {
   if (!password) return '';
   if (password.length < 8)

@@ -32,6 +32,7 @@ import { credentialsToCsv } from '../lib/credentialsExport';
 import { focusTrapBoundaryIndex } from '../lib/dialogFocus';
 import {
   parseBulkNameImport,
+  suggestUsernameFromName,
   validateBulkUserDrafts,
   validatePasswordOverride,
   validateUserIdentity,
@@ -92,6 +93,38 @@ function errorText(error: unknown) {
   return error instanceof Error
     ? error.message
     : 'Something went wrong. Please try again.';
+}
+
+function identityFieldErrors(
+  draft: DraftRoleFields & { password?: string },
+  prefix: string,
+  requireUsername = true
+) {
+  const errors: Record<string, string> = {};
+  if (!draft.displayName.trim())
+    errors[`${prefix}-display-name`] = 'Enter a display name.';
+  if (requireUsername && !draft.username.trim())
+    errors[`${prefix}-username`] = 'Enter a username.';
+  if (
+    draft.role === 'member' &&
+    !VOICE_PARTS.includes(draft.voicePart as StaffedVoicePart)
+  ) {
+    errors[`${prefix}-voice`] = 'Choose a voice part for every choir member.';
+  }
+  const passwordError = validatePasswordOverride(draft.password ?? '');
+  if (passwordError) errors[`${prefix}-password-override`] = passwordError;
+  return errors;
+}
+
+function focusInvalidField(fieldId: string | undefined) {
+  if (!fieldId) return;
+  window.requestAnimationFrame(() => {
+    const field = document.getElementById(fieldId);
+    if (field instanceof HTMLElement) {
+      field.focus();
+      field.scrollIntoView({ block: 'nearest' });
+    }
+  });
 }
 
 function Modal({
@@ -192,14 +225,17 @@ function RoleAndVoiceFields({
   draft,
   prefix,
   disabled,
+  fieldErrors = {},
   onChange,
 }: {
   draft: DraftRoleFields;
   prefix: string;
   disabled?: boolean;
+  fieldErrors?: Record<string, string>;
   onChange: (next: DraftRoleFields) => void;
 }) {
   const member = draft.role === 'member';
+  const voiceError = fieldErrors[`${prefix}-voice`];
   return (
     <div className="form-grid form-grid--two">
       <div className="field">
@@ -229,7 +265,12 @@ function RoleAndVoiceFields({
           value={member ? draft.voicePart : 'none'}
           disabled={disabled || !member}
           required={member}
-          aria-describedby={`${prefix}-voice-help`}
+          aria-invalid={voiceError ? true : undefined}
+          aria-describedby={
+            voiceError
+              ? `${prefix}-voice-help ${prefix}-voice-error`
+              : `${prefix}-voice-help`
+          }
           onChange={(event) =>
             onChange({
               ...draft,
@@ -248,13 +289,20 @@ function RoleAndVoiceFields({
               }
             </option>
           ))}
-          {!member ? <option value="none">Not applicable</option> : null}
+          {!member ? (
+            <option value="none">Not applicable — staff</option>
+          ) : null}
         </select>
         <span className="field-help" id={`${prefix}-voice-help`}>
           {member
             ? 'A voice part is required for choir members.'
-            : 'Directors and administrators use “Not applicable”.'}
+            : 'Directors and administrators use “Not applicable — staff”.'}
         </span>
+        {voiceError ? (
+          <span className="field-error" id={`${prefix}-voice-error`}>
+            {voiceError}
+          </span>
+        ) : null}
       </div>
     </div>
   );
@@ -264,15 +312,31 @@ function FormIdentityFields({
   draft,
   prefix,
   disabled,
-  usernameOptional = false,
+  suggestUsername = false,
+  takenUsernames = [],
+  fieldErrors = {},
   onChange,
 }: {
   draft: DraftRoleFields;
   prefix: string;
   disabled?: boolean;
-  usernameOptional?: boolean;
+  suggestUsername?: boolean;
+  takenUsernames?: string[];
+  fieldErrors?: Record<string, string>;
   onChange: (next: DraftRoleFields) => void;
 }) {
+  const displayNameError = fieldErrors[`${prefix}-display-name`];
+  const usernameError = fieldErrors[`${prefix}-username`];
+  const suggestedUsername = suggestUsernameFromName(
+    draft.displayName,
+    takenUsernames
+  );
+  const usernameDescription = [
+    suggestUsername ? `${prefix}-username-help` : '',
+    usernameError ? `${prefix}-username-error` : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
   return (
     <>
       <div className="field">
@@ -282,18 +346,36 @@ function FormIdentityFields({
           autoComplete="name"
           value={draft.displayName}
           disabled={disabled}
-          onChange={(event) =>
-            onChange({ ...draft, displayName: event.target.value })
-          }
+          onChange={(event) => {
+            const displayName = event.target.value;
+            const stillSuggested =
+              draft.username === '' || draft.username === suggestedUsername;
+            onChange({
+              ...draft,
+              displayName,
+              username:
+                suggestUsername && stillSuggested
+                  ? displayName.trim()
+                    ? suggestUsernameFromName(displayName, takenUsernames)
+                    : ''
+                  : draft.username,
+            });
+          }}
           required
+          aria-invalid={displayNameError ? true : undefined}
+          aria-describedby={
+            displayNameError ? `${prefix}-display-name-error` : undefined
+          }
         />
+        {displayNameError ? (
+          <span className="field-error" id={`${prefix}-display-name-error`}>
+            {displayNameError}
+          </span>
+        ) : null}
       </div>
       <div className="field">
         <label htmlFor={`${prefix}-username`}>
-          Username{' '}
-          {usernameOptional ? (
-            <span className="label-optional">· optional</span>
-          ) : null}
+          {suggestUsername ? 'Suggested username' : 'Username'}
         </label>
         <input
           id={`${prefix}-username`}
@@ -305,11 +387,20 @@ function FormIdentityFields({
           onChange={(event) =>
             onChange({ ...draft, username: event.target.value })
           }
-          required={!usernameOptional}
+          required
+          aria-invalid={usernameError ? true : undefined}
+          aria-describedby={usernameDescription || undefined}
         />
-        {usernameOptional ? (
-          <span className="field-help">
-            Leave blank to let ChoirScore generate one.
+        {suggestUsername ? (
+          <span className="field-help" id={`${prefix}-username-help`}>
+            {draft.username
+              ? `Suggested username “${draft.username}” can be edited before saving.`
+              : 'Enter a display name to generate an editable username suggestion.'}
+          </span>
+        ) : null}
+        {usernameError ? (
+          <span className="field-error" id={`${prefix}-username-error`}>
+            {usernameError}
           </span>
         ) : null}
       </div>
@@ -317,6 +408,7 @@ function FormIdentityFields({
         draft={draft}
         prefix={prefix}
         disabled={disabled}
+        fieldErrors={fieldErrors}
         onChange={onChange}
       />
     </>
@@ -327,11 +419,13 @@ function PasswordOverrideField({
   id,
   value,
   onChange,
+  error = '',
   disabled = false,
 }: {
   id: string;
   value: string;
   onChange: (password: string) => void;
+  error?: string;
   disabled?: boolean;
 }) {
   return (
@@ -347,12 +441,18 @@ function PasswordOverrideField({
         value={value}
         disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
-        aria-describedby={`${id}-help`}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={error ? `${id}-help ${id}-error` : `${id}-help`}
       />
       <span className="field-help" id={`${id}-help`}>
         Leave blank to generate a password. An override must be at least 8
         characters.
       </span>
+      {error ? (
+        <span className="field-error" id={`${id}-error`}>
+          {error}
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -372,6 +472,7 @@ function UserActions({
         className="button button--quiet button--small"
         type="button"
         onClick={onEdit}
+        aria-label={`Edit ${user.displayName}`}
       >
         Edit
       </button>
@@ -379,6 +480,7 @@ function UserActions({
         className="button button--quiet button--small"
         type="button"
         onClick={() => onAction('reset', user)}
+        aria-label={`Reset password for ${user.displayName}`}
       >
         Reset password
       </button>
@@ -387,6 +489,7 @@ function UserActions({
           className="button button--danger-quiet button--small"
           type="button"
           onClick={() => onAction('deactivate', user)}
+          aria-label={`Deactivate ${user.displayName}`}
         >
           Deactivate
         </button>
@@ -395,6 +498,7 @@ function UserActions({
           className="button button--quiet button--small"
           type="button"
           onClick={() => onAction('activate', user)}
+          aria-label={`Reactivate ${user.displayName}`}
         >
           Reactivate
         </button>
@@ -424,6 +528,7 @@ export function AdminUsersPage() {
   const [editUser, setEditUser] = useState<SafeUser | null>(null);
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
   const [formError, setFormError] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
@@ -433,6 +538,7 @@ export function AdminUsersPage() {
   const [copyMessage, setCopyMessage] = useState('');
   const nextRowId = useRef(2);
   const dialogOpenerRef = useRef<HTMLElement | null>(null);
+  const listHeadingRef = useRef<HTMLHeadingElement>(null);
 
   const restoreDialogFocus = useCallback(() => {
     const opener = dialogOpenerRef.current;
@@ -442,6 +548,16 @@ export function AdminUsersPage() {
   function rememberDialogOpener() {
     const active = document.activeElement;
     dialogOpenerRef.current = active instanceof HTMLElement ? active : null;
+  }
+
+  const takenUsernames = users.map((user) => user.username);
+
+  function clearFieldError(...fieldIds: string[]) {
+    setFieldErrors((current) => {
+      const next = { ...current };
+      fieldIds.forEach((fieldId) => delete next[fieldId]);
+      return next;
+    });
   }
 
   useEffect(() => {
@@ -501,6 +617,7 @@ export function AdminUsersPage() {
     setBulkImportText('');
     setBulkImportError('');
     setFormError('');
+    setFieldErrors({});
     setBulkRowErrors({});
   }, []);
 
@@ -508,6 +625,7 @@ export function AdminUsersPage() {
     rememberDialogOpener();
     setCreateDraft(newCreateDraft());
     setFormError('');
+    setFieldErrors({});
     setFeedback(null);
     setDialog('create');
   }
@@ -519,6 +637,7 @@ export function AdminUsersPage() {
     setBulkImportError('');
     setBulkRowErrors({});
     setFormError('');
+    setFieldErrors({});
     setFeedback(null);
     setDialog('bulk');
   }
@@ -535,6 +654,7 @@ export function AdminUsersPage() {
       aiDailyLimit: user.aiDailyLimit === null ? '' : String(user.aiDailyLimit),
     });
     setFormError('');
+    setFieldErrors({});
     setFeedback(null);
     setDialog('edit');
   }
@@ -565,11 +685,15 @@ export function AdminUsersPage() {
 
   async function handleCreate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const validation = validateUserIdentity(createDraft, false);
+    const validation = validateUserIdentity(createDraft, true);
     if (validation) {
+      const errors = identityFieldErrors(createDraft, 'create');
+      setFieldErrors(errors);
       setFormError(validation);
+      focusInvalidField(Object.keys(errors)[0]);
       return;
     }
+    setFieldErrors({});
     setSaving(true);
     setFormError('');
     try {
@@ -601,6 +725,11 @@ export function AdminUsersPage() {
       )
     );
     setBulkRowErrors((errors) => ({ ...errors, [rowId]: '' }));
+    clearFieldError(
+      `bulk-${rowId}-display-name`,
+      `bulk-${rowId}-username`,
+      `bulk-${rowId}-voice`
+    );
     setFormError('');
   }
 
@@ -612,6 +741,7 @@ export function AdminUsersPage() {
     }
     const importedRows: BulkDraft[] = parsed.rows.map((row) => ({
       ...row,
+      username: suggestUsernameFromName(row.displayName, takenUsernames),
       rowId: nextRowId.current++,
       password: '',
     }));
@@ -630,6 +760,7 @@ export function AdminUsersPage() {
     });
     setBulkImportError('');
     setBulkRowErrors({});
+    setFieldErrors({});
     setFormError('');
   }
 
@@ -637,10 +768,27 @@ export function AdminUsersPage() {
     event.preventDefault();
     const validation = validateBulkUserDrafts(bulkRows);
     setBulkRowErrors(validation.errors);
-    if (validation.message) {
-      setFormError(validation.message);
+    const errors: Record<string, string> = {};
+    const seenUsernames = new Set<string>();
+    for (const row of bulkRows) {
+      const prefix = `bulk-${row.rowId}`;
+      Object.assign(errors, identityFieldErrors(row, prefix));
+      const username = row.username.trim().toLocaleLowerCase();
+      if (username && seenUsernames.has(username)) {
+        errors[`${prefix}-username`] = 'This username is repeated in the list.';
+      }
+      if (username) seenUsernames.add(username);
+    }
+    if (validation.message || Object.keys(errors).length) {
+      setFieldErrors(errors);
+      setFormError(
+        validation.message ||
+          'Review the username suggestions and complete each required field.'
+      );
+      focusInvalidField(Object.keys(errors)[0] ?? 'bulk-add-row');
       return;
     }
+    setFieldErrors({});
     setSaving(true);
     setFormError('');
     try {
@@ -676,7 +824,10 @@ export function AdminUsersPage() {
     if (!editUser || !editDraft) return;
     const identityValidation = validateUserIdentity(editDraft, true);
     if (identityValidation) {
+      const errors = identityFieldErrors(editDraft, 'edit');
+      setFieldErrors(errors);
       setFormError(identityValidation);
+      focusInvalidField(Object.keys(errors)[0]);
       return;
     }
     const rawLimit = editDraft.aiDailyLimit.trim();
@@ -685,11 +836,17 @@ export function AdminUsersPage() {
       parsedLimit !== null &&
       (!Number.isInteger(parsedLimit) || parsedLimit < 0)
     ) {
+      setFieldErrors({
+        'edit-ai-limit':
+          'Enter a whole number of zero or more, or leave the field blank.',
+      });
       setFormError(
         'AI daily limit must be a whole number of zero or more, or left blank for no limit.'
       );
+      focusInvalidField('edit-ai-limit');
       return;
     }
+    setFieldErrors({});
     setSaving(true);
     setFormError('');
     try {
@@ -757,6 +914,11 @@ export function AdminUsersPage() {
       }
       setConfirmation(null);
       setRefreshToken((token) => token + 1);
+      if (action !== 'reset') {
+        window.requestAnimationFrame(() =>
+          listHeadingRef.current?.focus({ preventScroll: true })
+        );
+      }
     } catch (error) {
       setFormError(errorText(error));
     } finally {
@@ -913,7 +1075,9 @@ export function AdminUsersPage() {
         <section className="users-panel" aria-labelledby="users-list-title">
           <div className="users-panel__top">
             <div>
-              <h2 id="users-list-title">All users</h2>
+              <h2 id="users-list-title" ref={listHeadingRef} tabIndex={-1}>
+                All users
+              </h2>
               <p>
                 Search by name or username. Passwords are never shown in this
                 list.
@@ -1050,7 +1214,7 @@ export function AdminUsersPage() {
                             <strong>{roleLabel(user.role)}</strong>
                             <span>
                               {user.voicePart === 'none'
-                                ? 'No voice part'
+                                ? 'Not applicable — staff'
                                 : `${user.voicePart} · ${{ S: 'Soprano', A: 'Alto', T: 'Tenor', B: 'Bass' }[user.voicePart]}`}
                             </span>
                           </div>
@@ -1110,7 +1274,7 @@ export function AdminUsersPage() {
                       <span>{roleLabel(user.role)}</span>
                       <span>
                         {user.voicePart === 'none'
-                          ? 'No voice part'
+                          ? 'Not applicable — staff'
                           : `${user.voicePart} · ${{ S: 'Soprano', A: 'Alto', T: 'Tenor', B: 'Bass' }[user.voicePart]}`}
                       </span>
                       <span>Last sign-in: {prettyDate(user.lastLoginAt)}</span>
@@ -1151,16 +1315,24 @@ export function AdminUsersPage() {
           restoreFocus={restoreDialogFocus}
         >
           <p className="modal-intro">
-            Leave the username or password override blank to generate it.
-            Sign-in details are revealed once after saving.
+            The suggested username is shown and editable before saving. Leave
+            the password override blank to generate a password; sign-in details
+            are revealed once after saving.
           </p>
           <form className="form-stack" onSubmit={handleCreate} noValidate>
             <FormIdentityFields
               draft={createDraft}
               prefix="create"
-              usernameOptional
+              suggestUsername
+              takenUsernames={takenUsernames}
+              fieldErrors={fieldErrors}
               onChange={(next) => {
                 setCreateDraft((current) => ({ ...current, ...next }));
+                clearFieldError(
+                  'create-display-name',
+                  'create-username',
+                  'create-voice'
+                );
                 setFormError('');
               }}
               disabled={saving}
@@ -1168,10 +1340,16 @@ export function AdminUsersPage() {
             <PasswordOverrideField
               id="create-password-override"
               value={createDraft.password}
+              error={fieldErrors['create-password-override']}
               disabled={saving}
               onChange={(password) => {
                 setCreateDraft((current) => ({ ...current, password }));
-                setFormError(validatePasswordOverride(password));
+                const passwordError = validatePasswordOverride(password);
+                setFieldErrors((current) => ({
+                  ...current,
+                  'create-password-override': passwordError,
+                }));
+                setFormError(passwordError);
               }}
             />
             {formError ? (
@@ -1322,12 +1500,15 @@ export function AdminUsersPage() {
                   <FormIdentityFields
                     draft={row}
                     prefix={`bulk-${row.rowId}`}
-                    usernameOptional
+                    suggestUsername
+                    takenUsernames={takenUsernames}
+                    fieldErrors={fieldErrors}
                     onChange={(next) => updateBulkRow(row.rowId, next)}
                   />
                   <PasswordOverrideField
                     id={`bulk-${row.rowId}-password-override`}
                     value={row.password}
+                    error={fieldErrors[`bulk-${row.rowId}-password-override`]}
                     onChange={(password) => {
                       setBulkRows((rows) =>
                         rows.map((item) =>
@@ -1339,6 +1520,11 @@ export function AdminUsersPage() {
                       setBulkRowErrors((errors) => ({
                         ...errors,
                         [row.rowId]: '',
+                      }));
+                      const passwordError = validatePasswordOverride(password);
+                      setFieldErrors((errors) => ({
+                        ...errors,
+                        [`bulk-${row.rowId}-password-override`]: passwordError,
                       }));
                       setFormError('');
                     }}
@@ -1357,6 +1543,7 @@ export function AdminUsersPage() {
               ) : null}
             </div>
             <button
+              id="bulk-add-row"
               className="button button--quiet bulk-add"
               type="button"
               onClick={() => {
@@ -1413,9 +1600,15 @@ export function AdminUsersPage() {
             <FormIdentityFields
               draft={editDraft}
               prefix="edit"
+              fieldErrors={fieldErrors}
               onChange={(next) => {
                 setEditDraft((current) =>
                   current ? { ...current, ...next } : current
+                );
+                clearFieldError(
+                  'edit-display-name',
+                  'edit-username',
+                  'edit-voice'
                 );
                 setFormError('');
               }}
@@ -1457,16 +1650,29 @@ export function AdminUsersPage() {
                 placeholder="No limit"
                 value={editDraft.aiDailyLimit}
                 disabled={saving}
-                onChange={(event) =>
+                aria-invalid={fieldErrors['edit-ai-limit'] ? true : undefined}
+                aria-describedby={
+                  fieldErrors['edit-ai-limit']
+                    ? 'edit-ai-limit-help edit-ai-limit-error'
+                    : 'edit-ai-limit-help'
+                }
+                onChange={(event) => {
                   setEditDraft({
                     ...editDraft,
                     aiDailyLimit: event.target.value,
-                  })
-                }
+                  });
+                  clearFieldError('edit-ai-limit');
+                  setFormError('');
+                }}
               />
-              <span className="field-help">
+              <span className="field-help" id="edit-ai-limit-help">
                 Leave blank for no per-user limit.
               </span>
+              {fieldErrors['edit-ai-limit'] ? (
+                <span className="field-error" id="edit-ai-limit-error">
+                  {fieldErrors['edit-ai-limit']}
+                </span>
+              ) : null}
             </div>
             {formError ? (
               <div className="form-alert form-alert--error" role="alert">

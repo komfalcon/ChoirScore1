@@ -54,6 +54,9 @@ export function AppHeader() {
                 : 'app-nav__link'
             }
             to="/library"
+            aria-current={
+              location.pathname.startsWith('/library') ? 'page' : undefined
+            }
           >
             Library
           </Link>
@@ -66,6 +69,9 @@ export function AppHeader() {
                     : 'app-nav__link'
                 }
                 to="/admin/users"
+                aria-current={
+                  location.pathname === '/admin/users' ? 'page' : undefined
+                }
               >
                 Users
               </Link>
@@ -76,6 +82,9 @@ export function AppHeader() {
                     : 'app-nav__link'
                 }
                 to="/admin/usage"
+                aria-current={
+                  location.pathname === '/admin/usage' ? 'page' : undefined
+                }
               >
                 Usage
               </Link>
@@ -86,6 +95,9 @@ export function AppHeader() {
                     : 'app-nav__link'
                 }
                 to="/admin/settings"
+                aria-current={
+                  location.pathname === '/admin/settings' ? 'page' : undefined
+                }
               >
                 Settings
               </Link>

@@ -17,7 +17,7 @@ import type {
   MeResponse,
   SafeUser,
 } from '@choirscore/shared';
-import { ApiError } from './apiClient';
+import { ApiError, subscribeToPasswordChangeRequired } from './apiClient';
 import { apiJson, jsonRequest } from './api';
 
 export type AuthStatus =
@@ -88,6 +88,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void refreshUser();
   }, [refreshUser]);
+
+  useEffect(
+    () =>
+      subscribeToPasswordChangeRequired(() => {
+        setError(null);
+        setStatus('forced-change');
+      }),
+    []
+  );
 
   const signIn = useCallback(async (username: string, password: string) => {
     const request: LoginRequest = { username, password };

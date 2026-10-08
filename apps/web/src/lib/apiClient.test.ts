@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, apiFetch } from './apiClient';
+import {
+  ApiError,
+  apiFetch,
+  subscribeToPasswordChangeRequired,
+} from './apiClient';
 import { jsonRequest } from './api';
 
 afterEach(() => {
@@ -87,6 +91,48 @@ describe('apiFetch contract behavior', () => {
       code: 'INVALID_CREDENTIALS',
       message: 'Username or password is incorrect.',
     } satisfies Partial<ApiError>);
+  });
+
+  it('notifies the signed-in app when a later protected request requires password setup', async () => {
+    const listener = vi.fn();
+    const unsubscribe = subscribeToPasswordChangeRequired(listener);
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: {
+            code: 'PASSWORD_CHANGE_REQUIRED',
+            message: 'A password change is required.',
+          },
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
+      )
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      await expect(apiFetch('/users')).rejects.toMatchObject({
+        status: 403,
+        code: 'PASSWORD_CHANGE_REQUIRED',
+      });
+      expect(listener).toHaveBeenCalledOnce();
+
+      listener.mockClear();
+      fetchMock.mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: { code: 'FORBIDDEN', message: 'Forbidden.' },
+          }),
+          { status: 403, headers: { 'Content-Type': 'application/json' } }
+        )
+      );
+      await expect(apiFetch('/users')).rejects.toMatchObject({
+        status: 403,
+        code: 'FORBIDDEN',
+      });
+      expect(listener).not.toHaveBeenCalled();
+    } finally {
+      unsubscribe();
+    }
   });
 
   it('creates body-less requests without an empty JSON body or content type', () => {

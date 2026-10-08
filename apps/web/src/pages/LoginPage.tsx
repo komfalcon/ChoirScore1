@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useRef, useState, type FormEvent } from 'react';
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { AuthLoading, useAuth } from '../lib/auth';
 import { utf8ByteLength } from '../lib/userValidation';
@@ -9,9 +9,11 @@ export function LoginPage() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
+  const loginMainRef = useRef<HTMLElement>(null);
 
   if (status === 'loading')
     return <AuthLoading message="Opening your choir workspace…" />;
@@ -29,16 +31,31 @@ export function LoginPage() {
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const cleanUsername = username.trim();
-    if (!cleanUsername || !password) {
+    const validationErrors: Record<string, string> = {};
+    if (!cleanUsername)
+      validationErrors['login-username'] = 'Enter your username.';
+    if (!password) validationErrors['login-password'] = 'Enter your password.';
+    if (Object.keys(validationErrors).length) {
+      setFieldErrors(validationErrors);
       setError('Enter your username and password to continue.');
+      window.requestAnimationFrame(() => {
+        document.getElementById(Object.keys(validationErrors)[0])?.focus();
+      });
       return;
     }
     if (utf8ByteLength(password) > 72) {
+      setFieldErrors({
+        'login-password': 'Your password must be no more than 72 UTF-8 bytes.',
+      });
       setError('Invalid username or password.');
+      window.requestAnimationFrame(() => {
+        document.getElementById('login-password')?.focus();
+      });
       return;
     }
     setSubmitting(true);
     setError('');
+    setFieldErrors({});
     try {
       const signedInUser = await signIn(cleanUsername, password);
       const state = location.state as { from?: { pathname?: string } } | null;
@@ -65,7 +82,11 @@ export function LoginPage() {
   return (
     <div className="login-page">
       <div className="skip-link-slot">
-        <a className="skip-link" href="#login-main">
+        <a
+          className="skip-link"
+          href="#login-main"
+          onClick={() => loginMainRef.current?.focus()}
+        >
           Skip to sign in
         </a>
       </div>
@@ -85,7 +106,12 @@ export function LoginPage() {
         </span>
       </header>
 
-      <main className="login-main" id="login-main">
+      <main
+        className="login-main"
+        id="login-main"
+        ref={loginMainRef}
+        tabIndex={-1}
+      >
         <section className="login-intro" aria-labelledby="login-title">
           <p className="eyebrow">KINGS &amp; QUEENS CHOIR</p>
           <h1 id="login-title">Your music, ready for rehearsal.</h1>
@@ -119,10 +145,29 @@ export function LoginPage() {
                 autoCapitalize="none"
                 spellCheck={false}
                 value={username}
-                onChange={(event) => setUsername(event.target.value)}
+                onChange={(event) => {
+                  setUsername(event.target.value);
+                  setError('');
+                  setFieldErrors((current) => {
+                    const next = { ...current };
+                    delete next['login-username'];
+                    return next;
+                  });
+                }}
                 disabled={submitting}
                 required
+                aria-invalid={fieldErrors['login-username'] ? true : undefined}
+                aria-describedby={
+                  fieldErrors['login-username']
+                    ? 'login-username-error'
+                    : undefined
+                }
               />
+              {fieldErrors['login-username'] ? (
+                <span className="field-error" id="login-username-error">
+                  {fieldErrors['login-username']}
+                </span>
+              ) : null}
             </div>
             <div className="field">
               <label htmlFor="login-password">Password</label>
@@ -133,9 +178,25 @@ export function LoginPage() {
                   type={showPassword ? 'text' : 'password'}
                   autoComplete="current-password"
                   value={password}
-                  onChange={(event) => setPassword(event.target.value)}
+                  onChange={(event) => {
+                    setPassword(event.target.value);
+                    setError('');
+                    setFieldErrors((current) => {
+                      const next = { ...current };
+                      delete next['login-password'];
+                      return next;
+                    });
+                  }}
                   disabled={submitting}
                   required
+                  aria-invalid={
+                    fieldErrors['login-password'] ? true : undefined
+                  }
+                  aria-describedby={
+                    fieldErrors['login-password']
+                      ? 'login-password-error'
+                      : undefined
+                  }
                 />
                 <button
                   className="password-field__toggle"
@@ -146,6 +207,11 @@ export function LoginPage() {
                   {showPassword ? 'Hide' : 'Show'}
                 </button>
               </div>
+              {fieldErrors['login-password'] ? (
+                <span className="field-error" id="login-password-error">
+                  {fieldErrors['login-password']}
+                </span>
+              ) : null}
             </div>
             {error ? (
               <div className="form-alert form-alert--error" role="alert">

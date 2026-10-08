@@ -123,7 +123,7 @@ export function AdminSettingsPage() {
                     choose a personal password before opening protected pages.
                   </p>
                 </div>
-                <label className="toggle-control">
+                <div className="toggle-control">
                   <input
                     id="require-first-login-change"
                     type="checkbox"
@@ -138,10 +138,7 @@ export function AdminSettingsPage() {
                     }}
                   />
                   <span aria-hidden="true" />
-                  <span className="visually-hidden">
-                    Require password change at first login
-                  </span>
-                </label>
+                </div>
               </div>
 
               {!draft ? (
