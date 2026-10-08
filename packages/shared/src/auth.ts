@@ -18,7 +18,7 @@ export const logoutResponseSchema = z.undefined();
 export type LogoutResponse = z.infer<typeof logoutResponseSchema>;
 
 export const changePasswordRequestSchema = z.object({
-  currentPassword: z.string().min(1),
+  currentPassword: passwordSchema,
   newPassword: passwordSchema,
 });
 export type ChangePasswordRequest = z.infer<typeof changePasswordRequestSchema>;

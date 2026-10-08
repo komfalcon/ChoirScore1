@@ -4,7 +4,15 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import request from 'supertest';
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import type { ApiConfig } from './config';
 import { createApp } from './app';
 import {
@@ -272,6 +280,37 @@ describe('M1 API security and auth', () => {
     expect((await login('new.singer', boundaryPassword)).response.status).toBe(
       200
     );
+  });
+
+  it('rejects overlong current passwords before bcrypt comparison, even when bcrypt would truncate them to a match', async () => {
+    const bcryptPrefix = 'A'.repeat(72);
+    const passwordHash = await hashPassword(bcryptPrefix);
+    await addMember('long.current', { passwordHash });
+    const { response: loginResponse, cookie } = await login(
+      'long.current',
+      bcryptPrefix
+    );
+    expect(loginResponse.status).toBe(200);
+
+    const overlongCurrentPassword = `${bcryptPrefix}x`;
+    expect(await bcrypt.compare(overlongCurrentPassword, passwordHash)).toBe(
+      true
+    );
+    const compareSpy = vi.spyOn(bcrypt, 'compare');
+    const response = await stateChanging(
+      withCookie(request(app).post('/auth/change-password'), cookie)
+    ).send({
+      currentPassword: overlongCurrentPassword,
+      newPassword: 'ReplacementPassword123!',
+    });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe('VALIDATION_ERROR');
+    expect(compareSpy).not.toHaveBeenCalled();
+    expect(
+      (await repository.findUserByUsername('long.current'))?.passwordHash
+    ).toBe(passwordHash);
+    compareSpy.mockRestore();
   });
 
   it('uses bcrypt cost 12 or higher and never persists a raw password', async () => {

@@ -49,35 +49,66 @@ describe('auth contract schemas', () => {
     expect(changePasswordResponseSchema.parse({ user })).toEqual({ user });
   });
 
-  it('requires 8+ characters and limits new passwords to 72 UTF-8 bytes', () => {
+  it('requires 8+ characters and limits both change-password inputs to 72 UTF-8 bytes', () => {
     expect(
       changePasswordRequestSchema.safeParse({
-        currentPassword: 'current',
+        currentPassword: 'current1',
         newPassword: 'short',
       }).success
     ).toBe(false);
     expect(
       changePasswordRequestSchema.safeParse({
-        currentPassword: 'current',
+        currentPassword: 'short',
+        newPassword: 'long-enough',
+      }).success
+    ).toBe(false);
+    expect(
+      changePasswordRequestSchema.safeParse({
+        currentPassword: 'current1',
         newPassword: 'long-enough',
       }).success
     ).toBe(true);
     expect(
       changePasswordRequestSchema.safeParse({
-        currentPassword: 'current',
+        currentPassword: 'current1',
         newPassword: 'x'.repeat(72),
       }).success
     ).toBe(true);
     expect(
       changePasswordRequestSchema.safeParse({
-        currentPassword: 'current',
+        currentPassword: 'current1',
         newPassword: 'x'.repeat(73),
       }).success
     ).toBe(false);
     expect(
       changePasswordRequestSchema.safeParse({
-        currentPassword: 'current',
+        currentPassword: 'current1',
         newPassword: 'é'.repeat(37),
+      }).success
+    ).toBe(false);
+    expect(
+      changePasswordRequestSchema.safeParse({
+        currentPassword: 'x'.repeat(72),
+        newPassword: 'new-password',
+      }).success
+    ).toBe(true);
+    expect(
+      changePasswordRequestSchema.safeParse({
+        currentPassword: 'x'.repeat(73),
+        newPassword: 'new-password',
+      }).success
+    ).toBe(false);
+    const multibyteCurrent72 = 'é'.repeat(36);
+    expect(
+      changePasswordRequestSchema.safeParse({
+        currentPassword: multibyteCurrent72,
+        newPassword: 'new-password',
+      }).success
+    ).toBe(true);
+    expect(
+      changePasswordRequestSchema.safeParse({
+        currentPassword: `${multibyteCurrent72}x`,
+        newPassword: 'new-password',
       }).success
     ).toBe(false);
     expect(
