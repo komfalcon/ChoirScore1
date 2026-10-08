@@ -35,7 +35,7 @@ export function authenticationMiddleware(
     const claims = verifySessionToken(token, config.jwtSecret);
     if (!claims) {
       if (isLogoutRequest(req.method.toUpperCase(), req.path)) return next();
-      return sendApiError(
+      return await sendApiError(
         res,
         401,
         'UNAUTHENTICATED',
@@ -45,7 +45,7 @@ export function authenticationMiddleware(
 
     const user = await repository.findUserById(claims.userId);
     if (!user || !user.isActive) {
-      return sendApiError(
+      return await sendApiError(
         res,
         401,
         'UNAUTHENTICATED',
@@ -58,7 +58,7 @@ export function authenticationMiddleware(
       user.mustChangePassword &&
       !allowedWhilePasswordChangeIsRequired(req.method.toUpperCase(), req.path)
     ) {
-      return sendApiError(
+      return await sendApiError(
         res,
         403,
         'PASSWORD_CHANGE_REQUIRED',
@@ -70,10 +70,10 @@ export function authenticationMiddleware(
 }
 
 export function requireRole(roles: readonly string[]) {
-  return (req: Request, res: Response, next: NextFunction) => {
+  return async (req: Request, res: Response, next: NextFunction) => {
     const user = (req as RequestWithContext).authUser;
     if (!user || !roles.includes(user.role)) {
-      return sendApiError(
+      return await sendApiError(
         res,
         403,
         'FORBIDDEN',

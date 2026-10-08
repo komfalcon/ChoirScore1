@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Router, type Request } from 'express';
+import { z } from 'zod';
 import {
   changePasswordRequestSchema,
   changePasswordResponseSchema,
@@ -49,6 +50,20 @@ function bodyOf<T>(request: Request) {
   return request.body as T;
 }
 
+const loginAttemptSchema = z.object({
+  username: z.string().min(1),
+  password: z.string().min(1),
+});
+
+function invalidCredentials(res: Parameters<typeof sendApiError>[0]) {
+  return sendApiError(
+    res,
+    401,
+    'INVALID_CREDENTIALS',
+    'Invalid username or password.'
+  );
+}
+
 export function createAuthRouter({
   repository,
   config,
@@ -57,9 +72,9 @@ export function createAuthRouter({
   const router = Router();
 
   router.post('/login', async (req, res) => {
-    const parsed = loginRequestSchema.safeParse(bodyOf<unknown>(req));
-    if (!parsed.success) throw payloadError();
-    const username = parsed.data.username.trim().toLowerCase();
+    const attempt = loginAttemptSchema.safeParse(bodyOf<unknown>(req));
+    if (!attempt.success) throw payloadError();
+    const username = attempt.data.username.trim().toLowerCase();
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
     if (!throttle.consume(ip, username)) {
       return sendApiError(
@@ -69,6 +84,9 @@ export function createAuthRouter({
         'Too many login attempts. Try again in 15 minutes.'
       );
     }
+
+    const parsed = loginRequestSchema.safeParse(attempt.data);
+    if (!parsed.success) return invalidCredentials(res);
 
     const user = await repository.findUserByUsername(username);
     const passwordHash = user?.passwordHash ?? (await getDummyPasswordHash());

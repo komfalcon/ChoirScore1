@@ -233,6 +233,15 @@ describe('M1 API security and auth', () => {
     });
     expect(tooLong.status).toBe(400);
     expect(tooLong.body.error.code).toBe('VALIDATION_ERROR');
+    const tooLongUtf8Password = `${'é'.repeat(36)}x`;
+    const tooLongUtf8 = await stateChanging(
+      withCookie(request(app).post('/auth/change-password'), cookie)
+    ).send({
+      currentPassword: MEMBER_PASSWORD,
+      newPassword: tooLongUtf8Password,
+    });
+    expect(tooLongUtf8.status).toBe(400);
+    expect(tooLongUtf8.body.error.code).toBe('VALIDATION_ERROR');
     const stillForced = await withCookie(request(app).get('/auth/me'), cookie);
     expect(stillForced.status).toBe(403);
 
@@ -241,11 +250,12 @@ describe('M1 API security and auth', () => {
     );
     expect(logout.status).toBe(204);
 
+    const boundaryPassword = 'é'.repeat(36);
     const changed = await stateChanging(
       withCookie(request(app).post('/auth/change-password'), cookie)
     ).send({
       currentPassword: MEMBER_PASSWORD,
-      newPassword: 'NewMemberPass456!',
+      newPassword: boundaryPassword,
     });
     expect(changed.status).toBe(200);
     expect(changed.body.user.mustChangePassword).toBe(false);
@@ -254,14 +264,14 @@ describe('M1 API security and auth', () => {
     const persisted = await repository.findUserByUsername('new.singer');
     expect(persisted?.passwordHash).not.toBe('NewMemberPass456!');
     expect(
-      await verifyPassword('NewMemberPass456!', persisted!.passwordHash)
+      await verifyPassword(boundaryPassword, persisted!.passwordHash)
     ).toBe(true);
     expect((await login('new.singer', MEMBER_PASSWORD)).response.status).toBe(
       401
     );
-    expect(
-      (await login('new.singer', 'NewMemberPass456!')).response.status
-    ).toBe(200);
+    expect((await login('new.singer', boundaryPassword)).response.status).toBe(
+      200
+    );
   });
 
   it('uses bcrypt cost 12 or higher and never persists a raw password', async () => {
@@ -286,6 +296,7 @@ describe('M1 API security and auth', () => {
     const failures = await Promise.all([
       login('absent.user', 'NoSuchPassword1!'),
       login('admin', 'WrongPassword123!'),
+      login('admin', 'short'),
       login('admin', 'x'.repeat(73)),
       login('inactive.singer', MEMBER_PASSWORD),
     ]);
@@ -301,7 +312,9 @@ describe('M1 API security and auth', () => {
   it('limits five attempts per minute per IP and username, locks for 15 minutes, then recovers', async () => {
     const firstIp = '203.0.113.10';
     for (let i = 0; i < 5; i += 1) {
-      const attempt = await login('admin', 'WrongPassword123!', firstIp);
+      const password =
+        i === 0 ? 'short' : i === 1 ? 'x'.repeat(73) : 'WrongPassword123!';
+      const attempt = await login('admin', password, firstIp);
       expect(attempt.response.status).toBe(401);
     }
     const locked = await login('admin', ADMIN_PASSWORD, firstIp);
@@ -424,6 +437,23 @@ describe('M1 admin users, roles and audit', () => {
     expect(overlongPassword.status).toBe(400);
     expect(await repository.findUserByUsername('overlong.secret')).toBeNull();
 
+    const boundaryPassword = 'é'.repeat(36);
+    const boundaryAccount = await stateChanging(
+      withCookie(request(app).post('/users'), cookie)
+    ).send({
+      displayName: 'Boundary Password',
+      role: 'member',
+      voicePart: 'S',
+      username: 'boundary.password',
+      password: boundaryPassword,
+    });
+    expect(boundaryAccount.status).toBe(201);
+    const boundaryUser =
+      await repository.findUserByUsername('boundary.password');
+    expect(
+      await verifyPassword(boundaryPassword, boundaryUser!.passwordHash)
+    ).toBe(true);
+
     const director = await stateChanging(
       withCookie(request(app).post('/users'), cookie)
     ).send({
@@ -462,6 +492,186 @@ describe('M1 admin users, roles and audit', () => {
     expect(changed.body.user.voicePart).toBe('T');
   });
 
+  it('audits each rejected admin mutation once with only actor, target, action, outcome, and safe error code', async () => {
+    const { cookie } = await login();
+    const adminId = (await repository.findUserByUsername('admin'))!.id;
+    const secret = 'RejectedRequestSecret!234';
+    const auditAttempt = async (
+      send: () => Promise<request.Response>,
+      expected: {
+        status: number;
+        code: string;
+        action: string;
+        targetType: string;
+        targetId: string | null;
+        actorId: string | null;
+      }
+    ) => {
+      const before = await repository.listAuditEntries();
+      const beforeIds = new Set(before.map((entry) => entry.id));
+      const response = await send();
+      expect(response.status).toBe(expected.status);
+      expect(response.body.error.code).toBe(expected.code);
+      const added = (await repository.listAuditEntries()).filter(
+        (entry) => !beforeIds.has(entry.id)
+      );
+      expect(added).toHaveLength(1);
+      expect(added[0]).toMatchObject({
+        actorId: expected.actorId,
+        action: expected.action,
+        targetType: expected.targetType,
+        targetId: expected.targetId,
+        outcome: 'rejected',
+        errorCode: expected.code,
+        detailJson: '{}',
+      });
+      expect(JSON.stringify(added[0])).not.toContain(secret);
+    };
+
+    await auditAttempt(
+      () =>
+        request(app).post('/users').send({
+          displayName: 'Rejected Secret',
+          password: secret,
+        }),
+      {
+        status: 403,
+        code: 'CSRF_HEADER_REQUIRED',
+        action: 'users.create',
+        targetType: 'user',
+        targetId: null,
+        actorId: null,
+      }
+    );
+    await auditAttempt(
+      () =>
+        withCookie(request(app).post('/users'), cookie).send({
+          displayName: 'Rejected Secret',
+          password: secret,
+        }),
+      {
+        status: 403,
+        code: 'CSRF_HEADER_REQUIRED',
+        action: 'users.create',
+        targetType: 'user',
+        targetId: null,
+        actorId: adminId,
+      }
+    );
+    await auditAttempt(
+      () =>
+        request(app)
+          .post('/users')
+          .set('Origin', 'https://untrusted.example')
+          .set('Cookie', cookie!)
+          .send({ displayName: 'Rejected Secret', password: secret }),
+      {
+        status: 403,
+        code: 'ORIGIN_NOT_ALLOWED',
+        action: 'users.create',
+        targetType: 'user',
+        targetId: null,
+        actorId: adminId,
+      }
+    );
+    await auditAttempt(
+      () =>
+        stateChanging(request(app).post('/users')).send({
+          displayName: 'Rejected Secret',
+          password: secret,
+        }),
+      {
+        status: 401,
+        code: 'UNAUTHENTICATED',
+        action: 'users.create',
+        targetType: 'user',
+        targetId: null,
+        actorId: null,
+      }
+    );
+    await auditAttempt(
+      () =>
+        stateChanging(withCookie(request(app).post('/users'), cookie)).send({
+          displayName: 'Rejected Secret',
+          password: secret,
+        }),
+      {
+        status: 400,
+        code: 'VALIDATION_ERROR',
+        action: 'users.create',
+        targetType: 'user',
+        targetId: null,
+        actorId: adminId,
+      }
+    );
+    await auditAttempt(
+      () =>
+        stateChanging(
+          withCookie(request(app).post('/users/bulk'), cookie)
+        ).send({
+          users: [{ displayName: 'Rejected Secret', password: secret }],
+        }),
+      {
+        status: 400,
+        code: 'VALIDATION_ERROR',
+        action: 'users.bulk_create',
+        targetType: 'users',
+        targetId: null,
+        actorId: adminId,
+      }
+    );
+    await auditAttempt(
+      () =>
+        stateChanging(withCookie(request(app).post('/users'), cookie)).send({
+          displayName: 'Duplicate Admin',
+          username: 'admin',
+          role: 'member',
+          voicePart: 'S',
+          password: secret,
+        }),
+      {
+        status: 409,
+        code: 'USERNAME_TAKEN',
+        action: 'users.create',
+        targetType: 'user',
+        targetId: null,
+        actorId: adminId,
+      }
+    );
+    await auditAttempt(
+      () =>
+        stateChanging(
+          withCookie(
+            request(app).post('/users/missing-user/deactivate'),
+            cookie
+          )
+        ),
+      {
+        status: 404,
+        code: 'NOT_FOUND',
+        action: 'users.deactivate',
+        targetType: 'user',
+        targetId: 'missing-user',
+        actorId: adminId,
+      }
+    );
+    await auditAttempt(
+      () =>
+        stateChanging(
+          withCookie(request(app).patch('/admin/settings'), cookie)
+        ).send({ requirePasswordChangeAtFirstLogin: secret }),
+      {
+        status: 400,
+        code: 'VALIDATION_ERROR',
+        action: 'admin.settings.update',
+        targetType: 'settings',
+        targetId: 'requirePasswordChangeAtFirstLogin',
+        actorId: adminId,
+      }
+    );
+    expect(JSON.stringify(logs)).not.toContain(secret);
+  });
+
   it('writes exactly one redacted audit record for every successful admin route action', async () => {
     const { cookie } = await login();
     const knownSecrets: string[] = [];
@@ -473,6 +683,8 @@ describe('M1 admin users, roles and audit', () => {
       expect(entries.at(-1)?.actorId).toBe(
         (await repository.findUserByUsername('admin'))?.id
       );
+      expect(entries.at(-1)?.outcome).toBe('success');
+      expect(entries.at(-1)?.errorCode).toBeNull();
       const latest = JSON.stringify(entries.at(-1));
       for (const secret of knownSecrets) expect(latest).not.toContain(secret);
       const detail = JSON.parse(entries.at(-1)!.detailJson) as Record<

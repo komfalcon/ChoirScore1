@@ -30,6 +30,12 @@ describe('auth contract schemas', () => {
         password: 'password',
       }).success
     ).toBe(true);
+    expect(
+      loginRequestSchema.safeParse({
+        username: 'jane.doe',
+        password: 'short',
+      }).success
+    ).toBe(false);
     expect(loginResponseSchema.parse({ user })).toEqual({ user });
     expect(
       loginResponseSchema.safeParse({ user, token: 'not-returned' }).success
@@ -77,9 +83,28 @@ describe('auth contract schemas', () => {
     expect(
       loginRequestSchema.safeParse({
         username: 'jane.doe',
-        password: 'x'.repeat(73),
+        password: 'x'.repeat(72),
       }).success
     ).toBe(true);
+    expect(
+      loginRequestSchema.safeParse({
+        username: 'jane.doe',
+        password: 'x'.repeat(73),
+      }).success
+    ).toBe(false);
+    const multibyte72 = 'é'.repeat(36);
+    expect(
+      loginRequestSchema.safeParse({
+        username: 'jane.doe',
+        password: multibyte72,
+      }).success
+    ).toBe(true);
+    expect(
+      loginRequestSchema.safeParse({
+        username: 'jane.doe',
+        password: `${multibyte72}x`,
+      }).success
+    ).toBe(false);
   });
 
   it('models logout as a 204 response with no JSON body', () => {

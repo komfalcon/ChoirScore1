@@ -9,6 +9,7 @@ import { authenticationMiddleware } from './middleware/auth';
 import { requireCsrfHeader } from './middleware/csrf';
 import { requestIdMiddleware } from './middleware/requestId';
 import { requestLogMiddleware } from './middleware/requestLog';
+import { adminMutationAuditMiddleware } from './middleware/adminMutationAudit';
 import { createAdminRouter } from './routes/admin';
 import { aiRouter } from './routes/ai';
 import { createAuthRouter } from './routes/auth';
@@ -38,6 +39,8 @@ export function createApp({
 
   app.use(helmet());
   app.use(requestIdMiddleware);
+  app.use(cookieParser());
+  app.use(adminMutationAuditMiddleware(repository, config));
   app.use(requestLogMiddleware(logger));
   app.use(
     cors({
@@ -49,10 +52,10 @@ export function createApp({
       maxAge: 600,
     })
   );
-  app.use((req, res, next) => {
+  app.use(async (req, res, next) => {
     const origin = req.get('Origin');
     if (origin && !allowedOrigins.has(origin)) {
-      return sendApiError(
+      return await sendApiError(
         res,
         403,
         'ORIGIN_NOT_ALLOWED',
@@ -61,7 +64,6 @@ export function createApp({
     }
     next();
   });
-  app.use(cookieParser());
   app.use('/scores', express.json({ limit: '6mb' }));
   app.use(express.json({ limit: '1mb' }));
   app.use(requireCsrfHeader);
@@ -77,8 +79,8 @@ export function createApp({
   app.use('/ai', aiRouter);
   app.use('/admin', createAdminRouter(repository));
 
-  app.use((_req, res) => {
-    sendApiError(
+  app.use(async (_req, res) => {
+    await sendApiError(
       res,
       404,
       'NOT_FOUND',

@@ -15,7 +15,7 @@ export async function runAdminAction<T>(
   const request = req as RequestWithContext;
   const actorId = request.authUser?.id;
   if (!actorId) throw new Error('Authenticated administrator is required');
-  return repository.transaction(async (tx) => {
+  const result = await repository.transaction(async (tx) => {
     const result = await work(tx);
     const resolvedTargetId =
       typeof targetId === 'function' ? targetId(result) : targetId;
@@ -32,4 +32,8 @@ export async function runAdminAction<T>(
     );
     return result;
   });
+  if (request.adminMutationAuditAttempt) {
+    request.adminMutationAuditRecorded = true;
+  }
+  return result;
 }

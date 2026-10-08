@@ -1,6 +1,10 @@
 import { randomBytes } from 'node:crypto';
-import type { AuditInput, RepositoryTransaction } from './db/repository';
-import type { RequestWithContext } from './types';
+import type {
+  ApiRepository,
+  AuditInput,
+  RepositoryTransaction,
+} from './db/repository';
+import type { AdminMutationAuditAttempt, RequestWithContext } from './types';
 
 const SENSITIVE_KEY =
   /(password|passwd|hash|token|secret|credential|authorization|cookie|jwt|api.?key)/i;
@@ -24,7 +28,7 @@ export function newId() {
 
 export function newAuditEntry(
   req: RequestWithContext,
-  actorId: string,
+  actorId: string | null,
   action: string,
   targetType: string,
   targetId: string | null,
@@ -37,9 +41,35 @@ export function newAuditEntry(
     action,
     targetType,
     targetId,
+    outcome: 'success',
+    errorCode: null,
     detailJson: JSON.stringify(redactSecrets(detail)),
     createdAt: new Date().toISOString(),
   };
+}
+
+export async function recordAdminMutationFailure(
+  repository: ApiRepository,
+  req: RequestWithContext,
+  attempt: AdminMutationAuditAttempt,
+  outcome: 'rejected' | 'failed',
+  errorCode: string
+) {
+  const safeErrorCode = /^[A-Z][A-Z0-9_]{0,63}$/.test(errorCode)
+    ? errorCode
+    : 'UNKNOWN_ERROR';
+  await repository.insertAudit({
+    ...newAuditEntry(
+      req,
+      req.authUser?.id ?? req.adminMutationActorId ?? null,
+      attempt.action,
+      attempt.targetType,
+      attempt.targetId,
+      {}
+    ),
+    outcome,
+    errorCode: safeErrorCode,
+  });
 }
 
 export async function auditAdminAction(

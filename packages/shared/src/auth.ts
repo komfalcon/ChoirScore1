@@ -4,7 +4,7 @@ import { safeUserSchema } from './users.js';
 
 export const loginRequestSchema = z.object({
   username: z.string().min(1),
-  password: z.string().min(1),
+  password: passwordSchema,
 });
 export type LoginRequest = z.infer<typeof loginRequestSchema>;
 

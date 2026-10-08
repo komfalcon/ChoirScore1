@@ -13,16 +13,19 @@ export class ApiError extends Error {
   }
 }
 
-export function sendApiError(
+export async function sendApiError(
   res: Response,
   status: number,
   code: string,
   message: string
 ) {
+  const recordFailure = res.locals.recordAdminMutationFailure as
+    ((status: number, errorCode: string) => Promise<void>) | undefined;
+  if (recordFailure) await recordFailure(status, code);
   return res.status(status).json({ error: { code, message } });
 }
 
-export const errorHandler: ErrorRequestHandler = (
+export const errorHandler: ErrorRequestHandler = async (
   error: unknown,
   req,
   res,
@@ -31,11 +34,11 @@ export const errorHandler: ErrorRequestHandler = (
   if (res.headersSent) return;
   const requestId = (req as RequestWithContext).context?.requestId;
   if (error instanceof ApiError) {
-    sendApiError(res, error.status, error.code, error.message);
+    await sendApiError(res, error.status, error.code, error.message);
     return;
   }
   if (error instanceof ZodError) {
-    sendApiError(
+    await sendApiError(
       res,
       400,
       'VALIDATION_ERROR',
@@ -50,7 +53,7 @@ export const errorHandler: ErrorRequestHandler = (
     message?: unknown;
   };
   if (candidate?.type === 'entity.too.large' || candidate?.status === 413) {
-    sendApiError(
+    await sendApiError(
       res,
       413,
       'BODY_TOO_LARGE',
@@ -59,7 +62,7 @@ export const errorHandler: ErrorRequestHandler = (
     return;
   }
   if (candidate?.type === 'entity.parse.failed') {
-    sendApiError(
+    await sendApiError(
       res,
       400,
       'INVALID_JSON',
@@ -73,7 +76,7 @@ export const errorHandler: ErrorRequestHandler = (
   if (
     /UNIQUE constraint failed: users\.username|users\.username/i.test(message)
   ) {
-    sendApiError(
+    await sendApiError(
       res,
       409,
       'USERNAME_TAKEN',
@@ -93,5 +96,10 @@ export const errorHandler: ErrorRequestHandler = (
       errorType: error instanceof Error ? error.name : 'unknown',
     })
   );
-  sendApiError(res, 500, 'INTERNAL_ERROR', 'An unexpected error occurred.');
+  await sendApiError(
+    res,
+    500,
+    'INTERNAL_ERROR',
+    'An unexpected error occurred.'
+  );
 };

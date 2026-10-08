@@ -106,12 +106,31 @@ describe('create user validation', () => {
 
     expect(withPassword('x'.repeat(72))).toBe(true);
     expect(withPassword('x'.repeat(73))).toBe(false);
-    expect(withPassword('é'.repeat(36))).toBe(true);
-    expect(withPassword('é'.repeat(37))).toBe(false);
+    const multibyte72 = 'é'.repeat(36);
+    expect(withPassword(multibyte72)).toBe(true);
+    expect(withPassword(`${multibyte72}x`)).toBe(false);
+    expect(
+      bulkCreateUsersRequestSchema.safeParse({
+        users: [
+          { displayName: 'Jane Doe', voicePart: 'A', password: multibyte72 },
+        ],
+      }).success
+    ).toBe(true);
+    expect(
+      bulkCreateUsersRequestSchema.safeParse({
+        users: [
+          {
+            displayName: 'Jane Doe',
+            voicePart: 'A',
+            password: `${multibyte72}x`,
+          },
+        ],
+      }).success
+    ).toBe(false);
     expect(
       credentialsSchema.safeParse({
         username: 'jane.doe',
-        password: 'x'.repeat(73),
+        password: `${multibyte72}x`,
       }).success
     ).toBe(false);
   });

@@ -149,6 +149,12 @@ export const auditLog = sqliteTable(
     action: text('action').notNull(),
     targetType: text('target_type').notNull(),
     targetId: text('target_id'),
+    outcome: text('outcome', {
+      enum: ['success', 'rejected', 'failed'],
+    })
+      .notNull()
+      .default('success'),
+    errorCode: text('error_code'),
     detailJson: text('detail_json').notNull(),
     createdAt: text('created_at').notNull(),
   },

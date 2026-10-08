@@ -31,6 +31,8 @@ export interface AuditInput {
   action: string;
   targetType: string;
   targetId: string | null;
+  outcome: 'success' | 'rejected' | 'failed';
+  errorCode: string | null;
   detailJson: string;
   createdAt: string;
 }
