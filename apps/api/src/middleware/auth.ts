@@ -1,17 +1,85 @@
 import type { NextFunction, Request, Response } from 'express';
+import type { ApiRepository } from '../db/repository';
+import { sendApiError } from '../errors';
+import { SESSION_COOKIE, verifySessionToken } from '../security/session';
+import type { ApiConfig } from '../config';
+import type { RequestWithContext } from '../types';
 
-export function requireAuth(
-  _req: Request,
-  _res: Response,
-  _next: NextFunction
-) {
-  // TODO: implement JWT/cookie auth verification.
-  return;
+function isPublicRequest(method: string, path: string) {
+  return (
+    (method === 'GET' && ['/healthz', '/api/healthz'].includes(path)) ||
+    (method === 'POST' && path === '/auth/login')
+  );
 }
 
-export function requireRole(_roles: string[]) {
-  return (_req: Request, _res: Response, _next: NextFunction) => {
-    // TODO: implement role-based access control.
-    return;
+function isLogoutRequest(method: string, path: string) {
+  return method === 'POST' && path === '/auth/logout';
+}
+
+function allowedWhilePasswordChangeIsRequired(method: string, path: string) {
+  return (
+    (method === 'POST' && path === '/auth/change-password') ||
+    (method === 'POST' && path === '/auth/logout')
+  );
+}
+
+export function authenticationMiddleware(
+  repository: ApiRepository,
+  config: ApiConfig
+) {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    if (isPublicRequest(req.method.toUpperCase(), req.path)) return next();
+
+    const request = req as RequestWithContext;
+    const token = request.cookies?.[SESSION_COOKIE] as unknown;
+    const claims = verifySessionToken(token, config.jwtSecret);
+    if (!claims) {
+      if (isLogoutRequest(req.method.toUpperCase(), req.path)) return next();
+      return await sendApiError(
+        res,
+        401,
+        'UNAUTHENTICATED',
+        'Authentication is required.'
+      );
+    }
+
+    const user = await repository.findUserById(claims.userId);
+    if (!user || !user.isActive) {
+      return await sendApiError(
+        res,
+        401,
+        'UNAUTHENTICATED',
+        'Authentication is required.'
+      );
+    }
+    request.authUser = user;
+
+    if (
+      user.mustChangePassword &&
+      !allowedWhilePasswordChangeIsRequired(req.method.toUpperCase(), req.path)
+    ) {
+      return await sendApiError(
+        res,
+        403,
+        'PASSWORD_CHANGE_REQUIRED',
+        'Change your password before using this service.'
+      );
+    }
+    next();
+  };
+}
+
+export function requireRole(roles: readonly string[]) {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    const user = (req as RequestWithContext).authUser;
+    if (!user || !roles.includes(user.role)) {
+      return await sendApiError(
+        res,
+        403,
+        'FORBIDDEN',
+        'You are not permitted to perform this action.'
+      );
+    }
+    next();
   };
 }

@@ -1,9 +1,10 @@
 import { z } from 'zod';
+import { passwordSchema } from './password.js';
 import { safeUserSchema } from './users.js';
 
 export const loginRequestSchema = z.object({
   username: z.string().min(1),
-  password: z.string().min(1),
+  password: passwordSchema,
 });
 export type LoginRequest = z.infer<typeof loginRequestSchema>;
 
@@ -17,8 +18,8 @@ export const logoutResponseSchema = z.undefined();
 export type LogoutResponse = z.infer<typeof logoutResponseSchema>;
 
 export const changePasswordRequestSchema = z.object({
-  currentPassword: z.string().min(1),
-  newPassword: z.string().min(8),
+  currentPassword: passwordSchema,
+  newPassword: passwordSchema,
 });
 export type ChangePasswordRequest = z.infer<typeof changePasswordRequestSchema>;
 

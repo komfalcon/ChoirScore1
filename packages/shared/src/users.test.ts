@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   bulkCreateUsersRequestSchema,
   createUserRequestSchema,
+  credentialsSchema,
   roleSchema,
   safeUserSchema,
   updateUserRequestSchema,
@@ -90,6 +91,46 @@ describe('create user validation', () => {
         displayName: 'Alex Doe',
         role: 'director',
         voicePart: 'B',
+      }).success
+    ).toBe(false);
+  });
+
+  it('caps supplied passwords at 72 UTF-8 bytes for bcrypt', () => {
+    const withPassword = (password: string) =>
+      createUserRequestSchema.safeParse({
+        displayName: 'Jane Doe',
+        role: 'member',
+        voicePart: 'A',
+        password,
+      }).success;
+
+    expect(withPassword('x'.repeat(72))).toBe(true);
+    expect(withPassword('x'.repeat(73))).toBe(false);
+    const multibyte72 = 'é'.repeat(36);
+    expect(withPassword(multibyte72)).toBe(true);
+    expect(withPassword(`${multibyte72}x`)).toBe(false);
+    expect(
+      bulkCreateUsersRequestSchema.safeParse({
+        users: [
+          { displayName: 'Jane Doe', voicePart: 'A', password: multibyte72 },
+        ],
+      }).success
+    ).toBe(true);
+    expect(
+      bulkCreateUsersRequestSchema.safeParse({
+        users: [
+          {
+            displayName: 'Jane Doe',
+            voicePart: 'A',
+            password: `${multibyte72}x`,
+          },
+        ],
+      }).success
+    ).toBe(false);
+    expect(
+      credentialsSchema.safeParse({
+        username: 'jane.doe',
+        password: `${multibyte72}x`,
       }).success
     ).toBe(false);
   });
