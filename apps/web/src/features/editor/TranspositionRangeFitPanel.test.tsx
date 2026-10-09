@@ -1,4 +1,8 @@
+// @vitest-environment jsdom
+
+import { act } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { createRoot } from 'react-dom/client';
 import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_VOICE_RANGES,
@@ -14,6 +18,8 @@ import {
   TranspositionRangeFitPanel,
   type FitScope,
 } from './TranspositionRangeFitPanel';
+
+Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
 const sourceModel: ScoreModel = scoreModelSchema.parse({
   title: 'Evening Song',
@@ -339,6 +345,83 @@ describe('TranspositionRangeFitPanel', () => {
       'aria-label="Soprano, measure 4, note 1: C9, outside hard range"'
     );
     expect(html).toContain('Outside hard range');
+  });
+
+  it('previews and applies a manually selected target key without changing the source', async () => {
+    const sourceBeforeSelection = structuredClone(sourceModel);
+    const onApply =
+      vi.fn<
+        (model: ScoreModel, suggestion: FitSuggestion, scope: FitScope) => void
+      >();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          <TranspositionRangeFitPanel
+            model={sourceModel}
+            voiceRanges={voiceRanges}
+            onApply={onApply}
+          />
+        );
+      });
+
+      const targetKeySelect = container.querySelector<HTMLSelectElement>(
+        'select[id$="-target-key"]'
+      );
+      expect(targetKeySelect).not.toBeNull();
+      const manualTarget = Array.from(targetKeySelect!.options).find(
+        (option) => option.textContent?.trim() === 'D major'
+      );
+      expect(manualTarget).toBeDefined();
+
+      await act(async () => {
+        targetKeySelect!.value = manualTarget!.value;
+        targetKeySelect!.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+
+      const preview = container.querySelector<HTMLElement>(
+        '[aria-label="Transposed note preview for D major"]'
+      );
+      expect(preview).not.toBeNull();
+      expect(preview!.textContent).toContain('D5');
+      expect(preview!.textContent).toContain('F#5');
+      expect(onApply).not.toHaveBeenCalled();
+      expect(sourceModel).toEqual(sourceBeforeSelection);
+
+      const applyButton = Array.from(
+        container.querySelectorAll<HTMLButtonElement>('button')
+      ).find((button) =>
+        button.textContent?.includes('Apply to a new score/version')
+      );
+      expect(applyButton).toBeDefined();
+
+      await act(async () => {
+        applyButton!.click();
+      });
+
+      expect(onApply).toHaveBeenCalledTimes(1);
+      const [appliedModel, appliedSuggestion, appliedScope] =
+        onApply.mock.calls[0]!;
+      expect(appliedSuggestion.manualTargetKey).toEqual({
+        fifths: 2,
+        mode: 'major',
+      });
+      expect(appliedModel.key).toEqual({ fifths: 2, mode: 'major' });
+      expect(
+        appliedModel.parts[0]?.measures[0]?.notes.map((note) => note.pitch)
+      ).toEqual(['D5', 'F#5']);
+      expect(appliedScope).toEqual({ partId: null });
+      expect(appliedModel).not.toBe(sourceModel);
+      expect(sourceModel).toEqual(sourceBeforeSelection);
+    } finally {
+      await act(async () => {
+        root.unmount();
+      });
+      container.remove();
+    }
   });
 
   it('only calls Apply with a newly transposed copy and the selected scope', () => {
