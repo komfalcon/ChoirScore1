@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  createScoreVersion,
   exportScoreMusicXml,
   getScoreDetail,
   importScoreFile,
@@ -82,6 +83,36 @@ describe('score API client', () => {
     expect(JSON.parse(String(init.body))).toEqual({
       title: 'Evening Song',
       composer: null,
+    });
+    expect(new Headers(init.headers).get('X-Requested-With')).toBe(
+      'choirscore'
+    );
+    expect(new Headers(init.headers).get('Content-Type')).toBe(
+      'application/json'
+    );
+  });
+
+  it('creates one immutable version through the CSRF-protected version endpoint', async () => {
+    const result = {
+      score: scoreLibraryResponse.scores[0],
+      versionId: 'version-2',
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify(result), { status: 201 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const model = structuredClone(scoreDetailResponse.score.model);
+
+    await expect(
+      createScoreVersion('score / 1', model, 'Range-fit transpose')
+    ).resolves.toEqual(result);
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/scores/score%20%2F%201/versions');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(String(init.body))).toEqual({
+      model,
+      note: 'Range-fit transpose',
     });
     expect(new Headers(init.headers).get('X-Requested-With')).toBe(
       'choirscore'

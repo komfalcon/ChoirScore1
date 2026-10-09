@@ -41,7 +41,7 @@ function identifyAttempt(req: Request): AdminMutationAuditAttempt | null {
     return {
       action: 'admin.settings.update',
       targetType: 'settings',
-      targetId: 'requirePasswordChangeAtFirstLogin',
+      targetId: null,
     };
   }
   if (path === '/admin' || path.startsWith('/admin/')) {

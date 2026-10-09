@@ -14,6 +14,7 @@ import { createAdminRouter } from './routes/admin';
 import { aiRouter } from './routes/ai';
 import { createAuthRouter } from './routes/auth';
 import { createScoresRouter } from './routes/scores';
+import { createSettingsRouter } from './routes/settings';
 import { createUsersRouter } from './routes/users';
 import { LoginThrottle } from './security/loginThrottle';
 import { structuredLogger, type StructuredLogger } from './audit';
@@ -81,6 +82,7 @@ export function createApp({
   app.use('/users', createUsersRouter(repository));
   app.use('/scores', createScoresRouter(repository, config.jwtSecret));
   app.use('/ai', aiRouter);
+  app.use('/settings', createSettingsRouter(repository));
   app.use('/admin', createAdminRouter(repository));
 
   app.use(async (_req, res) => {

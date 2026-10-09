@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { extname } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { Router, type Response } from 'express';
 import {
   MusicXmlConversionError,
@@ -333,6 +334,12 @@ export function createScoresRouter(
           ? { preservation: current.model.preservation }
           : {}),
       });
+      const isNoOp =
+        candidate.key.fifths === current.model.key.fifths &&
+        candidate.key.mode === current.model.key.mode &&
+        isDeepStrictEqual(candidate.time, current.model.time) &&
+        candidate.tempo === current.model.tempo &&
+        isDeepStrictEqual(candidate.parts, current.model.parts);
       const musicXml = modelToMusicXml(candidate);
       const converted = musicXmlToModel(musicXml);
       const versionId = newId();
@@ -354,8 +361,25 @@ export function createScoresRouter(
           'scores.version.create',
           row.score.id,
           {}
-        )
+        ),
+        isNoOp ? { currentVersionId: row.version.id } : undefined
       );
+      if (saved.status === 'no_changes') {
+        return await sendApiError(
+          res,
+          409,
+          'NO_CHANGES',
+          'The submitted score has no musical changes to save.'
+        );
+      }
+      if (saved.status === 'stale_version') {
+        return await sendApiError(
+          res,
+          409,
+          'VERSION_CONFLICT',
+          'The score changed before this version could be saved. Reload and retry.'
+        );
+      }
       if (saved.status === 'not_found') {
         return await sendApiError(
           res,

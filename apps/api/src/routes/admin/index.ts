@@ -8,6 +8,7 @@ import type { ApiRepository } from '../../db/repository';
 import { ApiError } from '../../errors';
 import { requireRole } from '../../middleware/auth';
 import { runAdminAction } from '../../services/adminAction';
+import { readVoiceRanges } from '../../services/voiceRanges';
 
 function invalidPayload() {
   return new ApiError(
@@ -17,23 +18,32 @@ function invalidPayload() {
   );
 }
 
+async function readAdminSettings(
+  repository: Pick<ApiRepository, 'getSetting'>
+) {
+  const [passwordSetting, voiceRanges] = await Promise.all([
+    repository.getSetting('requirePasswordChangeAtFirstLogin'),
+    readVoiceRanges(repository),
+  ]);
+  return getAdminSettingsResponseSchema.parse({
+    requirePasswordChangeAtFirstLogin: passwordSetting !== 'false',
+    voiceRanges,
+  });
+}
+
 export function createAdminRouter(repository: ApiRepository) {
   const router = Router();
   router.use(requireRole(['admin']));
 
   router.get('/settings', async (req, res) => {
-    const settings = getAdminSettingsResponseSchema.parse({
-      requirePasswordChangeAtFirstLogin:
-        (await repository.getSetting('requirePasswordChangeAtFirstLogin')) !==
-        'false',
-    });
+    const settings = await readAdminSettings(repository);
     await runAdminAction(
       repository,
       req,
       'admin.settings.read',
       'settings',
-      'requirePasswordChangeAtFirstLogin',
-      { fields: ['requirePasswordChangeAtFirstLogin'] },
+      null,
+      { fields: ['requirePasswordChangeAtFirstLogin', 'voiceRanges'] },
       async () => settings
     );
     return res.status(200).json(settings);
@@ -47,18 +57,36 @@ export function createAdminRouter(repository: ApiRepository) {
       req,
       'admin.settings.update',
       'settings',
-      'requirePasswordChangeAtFirstLogin',
-      { changedFields: ['requirePasswordChangeAtFirstLogin'] },
+      () => {
+        const changedFields = Object.keys(parsed.data);
+        return changedFields.length === 1 && changedFields[0] === 'voiceRanges'
+          ? 'voice_ranges_json'
+          : changedFields.length === 1
+            ? 'requirePasswordChangeAtFirstLogin'
+            : null;
+      },
+      { changedFields: Object.keys(parsed.data) },
       async (tx) => {
         const actorId =
           (req as Request & { authUser?: { id: string } }).authUser?.id ?? null;
-        await tx.setSetting(
-          'requirePasswordChangeAtFirstLogin',
-          String(parsed.data.requirePasswordChangeAtFirstLogin),
-          actorId,
-          new Date().toISOString()
-        );
-        return parsed.data;
+        const updatedAt = new Date().toISOString();
+        if (parsed.data.requirePasswordChangeAtFirstLogin !== undefined) {
+          await tx.setSetting(
+            'requirePasswordChangeAtFirstLogin',
+            String(parsed.data.requirePasswordChangeAtFirstLogin),
+            actorId,
+            updatedAt
+          );
+        }
+        if (parsed.data.voiceRanges !== undefined) {
+          await tx.setSetting(
+            'voice_ranges_json',
+            JSON.stringify(parsed.data.voiceRanges),
+            actorId,
+            updatedAt
+          );
+        }
+        return readAdminSettings(tx);
       }
     );
     return res.status(200).json(patchAdminSettingsResponseSchema.parse(result));
