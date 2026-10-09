@@ -1,10 +1,17 @@
 import {
   DEFAULT_VOICE_RANGES,
+  mapScorePartsToVoiceParts,
   voiceRangesForScoreParts,
+  type VoicePartId,
   type VoiceRanges,
 } from '../voiceRanges.js';
 import { midiForPitch } from '../pitch.js';
-import type { ScoreModel, ScoreMeasure, ScoreNote } from '../scoreModel.js';
+import type {
+  ScoreModel,
+  ScoreMeasure,
+  ScoreNote,
+  ScorePart,
+} from '../scoreModel.js';
 
 /** Stable codes shared by current and planned score validators. */
 export type ValidationIssueCode =
@@ -105,6 +112,111 @@ function notePositions(measure: ScoreMeasure): NotePosition[] {
     nextOnsetByStream.set(stream, Math.max(nextOnset, onset + note.dur));
     return { note, onset };
   });
+}
+
+const ADJACENT_VOICE_PARTS: ReadonlyArray<readonly [VoicePartId, VoicePartId]> =
+  [
+    ['S', 'A'],
+    ['A', 'T'],
+    ['T', 'B'],
+  ];
+
+const ONSET_EPSILON = 1e-9;
+
+interface SoundingPitch {
+  pitch: string;
+  midi: number;
+}
+
+interface SoundingOnset {
+  onset: number;
+  pitches: SoundingPitch[];
+}
+
+/**
+ * Groups pitched events by their resolved onset. Rests remain in the source
+ * timeline (and therefore advance it) but do not contribute a pitch; each tied
+ * note segment is still a separate model event at its own onset.
+ */
+function soundingPitchesByOnset(measure: ScoreMeasure): SoundingOnset[] {
+  const groups: SoundingOnset[] = [];
+  const positions = notePositions(measure).sort(
+    (first, second) => first.onset - second.onset
+  );
+
+  for (const { note, onset } of positions) {
+    if (note.pitch === null) continue;
+
+    let group = groups[groups.length - 1];
+    if (!group || Math.abs(group.onset - onset) > ONSET_EPSILON) {
+      group = { onset, pitches: [] };
+      groups.push(group);
+    }
+    group.pitches.push({ pitch: note.pitch, midi: midiForPitch(note.pitch) });
+  }
+
+  return groups;
+}
+
+/**
+ * Checks PRD §10.4's adjacent SATB ordering rules at shared note onsets.
+ * Score-part identity follows the shared exact-ID/canonical-name mapping.
+ */
+export function validateVoiceCrossing(model: ScoreModel): ValidationResult {
+  const mapping = mapScorePartsToVoiceParts(model.parts);
+  const partsById = new Map<string, ScorePart>(
+    model.parts.map((part) => [part.id, part])
+  );
+  const errors: Issue[] = [];
+
+  for (const [upperVoice, lowerVoice] of ADJACENT_VOICE_PARTS) {
+    const upperPartId = mapping.byVoicePart[upperVoice];
+    const lowerPartId = mapping.byVoicePart[lowerVoice];
+    if (!upperPartId || !lowerPartId) continue;
+
+    const upperPart = partsById.get(upperPartId)!;
+    const lowerPart = partsById.get(lowerPartId)!;
+    const lowerMeasures = new Map(
+      lowerPart.measures.map((measure) => [measure.number, measure])
+    );
+
+    for (const upperMeasure of upperPart.measures) {
+      const lowerMeasure = lowerMeasures.get(upperMeasure.number);
+      if (!lowerMeasure) continue;
+
+      const lowerOnsets = soundingPitchesByOnset(lowerMeasure);
+      for (const upperOnset of soundingPitchesByOnset(upperMeasure)) {
+        const lowerOnset = lowerOnsets.find(
+          (candidate) =>
+            Math.abs(candidate.onset - upperOnset.onset) <= ONSET_EPSILON
+        );
+        if (!lowerOnset) continue;
+
+        let crossing:
+          { upper: SoundingPitch; lower: SoundingPitch } | undefined;
+        for (const upperPitch of upperOnset.pitches) {
+          const lowerPitch = lowerOnset.pitches.find(
+            (candidate) => upperPitch.midi < candidate.midi
+          );
+          if (lowerPitch) {
+            crossing = { upper: upperPitch, lower: lowerPitch };
+            break;
+          }
+        }
+        if (!crossing) continue;
+
+        errors.push({
+          part: upperPart.id,
+          measure: upperMeasure.number,
+          beat: roundedBeat(upperOnset.onset, model.time.beatType),
+          code: 'VOICE_CROSSING',
+          message: `${upperVoice} (${crossing.upper.pitch}) is below ${lowerVoice} (${crossing.lower.pitch}) at a shared onset.`,
+        });
+      }
+    }
+  }
+
+  return { errors, warnings: [] };
 }
 
 /**
