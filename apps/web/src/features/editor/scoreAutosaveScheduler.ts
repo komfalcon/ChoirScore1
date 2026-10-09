@@ -241,6 +241,30 @@ export class ScoreAutosaveScheduler {
     return true;
   }
 
+  /** Pause autosaves after a stale explicit save and refresh before rebase. */
+  pauseForConflict(): void {
+    if (!this.active || this.disposed || !this.scoreId || !this.draft) return;
+
+    this.generation += 1;
+    this.clearTimer();
+    this.activeController?.abort();
+    this.activeController = null;
+    this.pending = null;
+    this.conflictLoading = true;
+    this.conflict = {
+      latestModel: null,
+      latestVersionId: null,
+      localDraft: this.draft.model,
+    };
+    this.setState({
+      status: 'conflict',
+      currentVersionId: this.currentVersionId,
+      conflict: this.conflict,
+      error: null,
+    });
+    void this.refreshConflict(this.generation);
+  }
+
   /**
    * Replace the editor draft after an explicit reset. Any pending write is
    * invalidated so an old draft cannot be retried; because an aborted request
@@ -517,6 +541,25 @@ export class ScoreAutosaveScheduler {
         controller.signal
       );
       if (!this.isCurrentOperation(operation, controller, generation)) return;
+
+      if (response.versionId !== response.currentVersionId) {
+        this.pending = null;
+        this.activeController = null;
+        this.conflictLoading = true;
+        const localDraft = this.draft?.model ?? operation.request.model;
+        this.conflict = {
+          latestModel: null,
+          latestVersionId: null,
+          localDraft,
+        };
+        this.setState({
+          status: 'conflict',
+          conflict: this.conflict,
+          error: null,
+        });
+        await this.refreshConflict(generation);
+        return;
+      }
 
       this.pending = null;
       this.activeController = null;

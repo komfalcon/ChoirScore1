@@ -187,8 +187,9 @@ export interface ApiRepository extends RepositoryTransaction {
     version: ExplicitScoreVersionRecord,
     updatedAt: string,
     actorId: string,
+    baseVersionId: string,
     audit?: AuditInput,
-    noOpGuard?: { currentVersionId: string }
+    noOp?: boolean
   ): Promise<ScoreVersionCreationResult>;
   createScoreAutosave(
     version: AutosaveScoreVersionRecord,
@@ -850,8 +851,9 @@ class DrizzleApiRepository implements ApiRepository {
     version: ExplicitScoreVersionRecord,
     updatedAt: string,
     actorId: string,
+    baseVersionId: string,
     audit?: AuditInput,
-    noOpGuard?: { currentVersionId: string }
+    noOp = false
   ): Promise<ScoreVersionCreationResult> {
     return this.db.transaction(async (tx) => {
       const authorization = await scoreWriteAuthorization(
@@ -861,14 +863,9 @@ class DrizzleApiRepository implements ApiRepository {
       );
       if (!authorization) return { status: 'not_found' };
       if (!authorization.canEdit) return { status: 'forbidden' };
-      if (noOpGuard) {
-        if (
-          authorization.score.currentVersionId !== noOpGuard.currentVersionId
-        ) {
-          return { status: 'stale_version' };
-        }
-        return { status: 'no_changes' };
-      }
+      if (authorization.score.currentVersionId !== baseVersionId)
+        return { status: 'stale_version' };
+      if (noOp) return { status: 'no_changes' };
 
       await tx.insert(scoreVersions).values(version).run();
       await tx

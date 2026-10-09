@@ -198,6 +198,85 @@ describe('ScoreAutosaveScheduler', () => {
     expect(dependencies.loadLatest).not.toHaveBeenCalled();
   });
 
+  it('pauses after replaying an older saved receipt and requires rebase before a later edit can save', async () => {
+    let serverCurrentVersionId = 'version-1';
+    let serverModel = originalModel;
+    let attempt = 0;
+    const save = vi.fn<ScoreAutosaveSchedulerDependencies['save']>(
+      async (_requestedScoreId, request) => {
+        attempt += 1;
+        if (attempt === 1) {
+          serverCurrentVersionId = 'version-2';
+          serverModel = request.model;
+          throw new TypeError('The committed response was lost.');
+        }
+        if (request.requestId === 'request-1') {
+          return {
+            score: scoreDetailResponse.score,
+            versionId: 'version-2',
+            currentVersionId: serverCurrentVersionId,
+            outcome: 'replayed',
+          };
+        }
+        expect(request.baseVersionId).toBe(serverCurrentVersionId);
+        serverCurrentVersionId = 'version-4';
+        serverModel = request.model;
+        return {
+          score: scoreDetailResponse.score,
+          versionId: serverCurrentVersionId,
+          currentVersionId: serverCurrentVersionId,
+          outcome: 'saved',
+        };
+      }
+    );
+    const loadLatest = vi.fn(async () =>
+      detail(serverCurrentVersionId, serverModel)
+    );
+    const { scheduler } = makeScheduler({ save, loadLatest });
+
+    await advance(30_000);
+    expect(scheduler.getState().status).toBe('retrying');
+    expect(save.mock.calls[0]?.[1].requestId).toBe('request-1');
+
+    // A second editor advances the shared record after the first response is lost.
+    serverCurrentVersionId = 'version-3';
+    serverModel = changedModel(103);
+    await advance(5_000);
+
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(save.mock.calls[1]?.[1]).toEqual(save.mock.calls[0]?.[1]);
+    expect(scheduler.getState().status).toBe('conflict');
+    expect(scheduler.getState().currentVersionId).toBe('version-3');
+    expect(scheduler.getState().conflict).toEqual({
+      latestModel: changedModel(103),
+      latestVersionId: 'version-3',
+      localDraft: changedModel(100),
+    });
+
+    scheduler.update(input({ model: changedModel(104) }));
+    expect(scheduler.getState().conflict?.localDraft).toEqual(
+      changedModel(104)
+    );
+    await advance(60_000);
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(serverCurrentVersionId).toBe('version-3');
+    expect(serverModel).toEqual(changedModel(103));
+
+    expect(scheduler.resolveConflict(changedModel(104))).toBe(true);
+    await advance(30_000);
+
+    expect(save).toHaveBeenCalledTimes(3);
+    expect(save.mock.calls[2]?.[1]).toMatchObject({
+      model: changedModel(104),
+      baseVersionId: 'version-3',
+      requestId: 'request-2',
+    });
+    expect(save.mock.calls[2]?.[1].requestId).not.toBe('request-1');
+    expect(serverCurrentVersionId).toBe('version-4');
+    expect(serverModel).toEqual(changedModel(104));
+    scheduler.dispose();
+  });
+
   it('settles an uncertain retry before autosaving a later revert', async () => {
     const save = vi
       .fn<ScoreAutosaveSchedulerDependencies['save']>()

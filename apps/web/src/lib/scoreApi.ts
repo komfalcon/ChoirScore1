@@ -126,9 +126,14 @@ export async function createScoreVersion(
   id: string,
   model: ScoreModel,
   note: string,
+  baseVersionId: string,
   signal?: AbortSignal
 ): Promise<CreateScoreVersionResponse> {
-  const request = createScoreVersionRequestSchema.parse({ model, note });
+  const request = createScoreVersionRequestSchema.parse({
+    model,
+    note,
+    baseVersionId,
+  });
   const response = await apiFetch(
     `/scores/${encodeURIComponent(id)}/versions`,
     {

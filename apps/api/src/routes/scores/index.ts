@@ -360,6 +360,7 @@ export function createScoresRouter(
         },
         now,
         user.id,
+        parsed.data.baseVersionId,
         scoreAdminAuditEntry(
           req as RequestWithContext,
           user,
@@ -367,7 +368,7 @@ export function createScoresRouter(
           row.score.id,
           {}
         ),
-        isNoOp ? { currentVersionId: row.version.id } : undefined
+        isNoOp
       );
       if (saved.status === 'no_changes') {
         return await sendApiError(

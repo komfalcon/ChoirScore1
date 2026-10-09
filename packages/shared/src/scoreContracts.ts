@@ -546,6 +546,7 @@ export type ParsedCreateScoreFromModelRequest = z.output<
 export const createScoreVersionRequestSchema = z
   .object({
     model: scoreModelSchema,
+    baseVersionId: z.string().min(1).max(128),
     note: z.string().trim().max(256).optional(),
   })
   .strict();

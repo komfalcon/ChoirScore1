@@ -646,7 +646,8 @@ export function ScoreViewPage() {
       const created = await createScoreVersion(
         id,
         model,
-        `Range-fit transposition to ${scoreKeyTonicName(suggestion.key)}${scopeNote}`
+        `Range-fit transposition to ${scoreKeyTonicName(suggestion.key)}${scopeNote}`,
+        score.currentVersionId
       );
       setRangeFitPanelOpen(false);
       setVersionNotice('A new transposed score version was saved.');

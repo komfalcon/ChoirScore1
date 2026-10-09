@@ -133,6 +133,7 @@ type ApiRequest = { url: string; method: string; body?: string };
 
 type ApiOptions = {
   conflictOnFirstAutosave?: boolean;
+  conflictOnFirstExplicitSave?: boolean;
   holdFirstAutosaveUntilAbort?: boolean;
   transientFailureOnFirstAutosave?: boolean;
 };
@@ -188,6 +189,25 @@ function mockScoreApi(options: ApiOptions = {}) {
 
         if (route === 'versions') {
           immutableSaveCount += 1;
+          if (options.conflictOnFirstExplicitSave && immutableSaveCount === 1) {
+            const remoteModel = structuredClone(current.model);
+            remoteModel.tempo += 1;
+            const remote = replaceDetail(current, {
+              model: remoteModel,
+              currentVersionId: 'version-remote-explicit',
+            });
+            latest.set(scoreId, remote);
+            return jsonResponse(
+              {
+                error: {
+                  code: 'VERSION_CONFLICT',
+                  message:
+                    'The score changed before this version could be saved.',
+                },
+              },
+              409
+            );
+          }
           const versionId = `immutable-version-${immutableSaveCount}`;
           const updated = replaceDetail(current, {
             model: payload.model,
@@ -451,6 +471,7 @@ describe('ScoreEditPage host integration', () => {
     ).toHaveLength(0);
     expect(JSON.parse(versionWrites[0]!.body ?? '{}')).toMatchObject({
       note: 'Sol-fa editor save',
+      baseVersionId: 'version-1',
     });
     expect(page.textContent).toContain(
       'A new immutable score version was saved'
@@ -470,6 +491,42 @@ describe('ScoreEditPage host integration', () => {
     expect(autosaveBody.baseVersionId).toBe('immutable-version-1');
     expect(autosaveBody.requestId).toMatch(/^[A-Za-z0-9._:-]+$/);
     expect(autosaveBody.model).not.toEqual(baseModel);
+  });
+
+  it('preserves and pauses a local draft when a second editor wins explicit Save', async () => {
+    vi.useFakeTimers();
+    const api = mockScoreApi({ conflictOnFirstExplicitSave: true });
+    const page = await renderPage();
+    await editFirstGridNote(page);
+    await clickButton(page, 'Text');
+    const localDraftText = page.querySelector<HTMLTextAreaElement>(
+      'textarea[aria-label="Sol-fa text"]'
+    )?.value;
+    expect(localDraftText).not.toBe(modelToSolfaText(baseModel));
+
+    await clickButton(page, 'Save immutable version');
+
+    const versionWrite = api.requests.find((request) =>
+      request.url.endsWith('/versions')
+    );
+    expect(JSON.parse(versionWrite?.body ?? '{}')).toMatchObject({
+      baseVersionId: 'version-1',
+    });
+    expect(api.latest.get('score-1')?.currentVersionId).toBe(
+      'version-remote-explicit'
+    );
+    expect(page.textContent).toContain('Resolve score version conflict');
+    expect(page.textContent).toContain('Your local draft is preserved');
+    expect(
+      page.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Sol-fa text"]'
+      )?.value
+    ).toBe(localDraftText);
+
+    await advanceAutosaveCadence();
+    expect(
+      api.requests.filter((request) => request.url.endsWith('/autosaves'))
+    ).toHaveLength(0);
   });
 
   it('preserves a conflicting draft until explicit rebase, then saves against the latest currentVersionId', async () => {

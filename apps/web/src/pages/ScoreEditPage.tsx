@@ -139,7 +139,8 @@ function EditWorkspace({
       const result = await createScoreVersion(
         score.id,
         modelToSave,
-        'Sol-fa editor save'
+        'Sol-fa editor save',
+        currentBaseVersionId
       );
       setImmutableVersionId(result.versionId);
       setPersistedModel(modelToSave);
@@ -149,6 +150,9 @@ function EditWorkspace({
     } catch (error) {
       const uiError = toScoreUiError(error);
       setSaveError(uiError.message);
+      if (uiError.code === 'VERSION_CONFLICT') {
+        autosave.pauseForConflict();
+      }
       if (uiError.code === 'SCORE_CONTENT_READ_ONLY') {
         setServerReadOnly(true);
         session.reset();

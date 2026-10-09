@@ -324,7 +324,10 @@ describe('M2 score API routes', () => {
       request(app).post(`/scores/${id}/versions`),
       actors.recipient,
       true
-    ).send({ model: recipientDetail.body.score.model });
+    ).send({
+      model: recipientDetail.body.score.model,
+      baseVersionId: recipientDetail.body.score.currentVersionId,
+    });
     expect(deniedVersion.status).toBe(403);
 
     const editableGrant = await asActor(
@@ -345,7 +348,11 @@ describe('M2 score API routes', () => {
       request(app).post(`/scores/${id}/versions`),
       actors.recipient,
       true
-    ).send({ model: editedModel, note: 'Recipient edit' });
+    ).send({
+      model: editedModel,
+      note: 'Recipient edit',
+      baseVersionId: editableDetail.body.score.currentVersionId,
+    });
     expect(recipientVersion.status).toBe(201);
 
     const privateAgain = await asActor(
@@ -444,19 +451,32 @@ describe('M2 score API routes', () => {
       repository.createScoreVersion.bind(repository);
     const versionSpy = vi
       .spyOn(repository, 'createScoreVersion')
-      .mockImplementation(async (version, updatedAt, actorId) => {
-        await repository.replaceScoreAccess(
-          version.scoreId,
-          [],
-          actors.owner.id
-        );
-        return await originalCreateVersion(version, updatedAt, actorId);
-      });
+      .mockImplementation(
+        async (version, updatedAt, actorId, baseVersionId, audit, noOp) => {
+          await repository.replaceScoreAccess(
+            version.scoreId,
+            [],
+            actors.owner.id
+          );
+          return await originalCreateVersion(
+            version,
+            updatedAt,
+            actorId,
+            baseVersionId,
+            audit,
+            noOp
+          );
+        }
+      );
     const staleVersion = await asActor(
       request(app).post(`/scores/${id}/versions`),
       actors.recipient,
       true
-    ).send({ model: recipientDetail.body.score.model, note: 'Stale edit' });
+    ).send({
+      model: recipientDetail.body.score.model,
+      note: 'Stale edit',
+      baseVersionId: currentVersionId,
+    });
     expect(staleVersion.status).toBe(403);
     versionSpy.mockRestore();
 
@@ -611,11 +631,16 @@ describe('M2 score API routes', () => {
 
     const changedModel = structuredClone(model);
     changedModel.parts[0]!.measures[0]!.notes[0]!.pitch = 'D4';
+    const initialVersionId = adminCreate.body.versionId as string;
     const version = await asActor(
       request(app).post(`/scores/${scoreId}/versions`),
       actors.admin,
       true
-    ).send({ model: changedModel, note: 'Sensitive version note' });
+    ).send({
+      model: changedModel,
+      note: 'Sensitive version note',
+      baseVersionId: initialVersionId,
+    });
     expect(version.status).toBe(201);
     await expectAudit(4, 'scores.version.create', 'success', {}, null);
 
@@ -879,7 +904,11 @@ describe('M2 score API routes', () => {
       request(app).post(`/scores/${id}/versions`),
       actors.owner,
       true
-    ).send({ model: editedModel, note: 'Try edit' });
+    ).send({
+      model: editedModel,
+      note: 'Try edit',
+      baseVersionId: detail.body.score.currentVersionId,
+    });
     expect(blocked.status).toBe(409);
     expect(blocked.body.error.code).toBe('SCORE_CONTENT_READ_ONLY');
     expect(blocked.body.error.preservation.state).toBe(
@@ -890,7 +919,11 @@ describe('M2 score API routes', () => {
       request(app).post(`/scores/${id}/versions`),
       actors.owner,
       true
-    ).send({ model: detail.body.score.model, note: 'Unchanged source' });
+    ).send({
+      model: detail.body.score.model,
+      note: 'Unchanged source',
+      baseVersionId: detail.body.score.currentVersionId,
+    });
     expect(unchanged.status).toBe(409);
     expect(unchanged.body.error.code).toBe('NO_CHANGES');
     const unchangedDetail = await asActor(
@@ -924,6 +957,7 @@ describe('M2 score API routes', () => {
       true
     ).send({
       model: detail.body.score.model,
+      baseVersionId: initialVersionId,
       note: 'Range-fit transposition to C major',
     });
 
@@ -933,9 +967,8 @@ describe('M2 score API routes', () => {
       message: 'The submitted score has no musical changes to save.',
     });
     expect(createVersion).toHaveBeenCalledTimes(1);
-    expect(createVersion.mock.calls[0]?.[4]).toEqual({
-      currentVersionId: initialVersionId,
-    });
+    expect(createVersion.mock.calls[0]?.[3]).toBe(initialVersionId);
+    expect(createVersion.mock.calls[0]?.[5]).toBe(true);
     const after = await asActor(
       request(app).get(`/scores/${id}`),
       actors.owner
@@ -964,8 +997,8 @@ describe('M2 score API routes', () => {
     const versionSpy = vi
       .spyOn(repository, 'createScoreVersion')
       .mockImplementation(
-        async (version, updatedAt, actorId, audit, noOpGuard) => {
-          if (noOpGuard && !concurrentVersionId) {
+        async (version, updatedAt, actorId, baseVersionId, audit, noOp) => {
+          if (noOp && !concurrentVersionId) {
             const concurrentModel = structuredClone(MODEL);
             concurrentModel.parts[0]!.measures[0]!.notes[0]!.pitch = 'D4';
             concurrentVersionId = newId();
@@ -985,7 +1018,8 @@ describe('M2 score API routes', () => {
                 autosaveBaseVersionId: null,
               },
               committedAt,
-              actors.owner.id
+              actors.owner.id,
+              initialVersionId
             );
             expect(concurrent).toEqual({ status: 'created' });
           }
@@ -993,8 +1027,9 @@ describe('M2 score API routes', () => {
             version,
             updatedAt,
             actorId,
+            baseVersionId,
             audit,
-            noOpGuard
+            noOp
           );
         }
       );
@@ -1005,6 +1040,7 @@ describe('M2 score API routes', () => {
       true
     ).send({
       model: detail.body.score.model,
+      baseVersionId: initialVersionId,
       note: 'Stale no-op transposition',
     });
     versionSpy.mockRestore();
@@ -1026,6 +1062,51 @@ describe('M2 score API routes', () => {
     expect(afterRace.body.score.model.parts[0].measures[0].notes[0].pitch).toBe(
       'D4'
     );
+  });
+
+  it('rejects a stale explicit save from a second editor without inserting or moving current', async () => {
+    const created = await asActor(
+      request(app).post('/scores'),
+      actors.owner,
+      true
+    ).send({ model: MODEL });
+    const id = created.body.score.id as string;
+    const [editorA, editorB] = await Promise.all([
+      asActor(request(app).get(`/scores/${id}`), actors.owner),
+      asActor(request(app).get(`/scores/${id}`), actors.owner),
+    ]);
+    const loadedBase = editorA.body.score.currentVersionId as string;
+    expect(editorB.body.score.currentVersionId).toBe(loadedBase);
+
+    const winnerModel = structuredClone(editorA.body.score.model);
+    winnerModel.parts[0].measures[0].notes[0].pitch = 'D4';
+    const winner = await asActor(
+      request(app).post(`/scores/${id}/versions`),
+      actors.owner,
+      true
+    ).send({ model: winnerModel, baseVersionId: loadedBase, note: 'Editor A' });
+    expect(winner.status).toBe(201);
+    const versionsAfterWinner = await listScoreVersions(id);
+
+    const staleDraft = structuredClone(editorB.body.score.model);
+    staleDraft.parts[0].measures[0].notes[0].pitch = 'E4';
+    const stale = await asActor(
+      request(app).post(`/scores/${id}/versions`),
+      actors.owner,
+      true
+    ).send({ model: staleDraft, baseVersionId: loadedBase, note: 'Editor B' });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error.code).toBe('VERSION_CONFLICT');
+
+    const afterStale = await asActor(
+      request(app).get(`/scores/${id}`),
+      actors.owner
+    );
+    expect(await listScoreVersions(id)).toEqual(versionsAfterWinner);
+    expect(afterStale.body.score.currentVersionId).toBe(winner.body.versionId);
+    expect(
+      afterStale.body.score.model.parts[0].measures[0].notes[0].pitch
+    ).toBe('D4');
   });
 
   it('creates immutable edited versions for clean imports and applies safe export filenames', async () => {
@@ -1051,7 +1132,11 @@ describe('M2 score API routes', () => {
       request(app).post(`/scores/${id}/versions`),
       actors.owner,
       true
-    ).send({ model: editedModel, note: 'Changed melody' });
+    ).send({
+      model: editedModel,
+      note: 'Changed melody',
+      baseVersionId: detail.body.score.currentVersionId,
+    });
     expect(version.status).toBe(201);
     expect(version.body.versionId).not.toBe(imported.body.versionId);
     expect(version.body.score.canEditContent).toBe(true);
@@ -1431,7 +1516,11 @@ describe('M2 score API routes', () => {
       request(app).post(`/scores/${id}/versions`),
       actors.owner,
       true
-    ).send({ model: explicitModel, note: 'Explicit save' });
+    ).send({
+      model: explicitModel,
+      note: 'Explicit save',
+      baseVersionId: current.body.score.currentVersionId,
+    });
     expect(explicit.status).toBe(201);
     const retryAfterExplicit = await asActor(
       request(app).post(`/scores/${id}/autosaves`),
@@ -1698,7 +1787,11 @@ describe('M2 score API routes', () => {
       request(app).post(`/scores/${id}/versions`),
       actors.owner,
       true
-    ).send({ model: explicitModel, note: 'Preserved explicit version' });
+    ).send({
+      model: explicitModel,
+      note: 'Preserved explicit version',
+      baseVersionId: current.body.score.currentVersionId,
+    });
     expect(explicit.status).toBe(201);
 
     const finalModel = structuredClone(explicitModel);

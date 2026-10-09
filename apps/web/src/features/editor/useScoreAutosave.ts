@@ -23,6 +23,8 @@ export type UseScoreAutosaveOptions = ScoreAutosaveSchedulerInput & {
 export type UseScoreAutosaveResult = ScoreAutosaveSchedulerState & {
   /** Call only after presenting/reconciling the latest model in a conflict. */
   resolveConflict: (rebasedDraft?: unknown) => boolean;
+  /** Pause and fetch latest state after an explicit-save VERSION_CONFLICT. */
+  pauseForConflict: () => void;
   /** Explicitly replace the draft and invalidate any pending autosave request. */
   resetDraft: (model: unknown) => boolean;
   /** Retry a transient failure or reload a conflict whose detail fetch failed. */
@@ -97,6 +99,7 @@ export function useScoreAutosave(
     ...state,
     resolveConflict: (rebasedDraft?: unknown) =>
       scheduler.resolveConflict(rebasedDraft),
+    pauseForConflict: () => scheduler.pauseForConflict(),
     resetDraft: (model: unknown) => scheduler.resetDraft(model),
     retryNow: () => scheduler.retryNow(),
   };
