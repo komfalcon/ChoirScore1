@@ -242,3 +242,30 @@ On 2026-10-08, the API-backed lifecycle passed on integrated `main` at `f185f8f7
 This lifecycle run used the create response to obtain the member's initial credentials for login, but did not independently assert the credentials-only-once behavior. That behavior is covered by the exact-main `writes exactly one redacted audit record for every successful admin route action` integration test: create, bulk-create, and reset responses include credentials, while the later normal user-list response omits password hashes and the known credential values; audits and application logs are also checked for secret leakage. Actual credential values are not recorded in this documentation.
 
 The acceptance run used local SQLite and in-process API requests; it did not exercise the browser UI or production deployment and, by itself, does not verify cross-process contention. Separately, the API suite includes a concurrent-throttle test using two repository instances in one Node process; the process-level write queue serializes those writers, so that test also does not prove cross-process contention or real Turso/Pxxl database locking. The owner-deferred Vercel-to-Pxxl live-host check remains **pending, not passed**.
+
+## Score autosaves (M5)
+
+`POST /scores/:id/autosaves` stores a working draft as an immutable version distinct from explicit saves. The endpoint uses the same active-session and edit-permission checks as `POST /scores/:id/versions`, and all state-changing requests require `X-Requested-With: choirscore`.
+
+Request (`createScoreAutosaveRequestSchema`):
+
+```json
+{
+  "model": {},
+  "baseVersionId": "current-version-id",
+  "requestId": "client-generated-stable-retry-key"
+}
+```
+
+`model` is a valid shared `ScoreModel`; `baseVersionId` is the version the draft was based on; `requestId` is unique to one logical autosave and remains stable across retries of that operation. The API canonicalizes the model using the same source-preservation rules as explicit version saves.
+
+| Status                            | Outcome     | Behavior                                                                                                                                                                |
+| --------------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `201`                             | `saved`     | New autosave version is current; response includes `{ score, versionId, currentVersionId, outcome }`.                                                                   |
+| `200`                             | `unchanged` | Model has no musical changes from its base; no version row is inserted and the current version remains unchanged.                                                       |
+| `200`                             | `replayed`  | Same score, actor, request ID, base version and canonical content as an earlier committed request; returns the original `versionId` without moving the current pointer. |
+| `409 VERSION_CONFLICT`            | —           | `baseVersionId` is stale; reload before submitting a new request ID.                                                                                                    |
+| `409 IDEMPOTENCY_KEY_REUSED`      | —           | The same score/actor/request ID was used with a different base version or content.                                                                                      |
+| `403 FORBIDDEN` / `404 NOT_FOUND` | —           | Caller cannot edit, or score is missing/inaccessible.                                                                                                                   |
+
+Autosaves are classified with `versionKind: "autosave"`; explicit `/versions` and initial score versions are `versionKind: "explicit"`. Retention is **20 autosaves per score**, regardless of actor. Inserting a new autosave, advancing the current pointer and pruning the oldest autosaves are one transaction. Only autosaves are eligible for pruning; explicit versions are preserved. Failed transactions leave the prior current version and source recoverable. Autosave request keys are persisted to make a retry safe while its autosave remains retained.

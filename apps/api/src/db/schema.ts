@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import {
   index,
   integer,
@@ -74,12 +75,28 @@ export const scoreVersions = sqliteTable(
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     createdAt: text('created_at').notNull(),
+    versionKind: text('version_kind', { enum: ['explicit', 'autosave'] })
+      .notNull()
+      .default('explicit'),
+    autosaveRequestId: text('autosave_request_id'),
+    autosaveBaseVersionId: text('autosave_base_version_id'),
   },
   (table) => ({
     scoreCreatedIndex: index('score_versions_score_created_idx').on(
       table.scoreId,
       table.createdAt
     ),
+    autosaveOrderIndex: index('score_versions_autosave_order_idx').on(
+      table.scoreId,
+      table.versionKind,
+      table.createdAt,
+      table.id
+    ),
+    autosaveRequestUnique: uniqueIndex('score_versions_autosave_request_unique')
+      .on(table.scoreId, table.createdBy, table.autosaveRequestId)
+      .where(
+        sql`version_kind = 'autosave' AND autosave_request_id IS NOT NULL`
+      ),
   })
 );
 
