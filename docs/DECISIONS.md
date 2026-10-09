@@ -38,6 +38,7 @@
 ## M2b test environment
 
 - **jsdom dev dependency:** Add `jsdom` only to the web workspace’s devDependencies because the integrated M2b MusicXML-to-viewer acceptance test is marked `@vitest-environment jsdom` and requires browser DOM APIs; it is not a production dependency or shipped runtime code.
+
 ## M4: transposition and range-fit clarifications
 
 - Transposed pitches prefer a spelling matching the resulting global or explicit measure key. When the conventional interval spelling exceeds the model's double-accidental limit, use an equivalent bounded spelling; reject only if no supported spelling exists.

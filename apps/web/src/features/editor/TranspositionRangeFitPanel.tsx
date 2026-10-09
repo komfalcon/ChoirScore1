@@ -28,8 +28,10 @@ export type TranspositionRangeFitPanelProps = {
     transposedModel: ScoreModel,
     suggestion: FitSuggestion,
     scope: FitScope
-  ) => void;
+  ) => void | Promise<void>;
   onCancel?: () => void;
+  applying?: boolean;
+  applyError?: string;
 };
 
 type TargetKeyOption = {
@@ -134,6 +136,8 @@ export function TranspositionRangeFitPanel({
   profileVoicePart,
   onApply,
   onCancel,
+  applying = false,
+  applyError = '',
 }: TranspositionRangeFitPanelProps) {
   const panelId = useId();
   const [chosenShift, setChosenShift] = useState<number | null>(null);
@@ -539,6 +543,7 @@ export function TranspositionRangeFitPanel({
               <button
                 className="button button--quiet"
                 type="button"
+                disabled={applying}
                 onClick={onCancel}
               >
                 Cancel
@@ -547,8 +552,9 @@ export function TranspositionRangeFitPanel({
             <button
               className="button button--primary"
               type="button"
+              disabled={applying}
               onClick={() =>
-                applyFitSuggestion(
+                void applyFitSuggestion(
                   model,
                   selectedSuggestion,
                   { partId },
@@ -556,9 +562,19 @@ export function TranspositionRangeFitPanel({
                 )
               }
             >
-              Apply to a new score/version
+              {applying
+                ? 'Creating new version…'
+                : 'Apply to a new score/version'}
             </button>
           </footer>
+          {applyError ? (
+            <p
+              className="score-data-state score-data-state--error"
+              role="alert"
+            >
+              {applyError}
+            </p>
+          ) : null}
         </>
       ) : (
         <>
