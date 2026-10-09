@@ -60,13 +60,21 @@ const settings: PlaybackSettings = {
   parts: { P1: { muted: false, solo: false, volume: 1 } },
 };
 
+type SamplerCallbacks = {
+  onload?: () => void;
+  onerror?: (error: Error) => void;
+};
+
 function installRuntimeMocks() {
-  toneMock.sampler.mockImplementation(() => ({
-    toDestination: () => ({
-      triggerAttackRelease: vi.fn(),
-      dispose: vi.fn(),
-    }),
-  }));
+  toneMock.sampler.mockImplementation((options: SamplerCallbacks) => {
+    queueMicrotask(() => options.onload?.());
+    return {
+      toDestination: () => ({
+        triggerAttackRelease: vi.fn(),
+        dispose: vi.fn(),
+      }),
+    };
+  });
   toneMock.synth.mockImplementation(() => ({
     toDestination: () => ({
       triggerAttackRelease: vi.fn(),
@@ -114,16 +122,23 @@ describe('TonePlaybackEngine', () => {
     expect(toneMock.start).toHaveBeenCalledOnce();
     expect(toneMock.sampler).toHaveBeenCalledOnce();
     expect(toneMock.synth).toHaveBeenCalledOnce();
-    expect(toneMock.loaded).toHaveBeenCalledOnce();
+    expect(toneMock.loaded).not.toHaveBeenCalled();
     expect(toneMock.transport.start).toHaveBeenCalledOnce();
   });
 
-  it('disposes a failed sample initialization and retries on the next Play', async () => {
+  it('surfaces a 503 sample failure, disposes partial audio, and retries successfully on Play', async () => {
     const samplerInstances: Array<{ dispose: ReturnType<typeof vi.fn> }> = [];
     const synthInstances: Array<{ dispose: ReturnType<typeof vi.fn> }> = [];
-    toneMock.sampler.mockImplementation(() => {
+    toneMock.sampler.mockImplementation((options: SamplerCallbacks) => {
       const instance = { dispose: vi.fn(), triggerAttackRelease: vi.fn() };
       samplerInstances.push(instance);
+      queueMicrotask(() => {
+        if (samplerInstances.length === 1) {
+          options.onerror?.(new Error('Could not load C4 sample (503).'));
+        } else {
+          options.onload?.();
+        }
+      });
       return { toDestination: () => instance };
     });
     toneMock.synth.mockImplementation(() => {
@@ -131,13 +146,10 @@ describe('TonePlaybackEngine', () => {
       synthInstances.push(instance);
       return { toDestination: () => instance };
     });
-    toneMock.loaded
-      .mockRejectedValueOnce(new Error('Sample decode failed.'))
-      .mockResolvedValueOnce(undefined);
     const engine = new TonePlaybackEngine();
 
     await expect(engine.play(score, settings)).rejects.toThrow(
-      'Sample decode failed.'
+      'Could not load C4 sample (503).'
     );
     expect(samplerInstances[0]?.dispose).toHaveBeenCalledOnce();
     expect(synthInstances[0]?.dispose).toHaveBeenCalledOnce();
@@ -147,24 +159,24 @@ describe('TonePlaybackEngine', () => {
 
     expect(toneMock.sampler).toHaveBeenCalledTimes(2);
     expect(toneMock.synth).toHaveBeenCalledTimes(2);
-    expect(toneMock.loaded).toHaveBeenCalledTimes(2);
+    expect(toneMock.loaded).not.toHaveBeenCalled();
     expect(toneMock.transport.start).toHaveBeenCalledOnce();
   });
 
   it('does not start transport if Stop cancels a pending sample load', async () => {
-    let resolveSamples!: () => void;
-    toneMock.loaded.mockImplementationOnce(
-      () =>
-        new Promise<void>((resolve) => {
-          resolveSamples = resolve;
-        })
-    );
+    let resolveSamples: (() => void) | undefined;
+    toneMock.sampler.mockImplementationOnce((options: SamplerCallbacks) => ({
+      toDestination: () => {
+        resolveSamples = () => options.onload?.();
+        return { triggerAttackRelease: vi.fn(), dispose: vi.fn() };
+      },
+    }));
     const engine = new TonePlaybackEngine();
     const pendingPlay = engine.play(score, settings);
 
-    await vi.waitFor(() => expect(toneMock.loaded).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(resolveSamples).toBeTypeOf('function'));
     engine.stop();
-    resolveSamples();
+    resolveSamples?.();
     await pendingPlay;
 
     expect(toneMock.transport.start).not.toHaveBeenCalled();
@@ -172,20 +184,20 @@ describe('TonePlaybackEngine', () => {
   });
 
   it('schedules and starts playback when resumed before the initial sample load completes', async () => {
-    let resolveSamples!: () => void;
-    toneMock.loaded.mockImplementationOnce(
-      () =>
-        new Promise<void>((resolve) => {
-          resolveSamples = resolve;
-        })
-    );
+    let resolveSamples: (() => void) | undefined;
+    toneMock.sampler.mockImplementationOnce((options: SamplerCallbacks) => ({
+      toDestination: () => {
+        resolveSamples = () => options.onload?.();
+        return { triggerAttackRelease: vi.fn(), dispose: vi.fn() };
+      },
+    }));
     const engine = new TonePlaybackEngine();
     const pendingPlay = engine.play(score, settings);
 
-    await vi.waitFor(() => expect(toneMock.loaded).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(resolveSamples).toBeTypeOf('function'));
     engine.pause();
     engine.resume();
-    resolveSamples();
+    resolveSamples?.();
     await pendingPlay;
 
     expect(toneMock.transport.schedule).toHaveBeenCalled();
@@ -193,19 +205,19 @@ describe('TonePlaybackEngine', () => {
   });
 
   it('waits for resume when the initial sample load completes while paused', async () => {
-    let resolveSamples!: () => void;
-    toneMock.loaded.mockImplementationOnce(
-      () =>
-        new Promise<void>((resolve) => {
-          resolveSamples = resolve;
-        })
-    );
+    let resolveSamples: (() => void) | undefined;
+    toneMock.sampler.mockImplementationOnce((options: SamplerCallbacks) => ({
+      toDestination: () => {
+        resolveSamples = () => options.onload?.();
+        return { triggerAttackRelease: vi.fn(), dispose: vi.fn() };
+      },
+    }));
     const engine = new TonePlaybackEngine();
     const pendingPlay = engine.play(score, settings);
 
-    await vi.waitFor(() => expect(toneMock.loaded).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(resolveSamples).toBeTypeOf('function'));
     engine.pause();
-    resolveSamples();
+    resolveSamples?.();
     await pendingPlay;
 
     expect(toneMock.transport.schedule).toHaveBeenCalled();
@@ -219,12 +231,15 @@ describe('TonePlaybackEngine', () => {
   it('stops playback and disposes its sampler and synth', async () => {
     const disposeSampler = vi.fn();
     const disposeSynth = vi.fn();
-    toneMock.sampler.mockImplementation(() => ({
-      toDestination: () => ({
-        triggerAttackRelease: vi.fn(),
-        dispose: disposeSampler,
-      }),
-    }));
+    toneMock.sampler.mockImplementation((options: SamplerCallbacks) => {
+      queueMicrotask(() => options.onload?.());
+      return {
+        toDestination: () => ({
+          triggerAttackRelease: vi.fn(),
+          dispose: disposeSampler,
+        }),
+      };
+    });
     toneMock.synth.mockImplementation(() => ({
       toDestination: () => ({
         triggerAttackRelease: vi.fn(),

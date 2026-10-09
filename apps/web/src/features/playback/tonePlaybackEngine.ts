@@ -129,20 +129,40 @@ export class TonePlaybackEngine {
 
   private async ensureSamplesLoaded(): Promise<void> {
     if (!this.sampler) {
-      this.sampler = new Tone.Sampler({
-        urls: {
-          C3: c3SampleUrl,
-          C4: c4SampleUrl,
-          C5: c5SampleUrl,
-        },
-        attack: 0.015,
-        release: 0.12,
-      }).toDestination();
-      this.clickSynth = new Tone.Synth({
-        oscillator: { type: 'sine' },
-        envelope: { attack: 0.001, decay: 0.035, sustain: 0, release: 0.02 },
-      }).toDestination();
-      this.samplerLoad = Tone.loaded().then(() => undefined);
+      let resolveLoad!: () => void;
+      let rejectLoad!: (error: Error) => void;
+      this.samplerLoad = new Promise<void>((resolve, reject) => {
+        resolveLoad = resolve;
+        rejectLoad = reject;
+      });
+      try {
+        this.sampler = new Tone.Sampler({
+          urls: {
+            C3: c3SampleUrl,
+            C4: c4SampleUrl,
+            C5: c5SampleUrl,
+          },
+          attack: 0.015,
+          release: 0.12,
+          onload: resolveLoad,
+          onerror: rejectLoad,
+        }).toDestination();
+        this.clickSynth = new Tone.Synth({
+          oscillator: { type: 'sine' },
+          envelope: {
+            attack: 0.001,
+            decay: 0.035,
+            sustain: 0,
+            release: 0.02,
+          },
+        }).toDestination();
+      } catch (error) {
+        rejectLoad(
+          error instanceof Error
+            ? error
+            : new Error('Playback samples could not be initialized.')
+        );
+      }
     }
     try {
       await this.samplerLoad;

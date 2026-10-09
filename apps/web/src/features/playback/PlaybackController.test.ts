@@ -277,16 +277,27 @@ describe('PlaybackController', () => {
 
   it('surfaces an audio failure through controlled error status', async () => {
     const fixture = makeFixture();
-    vi.mocked(fixture.engine.play).mockRejectedValueOnce(
-      new Error('Audio permission is required.')
-    );
+    vi.mocked(fixture.engine.play)
+      .mockRejectedValueOnce(new Error('Could not load C4 sample (503).'))
+      .mockResolvedValueOnce(undefined);
 
     await fixture.controller.callbacks.onPlay();
 
     expect(fixture.statusChanges.at(-1)).toEqual([
       'error',
-      'Audio permission is required.',
+      'Could not load C4 sample (503).',
     ]);
-    expect(fixture.getState().error).toBe('Audio permission is required.');
+    expect(fixture.getState().error).toBe('Could not load C4 sample (503).');
+
+    await fixture.controller.callbacks.onPlay();
+
+    expect(fixture.statusChanges.map(([status]) => status)).toEqual([
+      'loading',
+      'error',
+      'loading',
+      'playing',
+    ]);
+    expect(fixture.getState().status).toBe('playing');
+    expect(fixture.engine.play).toHaveBeenCalledTimes(2);
   });
 });

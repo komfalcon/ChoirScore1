@@ -4,6 +4,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig, type Plugin } from 'vite';
+import { withPlaybackSampleManifestDigest } from './src/features/playback/playbackSampleBuild';
 
 const webRoot = fileURLToPath(new URL('.', import.meta.url));
 const playbackSamplesRoot = resolve(webRoot, 'src/features/playback/assets');
@@ -50,17 +51,21 @@ function playbackSampleCacheAssets(): Plugin {
         );
       }
 
+      const manifestSource = `${JSON.stringify({ samples, urls }, null, 2)}\n`;
       this.emitFile({
         type: 'asset',
         fileName: 'playback-samples.json',
-        source: `${JSON.stringify({ samples, urls }, null, 2)}\n`,
+        source: manifestSource,
       });
       this.emitFile({
         type: 'asset',
         fileName: 'sw.js',
-        source: readFileSync(
-          resolve(webRoot, 'src/features/playback/playback-sample-sw.js'),
-          'utf8'
+        source: withPlaybackSampleManifestDigest(
+          readFileSync(
+            resolve(webRoot, 'src/features/playback/playback-sample-sw.js'),
+            'utf8'
+          ),
+          manifestSource
         ),
       });
     },

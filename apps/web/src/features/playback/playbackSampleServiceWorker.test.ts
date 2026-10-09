@@ -6,10 +6,12 @@ import {
   PLAYBACK_SAMPLE_CACHE_PREFIX,
   respondWithCachedSample,
 } from './playback-sample-sw.js';
+import { withPlaybackSampleManifestDigest } from './playbackSampleBuild';
 
 const ORIGIN = 'https://choir.example';
 const C3_SAMPLE = `${ORIGIN}/assets/choir-c3-0123abcd.wav`;
 const C4_SAMPLE = `${ORIGIN}/assets/choir-c4-89abcdef.wav`;
+const C4_UPDATED_SAMPLE = `${ORIGIN}/assets/choir-c4-CA3i0Hnp.wav`;
 
 function makeCacheStorage() {
   const entries = new Map<string, Map<string, Response>>();
@@ -157,16 +159,17 @@ describe('playback sample service worker', () => {
     const olderCacheName = `${PLAYBACK_SAMPLE_CACHE_PREFIX}v0`;
     const activeCache = await cacheStorage.open(PLAYBACK_SAMPLE_CACHE_NAME);
     await activeCache.put(new Request(C3_SAMPLE), new Response('old sample'));
+    await activeCache.put(new Request(C4_SAMPLE), new Response('old c4 hash'));
     await activeCache.put(
-      new Request(C4_SAMPLE),
-      new Response('current sample')
+      new Request(C4_UPDATED_SAMPLE),
+      new Response('current c4 hash')
     );
     const olderCache = await cacheStorage.open(olderCacheName);
     await olderCache.put(new Request(C3_SAMPLE), new Response('older cache'));
     await cacheStorage.open('unrelated-cache');
     const fetchImpl: typeof fetch = vi.fn(
       async () =>
-        new Response(JSON.stringify({ samples: [C4_SAMPLE] }), {
+        new Response(JSON.stringify({ samples: [C4_UPDATED_SAMPLE] }), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         })
@@ -183,7 +186,31 @@ describe('playback sample service worker', () => {
     const remaining = [
       ...(entries.get(PLAYBACK_SAMPLE_CACHE_NAME)?.keys() ?? []),
     ];
-    expect(remaining).toEqual([C4_SAMPLE]);
+    expect(remaining).toEqual([C4_UPDATED_SAMPLE]);
+  });
+
+  it('changes generated worker bytes whenever a sample asset hash changes', () => {
+    const workerSource = 'self.addEventListener("activate", () => {});\n';
+    const oldManifest = JSON.stringify({
+      samples: [C3_SAMPLE, C4_SAMPLE],
+    });
+    const updatedManifest = JSON.stringify({
+      samples: [C3_SAMPLE, C4_UPDATED_SAMPLE],
+    });
+
+    const oldWorker = withPlaybackSampleManifestDigest(
+      workerSource,
+      oldManifest
+    );
+    const updatedWorker = withPlaybackSampleManifestDigest(
+      workerSource,
+      updatedManifest
+    );
+
+    expect(updatedWorker).not.toBe(oldWorker);
+    expect(withPlaybackSampleManifestDigest(workerSource, oldManifest)).toBe(
+      oldWorker
+    );
   });
 
   it('preserves existing playback caches when an offline activation cannot fetch the manifest', async () => {
