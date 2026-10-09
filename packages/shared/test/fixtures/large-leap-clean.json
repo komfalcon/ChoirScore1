@@ -1,0 +1,60 @@
+{
+  "title": "Large leap clean fixture",
+  "key": { "fifths": 0, "mode": "major" },
+  "time": { "beats": 4, "beatType": 4 },
+  "tempo": 90,
+  "parts": [
+    {
+      "id": "S",
+      "clef": "treble",
+      "measures": [
+        {
+          "number": 1,
+          "notes": [
+            { "pitch": "C4", "dur": 1 },
+            { "pitch": "C7", "dur": 1 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "A",
+      "clef": "treble",
+      "measures": [
+        {
+          "number": 1,
+          "notes": [
+            { "pitch": "C4", "dur": 1 },
+            { "pitch": "A4", "dur": 1 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "T",
+      "clef": "bass",
+      "measures": [
+        {
+          "number": 1,
+          "notes": [
+            { "pitch": "C3", "dur": 1 },
+            { "pitch": "A3", "dur": 1 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B",
+      "clef": "bass",
+      "measures": [
+        {
+          "number": 1,
+          "notes": [
+            { "pitch": "C2", "dur": 1 },
+            { "pitch": "C3", "dur": 1 }
+          ]
+        }
+      ]
+    }
+  ]
+}

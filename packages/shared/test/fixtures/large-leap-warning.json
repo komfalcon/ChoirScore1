@@ -1,0 +1,60 @@
+{
+  "title": "Large leap warning fixture",
+  "key": { "fifths": 0, "mode": "major" },
+  "time": { "beats": 4, "beatType": 4 },
+  "tempo": 90,
+  "parts": [
+    {
+      "id": "S",
+      "clef": "treble",
+      "measures": [
+        {
+          "number": 7,
+          "notes": [
+            { "pitch": "C4", "dur": 1, "onset": 0 },
+            { "pitch": "D7", "dur": 1, "onset": 1 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "A",
+      "clef": "treble",
+      "measures": [
+        {
+          "number": 7,
+          "notes": [
+            { "pitch": "C4", "dur": 1, "onset": 0 },
+            { "pitch": "C5", "dur": 1, "onset": 2 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "T",
+      "clef": "bass",
+      "measures": [
+        {
+          "number": 7,
+          "notes": [
+            { "pitch": "C3", "dur": 1, "onset": 0 },
+            { "pitch": "D4", "dur": 1, "onset": 1 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B",
+      "clef": "bass",
+      "measures": [
+        {
+          "number": 7,
+          "notes": [
+            { "pitch": "C2", "dur": 1, "onset": 0 },
+            { "pitch": "D3", "dur": 1, "onset": 3 }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -9,7 +9,7 @@ import {
   VoiceMappingError,
   type VoiceMappingFailureKind,
 } from '../voiceMappingError.js';
-import { midiForPitch } from '../pitch.js';
+import { midiForPitch, parsePitch } from '../pitch.js';
 import type {
   ScoreModel,
   ScoreMeasure,
@@ -441,6 +441,202 @@ export function validateSpacing(model: ScoreModel): ValidationResult {
           code: 'SPACING',
           message: `${upperVoice}–${lowerVoice} spacing exceeds an octave at a shared onset.`,
         });
+      }
+    }
+  }
+
+  return { errors: [], warnings };
+}
+
+const LARGE_LEAP_VOICES: ReadonlyArray<readonly [VoicePartId, number]> = [
+  ['A', 6],
+  ['T', 6],
+  ['B', 8],
+];
+
+interface LargeLeapOnset {
+  measure: number;
+  measureOrder: number;
+  onset: number;
+  anchor: ScoreNote | null;
+}
+
+interface LargeLeapPosition extends NotePosition {
+  measure: number;
+  measureOrder: number;
+  noteOrder: number;
+}
+
+interface LargeLeapTimeline {
+  staff: number;
+  voice: string;
+  onsets: LargeLeapOnset[];
+}
+
+function largeLeapTimelines(part: ScorePart): LargeLeapTimeline[] {
+  const timelines = new Map<
+    string,
+    { staff: number; voice: string; positions: LargeLeapPosition[] }
+  >();
+  const measures = part.measures
+    .map((measure, measureOrder) => ({ measure, measureOrder }))
+    .sort(
+      (first, second) =>
+        first.measure.number - second.measure.number ||
+        first.measureOrder - second.measureOrder
+    );
+
+  for (const { measure, measureOrder } of measures) {
+    for (const [noteOrder, position] of notePositions(measure).entries()) {
+      const { note } = position;
+      const key = `${note.staff}\u0000${note.voice}`;
+      let timeline = timelines.get(key);
+      if (!timeline) {
+        timeline = { staff: note.staff, voice: note.voice, positions: [] };
+        timelines.set(key, timeline);
+      }
+      timeline.positions.push({
+        ...position,
+        measure: measure.number,
+        measureOrder,
+        noteOrder,
+      });
+    }
+  }
+
+  return [...timelines.values()]
+    .map(({ staff, voice, positions }) => {
+      positions.sort(
+        (first, second) =>
+          first.measure - second.measure ||
+          first.measureOrder - second.measureOrder ||
+          first.onset - second.onset ||
+          first.noteOrder - second.noteOrder
+      );
+
+      const onsets: LargeLeapOnset[] = [];
+      for (let start = 0; start < positions.length;) {
+        const first = positions[start]!;
+        let end = start + 1;
+        while (
+          end < positions.length &&
+          positions[end]!.measureOrder === first.measureOrder &&
+          Math.abs(positions[end]!.onset - first.onset) <= ONSET_EPSILON
+        ) {
+          end += 1;
+        }
+
+        const onsetPositions = positions.slice(start, end);
+        const pitchedPositions = onsetPositions.filter(
+          ({ note }) => note.pitch !== null
+        );
+        const anchor =
+          pitchedPositions.find(({ note }) => !note.chord)?.note ??
+          pitchedPositions[0]?.note ??
+          null;
+        onsets.push({
+          measure: first.measure,
+          measureOrder: first.measureOrder,
+          onset: first.onset,
+          anchor,
+        });
+        start = end;
+      }
+
+      return { staff, voice, onsets };
+    })
+    .sort(
+      (first, second) =>
+        first.staff - second.staff ||
+        (first.voice < second.voice ? -1 : first.voice > second.voice ? 1 : 0)
+    );
+}
+
+function diatonicIntervalName(intervalNumber: number): string {
+  const names: Readonly<Record<number, string>> = {
+    1: 'unison',
+    2: 'second',
+    3: 'third',
+    4: 'fourth',
+    5: 'fifth',
+    6: 'sixth',
+    7: 'seventh',
+    8: 'octave',
+    9: 'ninth',
+    10: 'tenth',
+    11: 'eleventh',
+    12: 'twelfth',
+    13: 'thirteenth',
+  };
+  return names[intervalNumber] ?? `${intervalNumber}th`;
+}
+
+/**
+ * Warns on melodic leaps larger than a sixth in A/T and larger than an octave
+ * in B. Events are grouped by part/staff/voice and ordered by measure number
+ * and resolved onset. Same-onset chord tones share one anchor pitch; rests are
+ * skipped as endpoints, while directly tied same-pitch continuations remain one
+ * sustained event. Intervals are notated diatonic interval numbers.
+ */
+export function validateLargeLeap(model: ScoreModel): ValidationResult {
+  let mapping: ReturnType<typeof mapScorePartsToVoiceParts>;
+  try {
+    mapping = mapScorePartsToVoiceParts(model.parts);
+  } catch (error) {
+    if (!(error instanceof VoiceMappingError)) throw error;
+    return { errors: [voiceMappingIssue(model, error)], warnings: [] };
+  }
+
+  const partsById = new Map<string, ScorePart>(
+    model.parts.map((part) => [part.id, part])
+  );
+  const warnings: Issue[] = [];
+
+  for (const [voice, threshold] of LARGE_LEAP_VOICES) {
+    const partId = mapping.byVoicePart[voice];
+    if (!partId) continue;
+    const part = partsById.get(partId);
+    if (!part) continue;
+
+    for (const timeline of largeLeapTimelines(part)) {
+      let previousOnset: LargeLeapOnset | null = null;
+      let previousPitched: { pitch: string } | null = null;
+
+      for (const event of timeline.onsets) {
+        const note = event.anchor;
+        if (!note || note.pitch === null) {
+          previousOnset = event;
+          continue;
+        }
+
+        const tiedContinuation =
+          previousOnset?.anchor?.tie === true &&
+          previousOnset.anchor.pitch === note.pitch;
+        if (tiedContinuation) {
+          previousOnset = event;
+          continue;
+        }
+
+        if (previousPitched) {
+          const intervalNumber =
+            Math.abs(
+              parsePitch(note.pitch).diatonicIndex -
+                parsePitch(previousPitched.pitch).diatonicIndex
+            ) + 1;
+          if (intervalNumber > threshold) {
+            const limit = voice === 'B' ? 'octave' : 'sixth';
+            warnings.push({
+              part: part.id,
+              measure: event.measure,
+              beat: roundedBeat(event.onset, model.time.beatType),
+              code: 'LARGE_LEAP',
+              message: `${voice} leap from ${previousPitched.pitch} to ${note.pitch} spans a diatonic ${diatonicIntervalName(intervalNumber)}, exceeding the ${limit} limit.`,
+            });
+          }
+        }
+
+        previousPitched = { pitch: note.pitch };
+        previousOnset = event;
       }
     }
   }
