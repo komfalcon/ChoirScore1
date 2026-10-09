@@ -8,7 +8,6 @@ const toneMock = vi.hoisted(() => ({
   sampler: vi.fn(),
   synth: vi.fn(),
   setContext: vi.fn(),
-  getContext: vi.fn(() => ({ dispose: vi.fn() })),
   getTransport: vi.fn(),
   transport: {
     start: vi.fn(),
@@ -31,7 +30,6 @@ vi.mock('tone', () => ({
   Sampler: toneMock.sampler,
   Synth: toneMock.synth,
   setContext: toneMock.setContext,
-  getContext: toneMock.getContext,
   getTransport: toneMock.getTransport,
 }));
 
@@ -86,7 +84,6 @@ describe('TonePlaybackEngine', () => {
     toneMock.transport.bpm.value = 120;
     toneMock.transport.loop = false;
     toneMock.getTransport.mockReturnValue(toneMock.transport);
-    toneMock.getContext.mockReturnValue({ dispose: vi.fn() });
     installRuntimeMocks();
   });
 
@@ -219,15 +216,28 @@ describe('TonePlaybackEngine', () => {
     expect(toneMock.transport.start).toHaveBeenCalledOnce();
   });
 
-  it('stops and releases Tone resources on disposal', async () => {
-    const disposeContext = vi.fn();
-    toneMock.getContext.mockReturnValue({ dispose: disposeContext });
+  it('stops playback and disposes its sampler and synth', async () => {
+    const disposeSampler = vi.fn();
+    const disposeSynth = vi.fn();
+    toneMock.sampler.mockImplementation(() => ({
+      toDestination: () => ({
+        triggerAttackRelease: vi.fn(),
+        dispose: disposeSampler,
+      }),
+    }));
+    toneMock.synth.mockImplementation(() => ({
+      toDestination: () => ({
+        triggerAttackRelease: vi.fn(),
+        dispose: disposeSynth,
+      }),
+    }));
     const engine = new TonePlaybackEngine();
     await engine.play(score, settings);
 
     engine.dispose();
 
     expect(toneMock.transport.stop).toHaveBeenCalled();
-    expect(disposeContext).toHaveBeenCalledOnce();
+    expect(disposeSampler).toHaveBeenCalledOnce();
+    expect(disposeSynth).toHaveBeenCalledOnce();
   });
 });

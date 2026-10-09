@@ -125,7 +125,6 @@ export class TonePlaybackEngine {
     this.sampler = undefined;
     this.clickSynth = undefined;
     this.samplerLoad = undefined;
-    Tone.getContext().dispose();
   }
 
   private async ensureSamplesLoaded(): Promise<void> {

@@ -45,6 +45,7 @@ export interface PlaybackControllerHost {
 export class PlaybackController {
   readonly callbacks: PlaybackControlsCallbacks;
   private playRequestId = 0;
+  private pendingPlay?: Promise<void>;
 
   constructor(
     private readonly host: PlaybackControllerHost,
@@ -71,32 +72,63 @@ export class PlaybackController {
 
   async play(): Promise<void> {
     if (this.host.getState().status === 'paused') {
-      this.playRequestId += 1;
-      this.engine.resume();
-      this.host.onStatusChange('playing');
+      const playRequestId = ++this.playRequestId;
+      try {
+        this.engine.resume();
+      } catch (error) {
+        this.reportPlayError(error);
+        return;
+      }
+      const pendingPlay = this.pendingPlay;
+      if (!pendingPlay) {
+        this.host.onStatusChange('playing');
+        return;
+      }
+
+      this.host.onStatusChange('loading');
+      try {
+        await pendingPlay;
+        if (playRequestId === this.playRequestId) {
+          this.host.onStatusChange('playing');
+        }
+      } catch (error) {
+        if (playRequestId === this.playRequestId) {
+          this.reportPlayError(error);
+        }
+      }
       return;
     }
 
     const playRequestId = ++this.playRequestId;
     this.host.onStatusChange('loading');
+    let pendingPlay: Promise<void> | undefined;
     try {
-      const currentState = this.host.getState();
-      await this.engine.play(
+      pendingPlay = this.engine.play(
         this.host.getScore(),
-        playbackSettingsFromControls(currentState),
+        playbackSettingsFromControls(this.host.getState()),
         { onEnded: () => this.host.onStatusChange('idle') }
       );
+      this.pendingPlay = pendingPlay;
+      await pendingPlay;
       if (playRequestId !== this.playRequestId) return;
       this.host.onStatusChange('playing');
     } catch (error) {
       if (playRequestId !== this.playRequestId) return;
-      this.host.onStatusChange(
-        'error',
-        error instanceof Error
-          ? error.message
-          : 'Playback could not be started. Please try again.'
-      );
+      this.reportPlayError(error);
+    } finally {
+      if (pendingPlay && this.pendingPlay === pendingPlay) {
+        this.pendingPlay = undefined;
+      }
     }
+  }
+
+  private reportPlayError(error: unknown): void {
+    this.host.onStatusChange(
+      'error',
+      error instanceof Error
+        ? error.message
+        : 'Playback could not be started. Please try again.'
+    );
   }
 
   pause(): void {

@@ -207,18 +207,21 @@ describe('PlaybackController', () => {
     expect(fixture.getState().status).toBe('loading');
     fixture.controller.pause();
     expect(fixture.getState().status).toBe('paused');
-    await fixture.controller.play();
-    expect(fixture.getState().status).toBe('playing');
+    const resumedPlay = fixture.controller.play();
+    expect(fixture.getState().status).toBe('loading');
+    expect(fixture.engine.resume).toHaveBeenCalledOnce();
 
     resolvePlay();
     await pendingPlay;
+    await resumedPlay;
 
     expect(fixture.engine.play).toHaveBeenCalledOnce();
     expect(fixture.engine.pause).toHaveBeenCalledOnce();
-    expect(fixture.engine.resume).toHaveBeenCalledOnce();
+    expect(fixture.getState().status).toBe('playing');
     expect(fixture.statusChanges.map(([status]) => status)).toEqual([
       'loading',
       'paused',
+      'loading',
       'playing',
     ]);
   });

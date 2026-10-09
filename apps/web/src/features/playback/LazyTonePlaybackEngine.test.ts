@@ -79,13 +79,18 @@ describe('LazyTonePlaybackEngine', () => {
 
     expect(createContext).toHaveBeenCalledOnce();
     expect(context.resume).toHaveBeenCalledOnce();
-    expect(loader).toHaveBeenCalledWith(context);
+    expect(loader).toHaveBeenCalledWith(context, expect.any(Function));
   });
 
   it('cancels a pending engine import when stopped before it resolves', async () => {
     const pending = deferred<ManagedPlaybackEngine>();
     const loader = vi.fn(() => pending.promise);
-    const lazy = new LazyTonePlaybackEngine(loader);
+    const context = {
+      state: 'running',
+      resume: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    } as unknown as AudioContext;
+    const lazy = new LazyTonePlaybackEngine(loader, () => context);
     const engine = fakeEngine();
     const play = lazy.play(score, settings);
 
@@ -96,6 +101,28 @@ describe('LazyTonePlaybackEngine', () => {
 
     expect(engine.play).not.toHaveBeenCalled();
     expect(engine.dispose).toHaveBeenCalledOnce();
+    expect(context.close).toHaveBeenCalledOnce();
+  });
+
+  it('preserves Pause during a pending import and resumes after engine creation', async () => {
+    const pendingLoad = deferred<ManagedPlaybackEngine>();
+    const pendingPlay = deferred<void>();
+    const engine = fakeEngine();
+    vi.mocked(engine.play).mockReturnValueOnce(pendingPlay.promise);
+    const loader = vi.fn(() => pendingLoad.promise);
+    const lazy = new LazyTonePlaybackEngine(loader);
+    const play = lazy.play(score, settings);
+
+    lazy.pause();
+    pendingLoad.resolve(engine);
+    await vi.waitFor(() => expect(engine.play).toHaveBeenCalledOnce());
+
+    expect(engine.pause).toHaveBeenCalledOnce();
+    lazy.resume();
+    expect(engine.resume).toHaveBeenCalledOnce();
+
+    pendingPlay.resolve();
+    await play;
   });
 
   it('stops an engine again if Stop occurs while its asynchronous play is loading samples', async () => {
@@ -119,16 +146,22 @@ describe('LazyTonePlaybackEngine', () => {
   it('cleans up the active engine on unmount and lazily creates a fresh one later', async () => {
     const first = fakeEngine();
     const second = fakeEngine();
+    const context = {
+      state: 'running',
+      resume: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+    } as unknown as AudioContext;
     const loader = vi
       .fn<() => Promise<ManagedPlaybackEngine>>()
       .mockResolvedValueOnce(first)
       .mockResolvedValueOnce(second);
-    const lazy = new LazyTonePlaybackEngine(loader);
+    const lazy = new LazyTonePlaybackEngine(loader, () => context);
 
     await lazy.play(score, settings);
     lazy.dispose();
     expect(first.stop).toHaveBeenCalledOnce();
     expect(first.dispose).toHaveBeenCalledOnce();
+    expect(context.close).toHaveBeenCalledOnce();
 
     await lazy.play(score, settings);
     expect(loader).toHaveBeenCalledTimes(2);

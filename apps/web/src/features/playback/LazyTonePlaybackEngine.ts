@@ -53,9 +53,8 @@ const loadToneEngine: PlaybackEngineLoader = async (
   isCurrent
 ) => {
   await registerPlaybackSampleWorker();
-  const { configureToneAudioContext, TonePlaybackEngine } = await import(
-    './tonePlaybackEngine'
-  );
+  const { configureToneAudioContext, TonePlaybackEngine } =
+    await import('./tonePlaybackEngine');
   if (audioContext && isCurrent()) configureToneAudioContext(audioContext);
   return new TonePlaybackEngine();
 };
@@ -66,6 +65,7 @@ export class LazyTonePlaybackEngine implements PlaybackEnginePort {
   private loadPromise?: Promise<ManagedPlaybackEngine>;
   private gestureContext?: AudioContext;
   private generation = 0;
+  private paused = false;
 
   constructor(
     private readonly loadEngine: PlaybackEngineLoader = loadToneEngine,
@@ -86,24 +86,25 @@ export class LazyTonePlaybackEngine implements PlaybackEnginePort {
 
     const engine = await this.getEngine(generation);
     if (generation !== this.generation) return;
-    await engine.play(score, settings, callbacks);
+    const pendingPlay = engine.play(score, settings, callbacks);
+    if (this.paused) engine.pause();
+    await pendingPlay;
     if (generation !== this.generation) engine.stop();
   }
 
   pause(): void {
-    if (!this.engine && this.loadPromise) {
-      this.invalidatePendingLoad();
-      return;
-    }
+    this.paused = true;
     this.engine?.pause();
   }
 
   resume(): void {
+    this.paused = false;
     this.engine?.resume();
   }
 
   stop(): void {
     this.generation += 1;
+    this.paused = false;
     const engine = this.engine;
     this.engine = undefined;
     this.loadPromise = undefined;
@@ -114,17 +115,12 @@ export class LazyTonePlaybackEngine implements PlaybackEnginePort {
 
   dispose(): void {
     this.generation += 1;
+    this.paused = false;
     const engine = this.engine;
     this.engine = undefined;
     this.loadPromise = undefined;
     engine?.stop();
     engine?.dispose?.();
-    this.closeGestureContext();
-  }
-
-  private invalidatePendingLoad(): void {
-    this.generation += 1;
-    this.loadPromise = undefined;
     this.closeGestureContext();
   }
 
