@@ -1,0 +1,111 @@
+.solfa-text-editor {
+  min-width: 0;
+  max-width: 100%;
+  padding: clamp(1rem, 3vw, 1.5rem);
+  border: 1px solid var(--line, #dfe5dc);
+  border-radius: 1rem;
+  background: var(--surface, #fff);
+  color: var(--ink, #1b302a);
+  box-shadow: 0 12px 34px rgb(34 54 44 / 6%);
+}
+
+.solfa-text-editor__header {
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--line, #dfe5dc);
+}
+
+.solfa-text-editor__eyebrow {
+  margin: 0;
+  color: var(--accent-dark, #1d523d);
+  font-size: 0.72rem;
+  font-weight: 750;
+  letter-spacing: 0.13em;
+}
+
+.solfa-text-editor__header h2 {
+  margin: 0.25rem 0;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: clamp(1.5rem, 5vw, 2rem);
+  font-weight: 500;
+}
+
+.solfa-text-editor__meta,
+.solfa-text-editor__help {
+  margin: 0;
+  color: var(--muted, #52635a);
+  font-size: 0.88rem;
+  line-height: 1.55;
+}
+
+.solfa-text-editor__label {
+  display: block;
+  margin: 1rem 0 0.4rem;
+  color: var(--ink, #1b302a);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.solfa-text-editor__input {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 19rem;
+  padding: 0.85rem;
+  border: 1px solid #cbd8ce;
+  border-radius: 0.75rem;
+  background: #fbfcfa;
+  color: var(--ink, #1b302a);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9rem;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+  resize: vertical;
+  tab-size: 2;
+}
+
+.solfa-text-editor__input:focus-visible {
+  outline: 3px solid var(--focus, #1976d2);
+  outline-offset: 2px;
+}
+
+.solfa-text-editor__input:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.solfa-text-editor__help {
+  margin-top: 0.6rem;
+}
+
+.solfa-text-editor__error,
+.solfa-text-editor__notice {
+  margin-top: 0.85rem;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid #efd1cb;
+  border-radius: 0.7rem;
+  background: var(--danger-wash, #fcf0ee);
+  color: var(--danger, #9b3434);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.solfa-text-editor__notice {
+  border-color: #dce6dc;
+  background: #f5f8f4;
+  color: var(--muted, #52635a);
+}
+
+@media (max-width: 560px) {
+  .solfa-text-editor {
+    padding: 0.85rem;
+    border-radius: 0.8rem;
+  }
+
+  .solfa-text-editor__input {
+    min-height: 15rem;
+    padding: 0.7rem;
+    font-size: 0.82rem;
+  }
+}

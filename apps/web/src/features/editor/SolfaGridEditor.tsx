@@ -27,17 +27,10 @@ import {
   type SolfaGridSyllable,
   validateSolfaGridModel,
 } from './solfaGridModel';
+import type { SolfaEditorProps } from './solfaEditorContract';
 import './SolfaGridEditor.css';
 
-export type SolfaGridEditorProps = {
-  /** The shared score model is the only notation/editing representation. */
-  model: ScoreModel;
-  /** Permission from score detail; required so read-only imports fail closed. */
-  canEditContent: boolean;
-  /** Receives a schema-valid model whose canonical Sol-fa text round-trips. */
-  onChange: (model: ScoreModel) => void;
-  className?: string;
-};
+export type SolfaGridEditorProps = SolfaEditorProps;
 
 const SYLLABLES: Array<{ value: SolfaGridSyllable; label: string }> = [
   { value: 'd', label: 'Do (d)' },
