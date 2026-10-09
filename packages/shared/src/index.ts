@@ -5,3 +5,4 @@ export * from './users.js';
 export * from './scoreModel.js';
 export * from './scoreContracts.js';
 export * from './musicxml.js';
+export * from './solfa.js';

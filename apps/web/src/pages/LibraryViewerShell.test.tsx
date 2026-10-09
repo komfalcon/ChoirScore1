@@ -2,9 +2,10 @@ import { readFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AppHeader } from '../components/AppHeader';
 import { AuthProvider } from '../lib/auth';
+import { saveNotationMode } from '../lib/notationPreference';
 import {
   opaqueReadOnlyScoreDetailResponse,
   scoreDetailResponse,
@@ -74,7 +75,7 @@ describe('M2 library and staff viewer integration shell', () => {
     expect(html).toContain('Loading scores…');
   });
 
-  it('renders connected score details and title/composer editing without deferred features', () => {
+  it('renders the Sol-fa primary view, staff toggle and title/composer editing', () => {
     const html = renderToStaticMarkup(
       <MemoryRouter>
         <StaffViewerWorkspace
@@ -85,14 +86,48 @@ describe('M2 library and staff viewer integration shell', () => {
     );
 
     expect(html).toContain('<h1>Morning Light</h1>');
-    expect(html).toContain('Notation');
-    expect(html).toContain('Download MusicXML');
+    expect(html).toContain('Tonic Sol-fa');
+    expect(html).toContain('Staff view');
+    expect(html).toContain('Doh is C');
+    expect(html).toContain('Print Sol-fa');
     expect(html).toContain('Edit title &amp; composer');
-    expect(html).toContain('Staff notation for Morning Light');
-    expect(html).not.toContain('Tonic Sol-fa');
+    expect(html).not.toContain('Staff notation for Morning Light');
+    expect(html).not.toContain('Download MusicXML');
     expect(html).not.toContain('Playback');
     expect(html).not.toContain('Edit score');
     expect(html).not.toContain('AI tools');
+  });
+
+  it('restores the saved view for the signed-in member without leaking it to another account', () => {
+    const values = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, String(value)),
+    });
+    try {
+      saveNotationMode('member-ada', 'staff');
+      const renderFor = (userId: string) =>
+        renderToStaticMarkup(
+          <MemoryRouter>
+            <StaffViewerWorkspace
+              {...viewerWorkspaceProps}
+              state={readyViewerState}
+              userId={userId}
+            />
+          </MemoryRouter>
+        );
+
+      expect(renderFor('member-ada')).toContain(
+        'aria-label="Staff notation for Morning Light"'
+      );
+      expect(renderFor('member-ben')).toContain('Doh is C');
+      // Rendering again models navigation back to this member's score.
+      expect(renderFor('member-ada')).toContain(
+        'aria-label="Staff notation for Morning Light"'
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('allows metadata edits for an owner even when preserved score content is read-only', () => {

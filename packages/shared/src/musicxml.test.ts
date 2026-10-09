@@ -164,6 +164,14 @@ function tempoOnlyXml(perMinute: string, beatUnit = 'quarter'): string {
   return `<?xml version="1.0"?><score-partwise version="4.0"><part-list><score-part id="voice-x"><part-name>Voice</part-name></score-part></part-list><part id="voice-x"><measure number="1"><attributes><divisions>1</divisions></attributes><direction><direction-type><metronome><beat-unit>${beatUnit}</beat-unit><per-minute>${perMinute}</per-minute></metronome></direction-type></direction><note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note></measure></part></score-partwise>`;
 }
 
+function keyChangeXml(): string {
+  return `<?xml version="1.0"?><score-partwise version="4.0"><part-list><score-part id="S"><part-name>Soprano</part-name></score-part><score-part id="A"><part-name>Alto</part-name></score-part></part-list><part id="S"><measure number="1"><attributes><divisions>1</divisions><key><fifths>0</fifths><mode>major</mode></key><time><beats>4</beats><beat-type>4</beat-type></time></attributes><note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note></measure><measure number="2"><attributes><key><fifths>-2</fifths><mode>major</mode></key></attributes><note><pitch><step>B</step><alter>-1</alter><octave>3</octave></pitch><duration>1</duration></note></measure></part><part id="A"><measure number="1"><attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes><note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note></measure><measure number="2"><attributes><key><fifths>-2</fifths><mode>major</mode></key></attributes><note><pitch><step>B</step><alter>-1</alter><octave>3</octave></pitch><duration>1</duration></note></measure></part></score-partwise>`;
+}
+
+function twoVerseXml(): string {
+  return `<?xml version="1.0"?><score-partwise version="4.0"><part-list><score-part id="A"><part-name>Alto</part-name></score-part></part-list><part id="A"><measure number="1"><attributes><divisions>1</divisions><key><fifths>0</fifths><mode>major</mode></key><time><beats>4</beats><beat-type>4</beat-type></time></attributes><note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration><lyric number="1"><syllabic>begin</syllabic><text>Hal</text></lyric><lyric number="2"><text>Joy</text></lyric></note></measure></part></score-partwise>`;
+}
+
 describe('MusicXML converters', () => {
   it('reads a genuine MuseScore 4.7.5 four-part export into the shared score model', () => {
     expect(fixture).toContain('<software>MuseScore Studio 4.7.5</software>');
@@ -222,6 +230,63 @@ describe('MusicXML converters', () => {
       state: 'opaque_constructs_preserved',
       readOnlyReason: 'UNSUPPORTED_MUSICXML_CONSTRUCTS_PRESERVED',
     });
+  });
+
+  it('models mid-score key changes and re-exports them without opaque warnings', () => {
+    const imported = musicXmlToModel(keyChangeXml());
+
+    expect(imported.model.key).toEqual({ fifths: 0, mode: 'major' });
+    expect(imported.model.parts[0]?.measures[1]?.key).toEqual({
+      fifths: -2,
+      mode: 'major',
+    });
+    expect(imported.model.parts[1]?.measures[1]?.key).toEqual({
+      fifths: -2,
+      mode: 'major',
+    });
+    expect(imported.warnings).not.toContainEqual(
+      expect.objectContaining({ code: 'MID_SCORE_ATTRIBUTES_PRESERVED' })
+    );
+    expect(imported.preservation.state).toBe('clean');
+
+    const exported = modelToMusicXml({
+      ...imported.model,
+      title: 'Edited key change',
+    });
+    const roundTripped = musicXmlToModel(exported);
+    expect(roundTripped.model.parts[0]?.measures[1]?.key).toEqual({
+      fifths: -2,
+      mode: 'major',
+    });
+  });
+
+  it('retains numbered lyric verses as independent per-note lyric tracks', () => {
+    const imported = musicXmlToModel(twoVerseXml());
+    const note = imported.model.parts[0]?.measures[0]?.notes[0];
+
+    expect(note?.lyric).toEqual({
+      text: 'Hal',
+      syllabic: 'begin',
+      verse: 1,
+    });
+    expect(note?.lyrics).toEqual([
+      { text: 'Hal', syllabic: 'begin', verse: 1 },
+      { text: 'Joy', verse: 2 },
+    ]);
+    expect(imported.warnings).not.toContainEqual(
+      expect.objectContaining({ code: 'MULTIPLE_LYRICS_PRESERVED' })
+    );
+    expect(imported.preservation.state).toBe('clean');
+
+    const exported = modelToMusicXml({
+      ...imported.model,
+      title: 'Edited verses',
+    });
+    expect(exported).toContain('<lyric number="1">');
+    expect(exported).toContain('<lyric number="2">');
+    expect(
+      musicXmlToModel(exported).model.parts[0]?.measures[0]?.notes[0]?.lyrics
+    ).toEqual(note?.lyrics);
   });
 
   it('returns the exact original XML when an imported model is unchanged, including unmodelled notation', () => {

@@ -2,10 +2,17 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { OpenSheetMusicDisplay } from 'opensheetmusicdisplay';
 import { Link, useParams } from 'react-router-dom';
 import { AppHeader } from '../components/AppHeader';
+import { useAuth } from '../lib/auth';
+import {
+  loadNotationMode,
+  saveNotationMode,
+  type NotationMode,
+} from '../lib/notationPreference';
 import {
   ScoreViewerStatePanel,
   type ScoreViewerState,
 } from '../features/viewer/ScoreViewerState';
+import { SolfaScore } from '../features/solfa/SolfaScore';
 import {
   exportScoreMusicXml,
   getScoreDetail,
@@ -179,6 +186,7 @@ function ScoreMetadataEditor({
 
 type WorkspaceProps = {
   state: ScoreViewerState;
+  userId?: string | null;
   onRetry: () => void;
   downloading: boolean;
   downloadError: string;
@@ -192,6 +200,7 @@ type WorkspaceProps = {
 
 export function StaffViewerWorkspace({
   state,
+  userId = null,
   onRetry,
   downloading,
   downloadError,
@@ -203,6 +212,18 @@ export function StaffViewerWorkspace({
   onClearMetadataMessage,
 }: WorkspaceProps) {
   const [metadataEditorOpen, setMetadataEditorOpen] = useState(false);
+  const [notationModeState, setNotationModeState] = useState<{
+    userId: string | null;
+    mode: NotationMode;
+  }>(() => ({ userId, mode: loadNotationMode(userId) }));
+  const notationMode =
+    notationModeState.userId === userId
+      ? notationModeState.mode
+      : loadNotationMode(userId);
+  function changeNotationMode(mode: NotationMode) {
+    saveNotationMode(userId, mode);
+    setNotationModeState({ userId, mode });
+  }
   const score = state.status === 'ready' ? state.response.score : null;
   return (
     <main className="viewer-main" id="main-content" tabIndex={-1}>
@@ -212,7 +233,7 @@ export function StaffViewerWorkspace({
       </Link>
       <div className="viewer-heading">
         <div>
-          <p className="eyebrow">STAFF NOTATION</p>
+          <p className="eyebrow">CHOIR SCORE</p>
           <h1>{score?.title ?? 'Score viewer'}</h1>
           <p className="viewer-heading__copy">
             {score
@@ -233,7 +254,28 @@ export function StaffViewerWorkspace({
               Edit title &amp; composer
             </button>
           ) : null}
-          <span className="viewer-mode-label">Staff view</span>
+          <div
+            className="viewer-mode-switch"
+            role="group"
+            aria-label="Notation view"
+          >
+            <button
+              className="button button--quiet button--small"
+              type="button"
+              aria-pressed={notationMode === 'solfa'}
+              onClick={() => changeNotationMode('solfa')}
+            >
+              Tonic Sol-fa
+            </button>
+            <button
+              className="button button--quiet button--small"
+              type="button"
+              aria-pressed={notationMode === 'staff'}
+              onClick={() => changeNotationMode('staff')}
+            >
+              Staff view
+            </button>
+          </div>
         </div>
       </div>
 
@@ -273,31 +315,41 @@ export function StaffViewerWorkspace({
               onCancel={() => setMetadataEditorOpen(false)}
             />
           ) : null}
-          <section
-            className="staff-viewport"
-            aria-labelledby="staff-viewport-title"
-          >
-            <div className="staff-viewport__bar">
-              <div>
-                <span className="staff-viewport__dot" aria-hidden="true" />
-                <h2 id="staff-viewport-title">Notation</h2>
+          {notationMode === 'solfa' ? (
+            <SolfaScore
+              model={score.model}
+              title={score.title}
+              preservedConstructs={score.preservation.preservedConstructs}
+              onShowStaff={() => changeNotationMode('staff')}
+              onPrint={() => window.print()}
+            />
+          ) : (
+            <section
+              className="staff-viewport"
+              aria-labelledby="staff-viewport-title"
+            >
+              <div className="staff-viewport__bar">
+                <div>
+                  <span className="staff-viewport__dot" aria-hidden="true" />
+                  <h2 id="staff-viewport-title">Notation</h2>
+                </div>
+                <div className="staff-viewport__actions">
+                  <span className="staff-viewport__status">Staff view</span>
+                  <button
+                    className="button button--quiet button--small"
+                    type="button"
+                    onClick={onDownload}
+                    disabled={downloading}
+                  >
+                    {downloading ? 'Preparing…' : 'Download MusicXML'}
+                  </button>
+                </div>
               </div>
-              <div className="staff-viewport__actions">
-                <span className="staff-viewport__status">Staff view</span>
-                <button
-                  className="button button--quiet button--small"
-                  type="button"
-                  onClick={onDownload}
-                  disabled={downloading}
-                >
-                  {downloading ? 'Preparing…' : 'Download MusicXML'}
-                </button>
+              <div className="staff-viewport__canvas">
+                <ScoreNotation musicXml={score.musicXml} title={score.title} />
               </div>
-            </div>
-            <div className="staff-viewport__canvas">
-              <ScoreNotation musicXml={score.musicXml} title={score.title} />
-            </div>
-          </section>
+            </section>
+          )}
           {downloadError ? (
             <p
               className="score-data-state score-data-state--error"
@@ -306,9 +358,6 @@ export function StaffViewerWorkspace({
               {downloadError}
             </p>
           ) : null}
-          <p className="viewer-contract-note">
-            Sol-fa, playback, editing, and AI remain outside this M2 UI pass.
-          </p>
         </>
       ) : null}
     </main>
@@ -317,6 +366,7 @@ export function StaffViewerWorkspace({
 
 export function ScoreViewPage() {
   const { id } = useParams();
+  const { user } = useAuth();
   const [state, setState] = useState<ScoreViewerState>({ status: 'loading' });
   const [revision, setRevision] = useState(0);
   const [downloading, setDownloading] = useState(false);
@@ -412,6 +462,7 @@ export function ScoreViewPage() {
       <AppHeader />
       <StaffViewerWorkspace
         state={state}
+        userId={user?.id ?? null}
         onRetry={() => setRevision((current) => current + 1)}
         downloading={downloading}
         downloadError={downloadError}

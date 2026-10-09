@@ -40,6 +40,8 @@ export const scoreLyricSchema = z
   .object({
     text: z.string(),
     syllabic: scoreSyllabicSchema.optional(),
+    /** MusicXML lyric verse number; omitted values default to their array order. */
+    verse: z.number().int().positive().max(64).optional(),
   })
   .strict();
 export type ScoreLyric = z.infer<typeof scoreLyricSchema>;
@@ -71,6 +73,8 @@ export const scoreNoteSchema = z
     /** True when this note is tied to the following note. */
     tie: z.boolean().default(false),
     lyric: scoreLyricSchema.optional(),
+    /** Additional lyric verses; `lyric` remains the first-verse compatibility field. */
+    lyrics: z.array(scoreLyricSchema).min(1).max(64).optional(),
     /** MusicXML voice number/name; retained for multiple voices per staff. */
     voice: z.string().trim().min(1).max(32).default('1'),
     /** MusicXML staff number; retained for multi-staff parts. */
@@ -89,6 +93,8 @@ export type ScoreNoteInput = z.input<typeof scoreNoteSchema>;
 export const scoreMeasureSchema = z
   .object({
     number: z.number().int().nonnegative(),
+    /** Present only where the global key changes at this measure. */
+    key: scoreKeySchema.optional(),
     notes: z.array(scoreNoteSchema).default([]),
   })
   .strict();
