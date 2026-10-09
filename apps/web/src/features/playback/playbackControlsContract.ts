@@ -1,8 +1,6 @@
 import {
-  COUNT_IN_CHOICES,
   clampPartVolume,
   clampTempoPercent,
-  type CountInBeats,
   type PartPlaybackSettings,
   type PlaybackLoopRange,
   type PlaybackSettings,
@@ -25,7 +23,7 @@ export interface PlaybackControlsState {
   /** Resolved ScoreModel part ID (for example P1), or null when unresolved. */
   voicePart: string | null;
   tempoPercent: number;
-  countInBeats: CountInBeats;
+  countIn: boolean;
   /** Inclusive, one-based measure range. */
   loopRange: PlaybackLoopRange | null;
 }
@@ -43,7 +41,7 @@ export interface PlaybackControlsCallbacks {
   onPause: () => void;
   onStop: () => void;
   onTempoChange: (tempoPercent: number) => void;
-  onCountInChange: (countInBeats: CountInBeats) => void;
+  onCountInChange: (countIn: boolean) => void;
   onLoopChange: (range: PlaybackLoopRange | null) => void;
   onPartSettingsPatch: (partId: string, patch: PartSettingsPatch) => void;
   onPreset: (preset: PlaybackPreset) => void;
@@ -56,17 +54,12 @@ export type PlaybackControlsContract = PlaybackControlsState &
 export function playbackSettingsFromControls(
   state: Pick<
     PlaybackControlsState,
-    'tempoPercent' | 'countInBeats' | 'loopRange' | 'parts'
+    'tempoPercent' | 'countIn' | 'loopRange' | 'parts'
   >
 ): PlaybackSettings {
-  const countInBeats = COUNT_IN_CHOICES.includes(
-    state.countInBeats as CountInBeats
-  )
-    ? state.countInBeats
-    : 0;
   return {
     tempoPercent: clampTempoPercent(state.tempoPercent),
-    countInBeats,
+    countIn: state.countIn === true,
     loop: state.loopRange,
     parts: Object.fromEntries(
       state.parts.map((part) => [

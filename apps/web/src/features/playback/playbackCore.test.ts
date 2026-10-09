@@ -6,7 +6,6 @@ import {
   getEffectivePartGain,
   selectOnlyMyPart,
   updatePartPlaybackSettings,
-  type CountInBeats,
 } from './playbackCore';
 
 const score = scoreModelSchema.parse({
@@ -53,11 +52,27 @@ const score = scoreModelSchema.parse({
   ],
 });
 
+function scoreInMeter(beats: number, beatType: number) {
+  return scoreModelSchema.parse({
+    ...score,
+    time: { beats, beatType },
+    parts: score.parts.map((part) => ({
+      ...part,
+      measures: [
+        {
+          number: 1,
+          notes: [{ pitch: 'C4', dur: 1, onset: 0 }],
+        },
+      ],
+    })),
+  });
+}
+
 describe('playback core', () => {
   it('schedules measure onsets, inferred sequential notes, and chord members', () => {
     const plan = createPlaybackPlan(score, {
       tempoPercent: 100,
-      countInBeats: 0,
+      countIn: false,
       loop: null,
     });
     const soprano = plan.notes.filter((note) => note.partId === 'S');
@@ -75,7 +90,7 @@ describe('playback core', () => {
   it('merges a tied note across a barline into one sustained event', () => {
     const plan = createPlaybackPlan(score, {
       tempoPercent: 100,
-      countInBeats: 0,
+      countIn: false,
       loop: null,
     });
     const tiedC4 = plan.notes.filter(
@@ -91,35 +106,70 @@ describe('playback core', () => {
     });
   });
 
-  it('applies tempo scaling, count-in clicks, and an inclusive measure loop', () => {
+  it.each([
+    { beats: 3, beatType: 4, duration: 3, clickBeats: [0, 1, 2] },
+    { beats: 4, beatType: 4, duration: 4, clickBeats: [0, 1, 2, 3] },
+    {
+      beats: 7,
+      beatType: 8,
+      duration: 3.5,
+      clickBeats: [0, 0.5, 1, 1.5, 2, 2.5, 3],
+    },
+  ])(
+    'counts in for exactly one $beats/$beatType measure in quarter-note beats',
+    ({ beats, beatType, duration, clickBeats }) => {
+      const plan = createPlaybackPlan(scoreInMeter(beats, beatType), {
+        tempoPercent: 100,
+        countIn: true,
+        loop: null,
+      });
+
+      expect(plan.countInDurationBeats).toBe(duration);
+      expect(plan.measureDurations).toEqual([duration]);
+      expect(plan.countInClicks).toEqual(
+        clickBeats.map((beat, index) => ({
+          beat,
+          timeSeconds: beat * 0.5,
+          accented: index === 0,
+        }))
+      );
+      expect(plan.notes[0]?.startBeat).toBe(duration);
+      expect(plan.notes[0]?.startSeconds).toBe(duration * 0.5);
+    }
+  );
+
+  it('applies tempo scaling, a one-measure count-in, and an inclusive measure loop', () => {
     const plan = createPlaybackPlan(score, {
       tempoPercent: 50,
-      countInBeats: 2,
+      countIn: true,
       loop: { startMeasure: 2, endMeasure: 2 },
     });
 
     expect(plan.tempoBpm).toBe(60);
     expect(plan.secondsPerBeat).toBe(1);
+    expect(plan.countInDurationBeats).toBe(4);
     expect(plan.countInClicks).toEqual([
       { beat: 0, timeSeconds: 0, accented: true },
       { beat: 1, timeSeconds: 1, accented: false },
+      { beat: 2, timeSeconds: 2, accented: false },
+      { beat: 3, timeSeconds: 3, accented: false },
     ]);
     expect(plan.notes.find((note) => note.pitch === 'G2')?.startSeconds).toBe(
-      6
+      8
     );
-    expect(plan.loop).toEqual({ startSeconds: 6, endSeconds: 10 });
-    expect(plan.totalDurationSeconds).toBe(10);
+    expect(plan.loop).toEqual({ startSeconds: 8, endSeconds: 12 });
+    expect(plan.totalDurationSeconds).toBe(12);
   });
 
-  it('ignores malformed loop ranges and unsupported count-in values safely', () => {
+  it('keeps count-in off and ignores malformed loop ranges', () => {
     const plan = createPlaybackPlan(score, {
       tempoPercent: 150,
-      countInBeats: 3 as unknown as CountInBeats,
+      countIn: false,
       loop: { startMeasure: 2, endMeasure: 5 },
     });
 
     expect(plan.tempoBpm).toBe(180);
-    expect(plan.countInBeats).toBe(0);
+    expect(plan.countInDurationBeats).toBe(0);
     expect(plan.countInClicks).toEqual([]);
     expect(plan.loop).toBeNull();
   });

@@ -72,7 +72,7 @@ const satbReference = scoreModelSchema.parse({
 function planAt(tempoPercent: number) {
   return createPlaybackPlan(satbReference, {
     tempoPercent,
-    countInBeats: 0,
+    countIn: false,
     loop: null,
   });
 }

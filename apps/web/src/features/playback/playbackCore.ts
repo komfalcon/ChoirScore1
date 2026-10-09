@@ -4,9 +4,6 @@ export const TEMPO_PERCENT_MIN = 50;
 export const TEMPO_PERCENT_MAX = 150;
 export const PART_VOLUME_MIN = 0;
 export const PART_VOLUME_MAX = 1;
-export const COUNT_IN_CHOICES = [0, 1, 2, 4] as const;
-export type CountInBeats = (typeof COUNT_IN_CHOICES)[number];
-
 export interface PlaybackLoopRange {
   /** Inclusive, one-based measure number, aligned across all parts. */
   startMeasure: number;
@@ -24,7 +21,7 @@ export type PartPlaybackMix = Record<string, PartPlaybackSettings>;
 
 export interface PlaybackSettings {
   tempoPercent: number;
-  countInBeats: CountInBeats;
+  countIn: boolean;
   loop: PlaybackLoopRange | null;
   parts: PartPlaybackMix;
 }
@@ -46,6 +43,7 @@ export interface PlaybackNote extends TimelineNote {
 }
 
 export interface PlaybackClick {
+  /** Position from the start of the count-in, measured in quarter-note beats. */
   beat: number;
   timeSeconds: number;
   accented: boolean;
@@ -54,7 +52,7 @@ export interface PlaybackClick {
 export interface PlaybackPlan {
   tempoBpm: number;
   secondsPerBeat: number;
-  countInBeats: CountInBeats;
+  countInDurationBeats: number;
   countInClicks: PlaybackClick[];
   notes: PlaybackNote[];
   loop: { startSeconds: number; endSeconds: number } | null;
@@ -275,12 +273,6 @@ function compileTimeline(model: ScoreModel): Timeline {
   return { notes: mergedNotes, measureStarts, measureDurations };
 }
 
-function normalizeCountIn(value: number): CountInBeats {
-  return COUNT_IN_CHOICES.includes(value as CountInBeats)
-    ? (value as CountInBeats)
-    : 0;
-}
-
 function normalizeLoop(
   loop: PlaybackLoopRange | null,
   measureCount: number
@@ -305,22 +297,25 @@ function normalizeLoop(
  */
 export function createPlaybackPlan(
   model: ScoreModel,
-  settings: Pick<PlaybackSettings, 'tempoPercent' | 'countInBeats' | 'loop'>
+  settings: Pick<PlaybackSettings, 'tempoPercent' | 'countIn' | 'loop'>
 ): PlaybackPlan {
   const timeline = compileTimeline(model);
   const tempoBpm =
     (model.tempo * clampTempoPercent(settings.tempoPercent)) / 100;
   const secondsPerBeat = 60 / tempoBpm;
-  const countInBeats = normalizeCountIn(settings.countInBeats);
+  const quarterNotesPerNotatedBeat = 4 / model.time.beatType;
+  const countInDurationBeats = settings.countIn
+    ? model.time.beats * quarterNotesPerNotatedBeat
+    : 0;
   const countInClicks: PlaybackClick[] = Array.from(
-    { length: countInBeats },
+    { length: settings.countIn ? model.time.beats : 0 },
     (_, beat) => ({
-      beat,
-      timeSeconds: beat * secondsPerBeat,
+      beat: beat * quarterNotesPerNotatedBeat,
+      timeSeconds: beat * quarterNotesPerNotatedBeat * secondsPerBeat,
       accented: beat === 0,
     })
   );
-  const countInOffsetBeats = countInBeats;
+  const countInOffsetBeats = countInDurationBeats;
   const notes: PlaybackNote[] = timeline.notes.map((note) => ({
     partId: note.partId,
     pitch: note.pitch,
@@ -359,7 +354,7 @@ export function createPlaybackPlan(
   return {
     tempoBpm,
     secondsPerBeat,
-    countInBeats,
+    countInDurationBeats,
     countInClicks,
     notes,
     loop,

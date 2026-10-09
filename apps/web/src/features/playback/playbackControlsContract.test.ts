@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { playbackSettingsFromControls } from './playbackControlsContract';
 
 describe('playback controls contract adapter', () => {
-  it('preserves ordered actual part IDs, normalized volumes, and 1-based loop bounds', () => {
+  it('preserves ordered part IDs, the count-in toggle, normalized volumes, and loop bounds', () => {
     const settings = playbackSettingsFromControls({
       tempoPercent: 125,
-      countInBeats: 2,
+      countIn: true,
       loopRange: { startMeasure: 2, endMeasure: 4 },
       parts: [
         { id: 'P1', name: 'Soprano', muted: false, solo: false, volume: 0.45 },
@@ -15,7 +15,7 @@ describe('playback controls contract adapter', () => {
 
     expect(settings).toEqual({
       tempoPercent: 125,
-      countInBeats: 2,
+      countIn: true,
       loop: { startMeasure: 2, endMeasure: 4 },
       parts: {
         P1: { muted: false, solo: false, volume: 0.45 },
@@ -23,5 +23,16 @@ describe('playback controls contract adapter', () => {
       },
     });
     expect(Object.keys(settings.parts)).toEqual(['P1', 'P2']);
+  });
+
+  it('keeps the one-measure count-in disabled by default', () => {
+    const settings = playbackSettingsFromControls({
+      tempoPercent: 100,
+      countIn: false,
+      loopRange: null,
+      parts: [],
+    });
+
+    expect(settings.countIn).toBe(false);
   });
 });

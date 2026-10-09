@@ -15,7 +15,8 @@
     "pretypecheck": "npm run build --workspace @choirscore/shared",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "format": "prettier --check .",
-    "format:write": "prettier --write ."
+    "format:write": "prettier --write .",
+    "check:playback-sample-budget": "node scripts/check-playback-sample-budget.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.36.0",

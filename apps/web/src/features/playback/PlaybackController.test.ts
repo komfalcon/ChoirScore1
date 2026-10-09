@@ -37,7 +37,7 @@ function makeFixture(overrides: Partial<PlaybackControlsState> = {}) {
     ],
     voicePart: 'P1',
     tempoPercent: 125,
-    countInBeats: 2,
+    countIn: false,
     loopRange: { startMeasure: 1, endMeasure: 1 },
     ...overrides,
   };
@@ -83,6 +83,7 @@ describe('PlaybackController', () => {
     expect(contract.status).toBe('idle');
     expect(contract.parts.map(({ id }) => id)).toEqual(['P1', 'P2']);
     expect(contract.voicePart).toBe('P1');
+    expect(contract.countIn).toBe(false);
     expect(contract.loopRange).toEqual({ startMeasure: 1, endMeasure: 1 });
     expect(contract.onPreset).toBeTypeOf('function');
     expect(fixture.engine.play).not.toHaveBeenCalled();
@@ -97,7 +98,7 @@ describe('PlaybackController', () => {
       score,
       {
         tempoPercent: 125,
-        countInBeats: 2,
+        countIn: false,
         loop: { startMeasure: 1, endMeasure: 1 },
         parts: {
           P1: { muted: true, solo: false, volume: 0.7 },
@@ -148,7 +149,7 @@ describe('PlaybackController', () => {
     const callbacks = fixture.controller.callbacks;
 
     callbacks.onTempoChange(180);
-    callbacks.onCountInChange(4);
+    callbacks.onCountInChange(true);
     callbacks.onLoopChange({ startMeasure: 1, endMeasure: 1 });
     callbacks.onPartSettingsPatch('P2', { volume: 1.4 });
     await callbacks.onPlay();
@@ -156,7 +157,7 @@ describe('PlaybackController', () => {
     callbacks.onStop();
 
     expect(fixture.host.onTempoChange).toHaveBeenCalledWith(150);
-    expect(fixture.host.onCountInChange).toHaveBeenCalledWith(4);
+    expect(fixture.host.onCountInChange).toHaveBeenCalledWith(true);
     expect(fixture.host.onLoopChange).toHaveBeenCalledWith({
       startMeasure: 1,
       endMeasure: 1,
@@ -166,6 +167,30 @@ describe('PlaybackController', () => {
     expect(fixture.engine.play).not.toHaveBeenCalled();
     expect(fixture.engine.pause).toHaveBeenCalledOnce();
     expect(fixture.engine.stop).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the controller idle when Stop happens while Play is pending', async () => {
+    const fixture = makeFixture();
+    let resolvePlay!: () => void;
+    vi.mocked(fixture.engine.play).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolvePlay = resolve;
+        })
+    );
+
+    const pendingPlay = fixture.controller.play();
+    expect(fixture.getState().status).toBe('loading');
+    fixture.controller.stop();
+    expect(fixture.getState().status).toBe('idle');
+
+    resolvePlay();
+    await pendingPlay;
+
+    expect(fixture.statusChanges.map(([status]) => status)).toEqual([
+      'loading',
+      'idle',
+    ]);
   });
 
   it('surfaces an audio failure through controlled error status', async () => {
