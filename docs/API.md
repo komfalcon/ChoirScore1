@@ -21,6 +21,10 @@ M1 implements migration-backed user/auth/admin-settings routes and their securit
 - Supporting responses: `userListResponseSchema` / `UserListResponse`, `userResponseSchema` / `UserResponse`, and `credentialsSchema` / `Credentials`.
 - Timestamps: `isoUtcTimestampSchema` / `IsoUtcTimestamp`.
 
+### Shared score validators
+
+`@choirscore/shared` exports `Issue`, `ValidationResult`, `validateMeasureDuration`, and `validateOutOfRange`. Each validator returns `{ errors: Issue[], warnings: Issue[] }`; an issue is `{ part, measure, beat, code, message }`, where `part` is the actual score-part ID, `measure` is the score measure number, and `beat` is a one-based position in the time signature's denominator units. `MEASURE_DURATION` is an error when summed note durations in a part/measure differ from `beats × 4 / beatType` quarter-note units. `OUT_OF_RANGE` is an error beyond the configured hard range and a warning outside the comfortable range but within the hard range; endpoints are inclusive and hard-range errors are not duplicated as warnings. The default S/A/T/B profile is the PRD §10.5 profile. Optional profiles use canonical S/A/T/B keys and map to score parts by exact canonical ID or exact canonical voice name.
+
 `SafeUser` is `{ id, username, displayName, role, voicePart, isActive, mustChangePassword, aiEnabled, aiDailyLimit, lastLoginAt, createdAt }`. `aiDailyLimit` is a non-negative integer or `null`; timestamps are ISO-8601 UTC strings with a `Z` suffix. Passwords and hashes are never in `SafeUser` or ordinary user responses. `Credentials` is `{ username, password }` and is returned only by account creation, bulk creation, or password reset.
 
 ### Role and voice-part validation

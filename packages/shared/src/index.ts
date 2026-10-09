@@ -6,6 +6,7 @@ export * from './users.js';
 export * from './scoreModel.js';
 export { midiForPitch } from './pitch.js';
 export * from './scoreContracts.js';
+export * from './validators/index.js';
 export * from './musicxml.js';
 export * from './solfa.js';
 export * from './solfaText.js';
