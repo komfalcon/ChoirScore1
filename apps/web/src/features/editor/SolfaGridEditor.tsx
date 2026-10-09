@@ -28,6 +28,7 @@ import {
   validateSolfaGridModel,
 } from './solfaGridModel';
 import type { SolfaEditorProps } from './solfaEditorContract';
+import { useSolfaEditorSessionSnapshot } from './solfaEditorSession';
 import './SolfaGridEditor.css';
 
 export type SolfaGridEditorProps = SolfaEditorProps;
@@ -205,14 +206,15 @@ export function SolfaGridEditor({
   model,
   canEditContent,
   onChange,
+  session,
   className = '',
 }: SolfaGridEditorProps) {
   const cells = useMemo(() => allGridCells(model), [model]);
   const layout = useMemo(() => modelToSolfa(model), [model]);
   const codecError = useMemo(() => codecErrorFor(model), [model]);
+  const sessionSnapshot = useSolfaEditorSessionSnapshot(session);
   const [selection, setSelection] = useState<SolfaGridSelection | null>(() => {
-    const first = allGridCells(model)[0];
-    return first ?? null;
+    return selectionForModel(model, sessionSnapshot.gridSelection);
   });
   const [focusAfterNavigation, setFocusAfterNavigation] = useState<
     string | null
@@ -227,6 +229,10 @@ export function SolfaGridEditor({
   const [undoStack, setUndoStack] = useState<GridHistoryEntry[]>([]);
   const [redoStack, setRedoStack] = useState<GridHistoryEntry[]>([]);
   const cellRefs = useRef(new Map<string, HTMLButtonElement>());
+  const appliedPositionRevision = useRef({
+    session,
+    revision: sessionSnapshot.positionRevision,
+  });
 
   useEffect(() => {
     if (focusAfterNavigation) {
@@ -244,6 +250,25 @@ export function SolfaGridEditor({
     const first = cells[0];
     setSelection(first ?? null);
   }, [cells, selection]);
+
+  useEffect(() => {
+    if (!session) return;
+    session.rememberGridSelection(selection);
+  }, [session, selection]);
+
+  useEffect(() => {
+    const previous = appliedPositionRevision.current;
+    const revision = sessionSnapshot.positionRevision;
+    if (previous.session === session && previous.revision === revision) return;
+    appliedPositionRevision.current = { session, revision };
+    if (!session) return;
+    setSelection(selectionForModel(model, sessionSnapshot.gridSelection));
+  }, [
+    model,
+    session,
+    sessionSnapshot.gridSelection,
+    sessionSnapshot.positionRevision,
+  ]);
 
   const selectedCell = selection
     ? cells.find((cell) => selectionKey(cell) === selectionKey(selection))
@@ -283,8 +308,11 @@ export function SolfaGridEditor({
         setActionError('');
         return;
       }
-      setUndoStack((stack) => [...stack, { model, selection }]);
-      setRedoStack([]);
+      if (session) session.recordEdit(model, next);
+      else {
+        setUndoStack((stack) => [...stack, { model, selection }]);
+        setRedoStack([]);
+      }
       setActionError('');
       after?.(next);
       onChange(next);
@@ -295,6 +323,16 @@ export function SolfaGridEditor({
 
   function undo() {
     if (!canEdit) return;
+    if (session) {
+      const previous = session.undo(model);
+      if (!previous) return;
+      setActionError('');
+      setSelection(
+        selectionForModel(previous, session.getSnapshot().gridSelection)
+      );
+      onChange(previous);
+      return;
+    }
     const previous = undoStack.at(-1);
     if (!previous) return;
     setUndoStack((stack) => stack.slice(0, -1));
@@ -306,6 +344,16 @@ export function SolfaGridEditor({
 
   function redo() {
     if (!canEdit) return;
+    if (session) {
+      const next = session.redo(model);
+      if (!next) return;
+      setActionError('');
+      setSelection(
+        selectionForModel(next, session.getSnapshot().gridSelection)
+      );
+      onChange(next);
+      return;
+    }
     const next = redoStack.at(-1);
     if (!next) return;
     setRedoStack((stack) => stack.slice(0, -1));
@@ -326,6 +374,9 @@ export function SolfaGridEditor({
     setFocusAfterNavigation(selectionKey(nextSelection));
   }
 
+  const undoCount = session ? sessionSnapshot.undoCount : undoStack.length;
+  const redoCount = session ? sessionSnapshot.redoCount : redoStack.length;
+
   return (
     <section
       className={`solfa-grid-editor ${className}`.trim()}
@@ -345,7 +396,7 @@ export function SolfaGridEditor({
             type="button"
             className="solfa-grid-editor__button"
             onClick={undo}
-            disabled={!canEdit || undoStack.length === 0}
+            disabled={!canEdit || undoCount === 0}
             aria-label="Undo edit"
           >
             Undo
@@ -354,7 +405,7 @@ export function SolfaGridEditor({
             type="button"
             className="solfa-grid-editor__button"
             onClick={redo}
-            disabled={!canEdit || redoStack.length === 0}
+            disabled={!canEdit || redoCount === 0}
             aria-label="Redo edit"
           >
             Redo

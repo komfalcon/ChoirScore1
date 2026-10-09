@@ -10,8 +10,41 @@
 }
 
 .solfa-text-editor__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
   padding-bottom: 1rem;
   border-bottom: 1px solid var(--line, #dfe5dc);
+}
+
+.solfa-text-editor__history {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0.5rem;
+}
+
+.solfa-text-editor__button {
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid #cbd8ce;
+  border-radius: 0.65rem;
+  background: #fff;
+  color: var(--ink, #1b302a);
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.solfa-text-editor__button:focus-visible {
+  outline: 3px solid var(--focus, #1976d2);
+  outline-offset: 2px;
+}
+
+.solfa-text-editor__button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .solfa-text-editor__eyebrow {
@@ -107,5 +140,9 @@
     min-height: 15rem;
     padding: 0.7rem;
     font-size: 0.82rem;
+  }
+
+  .solfa-text-editor__header {
+    flex-wrap: wrap;
   }
 }

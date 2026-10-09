@@ -6,6 +6,7 @@ import {
   type ScoreModel,
 } from '@choirscore/shared';
 import type { SolfaEditorProps } from './solfaEditorContract';
+import { useSolfaEditorSessionSnapshot } from './solfaEditorSession';
 import './SolfaTextEditor.css';
 
 type LocatedIssue = {
@@ -95,10 +96,13 @@ export function SolfaTextEditor({
   model,
   canEditContent,
   onChange,
+  session,
   className = '',
 }: SolfaEditorProps) {
   const [editorState, setEditorState] = useState(() => stateForModel(model));
   const lastEmittedModel = useRef<ScoreModel | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const sessionSnapshot = useSolfaEditorSessionSnapshot(session);
   const canEdit = canEditContent && !editorState.codecIssue;
 
   useEffect(() => {
@@ -110,8 +114,26 @@ export function SolfaTextEditor({
     setEditorState(stateForModel(model));
   }, [model]);
 
-  function updateDraft(value: string) {
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea || !session) return;
+    const cursor = sessionSnapshot.textCursor ?? { start: 0, end: 0 };
+    const start = Math.min(cursor.start, editorState.draft.length);
+    const end = Math.min(Math.max(cursor.end, start), editorState.draft.length);
+    textarea.setSelectionRange(start, end);
+    if (!sessionSnapshot.textCursor) session.rememberTextCursor({ start, end });
+  }, [editorState.draft, session, sessionSnapshot.textCursor]);
+
+  function rememberCursor(textarea: HTMLTextAreaElement) {
+    session?.rememberTextCursor({
+      start: textarea.selectionStart,
+      end: textarea.selectionEnd,
+    });
+  }
+
+  function updateDraft(value: string, cursor: { start: number; end: number }) {
     if (!canEdit) return;
+    session?.rememberTextCursor(cursor);
 
     let next: ScoreModel;
     try {
@@ -129,8 +151,21 @@ export function SolfaTextEditor({
     setEditorState({ draft: value, draftIssue: null, codecIssue: null });
     if (sameModel(next, model)) return;
 
+    session?.recordEdit(model, next);
     lastEmittedModel.current = next;
     onChange(next);
+  }
+
+  function undo() {
+    if (!session || !canEdit) return;
+    const previous = session.undo(model);
+    if (previous) onChange(previous);
+  }
+
+  function redo() {
+    if (!session || !canEdit) return;
+    const next = session.redo(model);
+    if (next) onChange(next);
   }
 
   const activeIssue = editorState.codecIssue ?? editorState.draftIssue;
@@ -156,6 +191,28 @@ export function SolfaTextEditor({
             complete draft is valid.
           </p>
         </div>
+        {session ? (
+          <div className="solfa-text-editor__history" aria-label="Edit history">
+            <button
+              type="button"
+              className="solfa-text-editor__button"
+              onClick={undo}
+              disabled={!canEdit || sessionSnapshot.undoCount === 0}
+              aria-label="Undo edit"
+            >
+              Undo
+            </button>
+            <button
+              type="button"
+              className="solfa-text-editor__button"
+              onClick={redo}
+              disabled={!canEdit || sessionSnapshot.redoCount === 0}
+              aria-label="Redo edit"
+            >
+              Redo
+            </button>
+          </div>
+        ) : null}
       </header>
 
       <label
@@ -165,13 +222,20 @@ export function SolfaTextEditor({
         Sol-fa text
       </label>
       <textarea
+        ref={textareaRef}
         id="solfa-text-editor-source"
         className="solfa-text-editor__input"
         aria-label="Sol-fa text"
         aria-describedby={describedBy}
         aria-invalid={Boolean(activeIssue)}
         value={editorState.draft}
-        onChange={(event) => updateDraft(event.currentTarget.value)}
+        onChange={(event) =>
+          updateDraft(event.currentTarget.value, {
+            start: event.currentTarget.selectionStart,
+            end: event.currentTarget.selectionEnd,
+          })
+        }
+        onSelect={(event) => rememberCursor(event.currentTarget)}
         disabled={!canEdit}
         spellCheck={false}
         autoCapitalize="off"
