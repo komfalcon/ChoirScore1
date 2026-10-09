@@ -31,6 +31,7 @@ Rhythms finer than a half-beat, tuplets, chords/overlaps in one part row, and im
 ## Reading and printing
 
 - **Tonic Sol-fa** is the initial mode; the notation switch exposes staff view.
+- The selected mode is stored in this browser's local storage under the authenticated user's ID. Members with no saved choice start in Sol-fa; their choice survives reloads and in-app navigation, but does not sync across devices.
 - Each system keeps S/A/T/B voice rows and their lyric verses aligned across all measure columns. Narrow screens can horizontally scroll a complete system rather than compressing the beat cells.
 - **Print Sol-fa** opens the browser print dialog with the score title, key header, meter, tempo, parts, lyrics, key-change markers and visible limitations. The user can select “Save as PDF” in the browser dialog.
 

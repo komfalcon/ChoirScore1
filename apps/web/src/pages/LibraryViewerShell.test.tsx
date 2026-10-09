@@ -2,9 +2,10 @@ import { readFileSync } from 'node:fs';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AppHeader } from '../components/AppHeader';
 import { AuthProvider } from '../lib/auth';
+import { saveNotationMode } from '../lib/notationPreference';
 import {
   opaqueReadOnlyScoreDetailResponse,
   scoreDetailResponse,
@@ -95,6 +96,38 @@ describe('M2 library and staff viewer integration shell', () => {
     expect(html).not.toContain('Playback');
     expect(html).not.toContain('Edit score');
     expect(html).not.toContain('AI tools');
+  });
+
+  it('restores the saved view for the signed-in member without leaking it to another account', () => {
+    const values = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, String(value)),
+    });
+    try {
+      saveNotationMode('member-ada', 'staff');
+      const renderFor = (userId: string) =>
+        renderToStaticMarkup(
+          <MemoryRouter>
+            <StaffViewerWorkspace
+              {...viewerWorkspaceProps}
+              state={readyViewerState}
+              userId={userId}
+            />
+          </MemoryRouter>
+        );
+
+      expect(renderFor('member-ada')).toContain(
+        'aria-label="Staff notation for Morning Light"'
+      );
+      expect(renderFor('member-ben')).toContain('Doh is C');
+      // Rendering again models navigation back to this member's score.
+      expect(renderFor('member-ada')).toContain(
+        'aria-label="Staff notation for Morning Light"'
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('allows metadata edits for an owner even when preserved score content is read-only', () => {

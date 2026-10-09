@@ -2,6 +2,12 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { OpenSheetMusicDisplay } from 'opensheetmusicdisplay';
 import { Link, useParams } from 'react-router-dom';
 import { AppHeader } from '../components/AppHeader';
+import { useAuth } from '../lib/auth';
+import {
+  loadNotationMode,
+  saveNotationMode,
+  type NotationMode,
+} from '../lib/notationPreference';
 import {
   ScoreViewerStatePanel,
   type ScoreViewerState,
@@ -180,6 +186,7 @@ function ScoreMetadataEditor({
 
 type WorkspaceProps = {
   state: ScoreViewerState;
+  userId?: string | null;
   onRetry: () => void;
   downloading: boolean;
   downloadError: string;
@@ -193,6 +200,7 @@ type WorkspaceProps = {
 
 export function StaffViewerWorkspace({
   state,
+  userId = null,
   onRetry,
   downloading,
   downloadError,
@@ -204,7 +212,18 @@ export function StaffViewerWorkspace({
   onClearMetadataMessage,
 }: WorkspaceProps) {
   const [metadataEditorOpen, setMetadataEditorOpen] = useState(false);
-  const [notationMode, setNotationMode] = useState<'solfa' | 'staff'>('solfa');
+  const [notationModeState, setNotationModeState] = useState<{
+    userId: string | null;
+    mode: NotationMode;
+  }>(() => ({ userId, mode: loadNotationMode(userId) }));
+  const notationMode =
+    notationModeState.userId === userId
+      ? notationModeState.mode
+      : loadNotationMode(userId);
+  function changeNotationMode(mode: NotationMode) {
+    saveNotationMode(userId, mode);
+    setNotationModeState({ userId, mode });
+  }
   const score = state.status === 'ready' ? state.response.score : null;
   return (
     <main className="viewer-main" id="main-content" tabIndex={-1}>
@@ -244,7 +263,7 @@ export function StaffViewerWorkspace({
               className="button button--quiet button--small"
               type="button"
               aria-pressed={notationMode === 'solfa'}
-              onClick={() => setNotationMode('solfa')}
+              onClick={() => changeNotationMode('solfa')}
             >
               Tonic Sol-fa
             </button>
@@ -252,7 +271,7 @@ export function StaffViewerWorkspace({
               className="button button--quiet button--small"
               type="button"
               aria-pressed={notationMode === 'staff'}
-              onClick={() => setNotationMode('staff')}
+              onClick={() => changeNotationMode('staff')}
             >
               Staff view
             </button>
@@ -301,7 +320,7 @@ export function StaffViewerWorkspace({
               model={score.model}
               title={score.title}
               preservedConstructs={score.preservation.preservedConstructs}
-              onShowStaff={() => setNotationMode('staff')}
+              onShowStaff={() => changeNotationMode('staff')}
               onPrint={() => window.print()}
             />
           ) : (
@@ -347,6 +366,7 @@ export function StaffViewerWorkspace({
 
 export function ScoreViewPage() {
   const { id } = useParams();
+  const { user } = useAuth();
   const [state, setState] = useState<ScoreViewerState>({ status: 'loading' });
   const [revision, setRevision] = useState(0);
   const [downloading, setDownloading] = useState(false);
@@ -442,6 +462,7 @@ export function ScoreViewPage() {
       <AppHeader />
       <StaffViewerWorkspace
         state={state}
+        userId={user?.id ?? null}
         onRetry={() => setRevision((current) => current + 1)}
         downloading={downloading}
         downloadError={downloadError}
