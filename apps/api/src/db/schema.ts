@@ -100,6 +100,34 @@ export const scoreVersions = sqliteTable(
   })
 );
 
+export const scoreAutosaveNoopRequests = sqliteTable(
+  'score_autosave_noop_requests',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    scoreId: text('score_id')
+      .notNull()
+      .references(() => scores.id, { onDelete: 'cascade' }),
+    actorId: text('actor_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    requestId: text('request_id').notNull(),
+    baseVersionId: text('base_version_id').notNull(),
+    musicXmlHash: text('musicxml_hash').notNull(),
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => ({
+    requestUnique: uniqueIndex('score_autosave_noop_request_unique').on(
+      table.scoreId,
+      table.actorId,
+      table.requestId
+    ),
+    retentionIndex: index('score_autosave_noop_retention_idx').on(
+      table.scoreId,
+      table.id
+    ),
+  })
+);
+
 export const scoreAccess = sqliteTable(
   'score_access',
   {

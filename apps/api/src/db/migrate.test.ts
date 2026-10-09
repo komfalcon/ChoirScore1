@@ -77,6 +77,20 @@ describe('score autosave migration', () => {
           autosave_base_version_id: null,
         },
       ]);
+      const reservations = await client.execute(
+        "PRAGMA table_info('score_autosave_noop_requests')"
+      );
+      expect(reservations.rows.map((column) => column.name)).toEqual(
+        expect.arrayContaining([
+          'id',
+          'score_id',
+          'actor_id',
+          'request_id',
+          'base_version_id',
+          'musicxml_hash',
+          'created_at',
+        ])
+      );
       const score = await client.execute({
         sql: 'SELECT current_version_id FROM scores WHERE id = ?',
         args: ['score'],

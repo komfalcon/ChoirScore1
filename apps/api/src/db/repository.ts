@@ -14,12 +14,14 @@ import {
   type SQL,
 } from 'drizzle-orm';
 import { drizzle, type LibSQLDatabase } from 'drizzle-orm/libsql';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import * as schema from './schema';
 import {
   auditLog,
   scoreAccess,
+  scoreAutosaveNoopRequests,
   scoreVersions,
   scores,
   settings,
@@ -119,7 +121,8 @@ export type ScoreVersionCreationResult =
 export type ScoreAutosaveCreationResult =
   | { status: 'created'; versionId: string }
   | { status: 'replayed'; versionId: string }
-  | { status: 'unchanged' }
+  | { status: 'unchanged'; versionId: string }
+  | { status: 'unchanged_replayed'; versionId: string }
   | { status: 'not_found' }
   | { status: 'forbidden' }
   | { status: 'stale_version' }
@@ -207,6 +210,7 @@ type QuerySession = Database | DatabaseTransaction;
 const LOGIN_THROTTLE_BUSY_RETRIES = 12;
 const TRANSACTION_BUSY_RETRIES = 12;
 const MAX_SCORE_AUTOSAVES = 20;
+const MAX_SCORE_AUTOSAVE_NOOP_RECEIPTS = 20;
 
 function isDatabaseBusy(error: unknown): boolean {
   return (
@@ -900,6 +904,33 @@ class DrizzleApiRepository implements ApiRepository {
       if (!authorization) return { status: 'not_found' };
       if (!authorization.canEdit) return { status: 'forbidden' };
 
+      const musicXmlHash = createHash('sha256')
+        .update(version.musicxml, 'utf8')
+        .digest('hex');
+      const unchangedRequest = await tx
+        .select()
+        .from(scoreAutosaveNoopRequests)
+        .where(
+          and(
+            eq(scoreAutosaveNoopRequests.scoreId, version.scoreId),
+            eq(scoreAutosaveNoopRequests.actorId, actorId),
+            eq(scoreAutosaveNoopRequests.requestId, version.autosaveRequestId)
+          )
+        )
+        .limit(1);
+      if (unchangedRequest[0]) {
+        if (
+          unchangedRequest[0].baseVersionId !== baseVersionId ||
+          unchangedRequest[0].musicXmlHash !== musicXmlHash
+        ) {
+          return { status: 'idempotency_conflict' };
+        }
+        return {
+          status: 'unchanged_replayed',
+          versionId: unchangedRequest[0].baseVersionId,
+        };
+      }
+
       const duplicate = await tx
         .select()
         .from(scoreVersions)
@@ -926,8 +957,39 @@ class DrizzleApiRepository implements ApiRepository {
         return { status: 'stale_version' };
       }
       if (noOp) {
+        const priorReceipts = await tx
+          .select({ id: scoreAutosaveNoopRequests.id })
+          .from(scoreAutosaveNoopRequests)
+          .where(eq(scoreAutosaveNoopRequests.scoreId, version.scoreId))
+          .orderBy(asc(scoreAutosaveNoopRequests.id));
+        const expiredReceiptIds = priorReceipts
+          .slice(
+            0,
+            Math.max(
+              0,
+              priorReceipts.length - (MAX_SCORE_AUTOSAVE_NOOP_RECEIPTS - 1)
+            )
+          )
+          .map((receipt) => receipt.id);
+        await tx
+          .insert(scoreAutosaveNoopRequests)
+          .values({
+            scoreId: version.scoreId,
+            actorId,
+            requestId: version.autosaveRequestId,
+            baseVersionId,
+            musicXmlHash,
+            createdAt: version.createdAt,
+          })
+          .run();
+        if (expiredReceiptIds.length) {
+          await tx
+            .delete(scoreAutosaveNoopRequests)
+            .where(inArray(scoreAutosaveNoopRequests.id, expiredReceiptIds))
+            .run();
+        }
         if (audit) await tx.insert(auditLog).values(audit).run();
-        return { status: 'unchanged' };
+        return { status: 'unchanged', versionId: baseVersionId };
       }
 
       const priorAutosaves = await tx

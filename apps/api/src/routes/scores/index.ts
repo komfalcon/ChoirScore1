@@ -565,13 +565,17 @@ export function createScoresRouter(
       const outcome =
         saved.status === 'created'
           ? 'saved'
-          : saved.status === 'unchanged'
+          : saved.status === 'unchanged' ||
+              saved.status === 'unchanged_replayed'
             ? 'unchanged'
             : 'replayed';
       const response = createScoreAutosaveResponseSchema.parse({
         score: summarize(updatedRow, user),
         versionId:
-          saved.status === 'created' || saved.status === 'replayed'
+          saved.status === 'created' ||
+          saved.status === 'replayed' ||
+          saved.status === 'unchanged' ||
+          saved.status === 'unchanged_replayed'
             ? saved.versionId
             : updatedRow.version.id,
         currentVersionId: updatedRow.version.id,
