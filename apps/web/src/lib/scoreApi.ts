@@ -1,10 +1,14 @@
 import {
+  createScoreAutosaveRequestSchema,
+  createScoreAutosaveResponseSchema,
   createScoreVersionRequestSchema,
   createScoreVersionResponseSchema,
   patchScoreRequestSchema,
   patchScoreResponseSchema,
   scoreListFiltersSchema,
   type ApiErrorResponse,
+  type CreateScoreAutosaveRequest,
+  type CreateScoreAutosaveResponse,
   type CreateScoreVersionResponse,
   type PatchScoreRequest,
   type PatchScoreResponse,
@@ -136,6 +140,28 @@ export async function createScoreVersion(
   );
   return parseResponse(
     createScoreVersionResponseSchema.parse,
+    await readJson(response)
+  );
+}
+
+/** Saves a working draft; explicit Save continues to use createScoreVersion. */
+export async function createScoreAutosave(
+  id: string,
+  request: CreateScoreAutosaveRequest,
+  signal?: AbortSignal
+): Promise<CreateScoreAutosaveResponse> {
+  const body = createScoreAutosaveRequestSchema.parse(request);
+  const response = await apiFetch(
+    `/scores/${encodeURIComponent(id)}/autosaves`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    }
+  );
+  return parseResponse(
+    createScoreAutosaveResponseSchema.parse,
     await readJson(response)
   );
 }
