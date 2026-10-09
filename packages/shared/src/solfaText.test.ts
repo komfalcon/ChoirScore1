@@ -8,6 +8,118 @@ import {
 } from './solfaText.js';
 import { scoreModelSchema } from './scoreModel.js';
 
+function seededRandom(seed: number): () => number {
+  let state = (seed + 0x9e3779b9) >>> 0;
+  return () => {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    return (state >>> 0) / 0x1_0000_0000;
+  };
+}
+
+function generatedSupportedText(seed: number): string {
+  const random = seededRandom(seed);
+  const pick = <T>(items: readonly T[]): T =>
+    items[Math.floor(random() * items.length)]!;
+  const syllables = [
+    'd',
+    'di',
+    'r',
+    'ri',
+    'ra',
+    'm',
+    'me',
+    'f',
+    'fi',
+    's',
+    'si',
+    'se',
+    'l',
+    'li',
+    'le',
+    't',
+    'te',
+  ] as const;
+  const octaveMarks = ['', "'", "''", ',', ',,'] as const;
+  const pitch = () => `${pick(syllables)}${pick(octaveMarks)}`;
+  const beat = () => {
+    if (random() < 0.62) return random() < 0.12 ? '0' : pitch();
+    return random() < 0.5 ? `0.${pitch()}` : `${pitch()}.0`;
+  };
+  const beatCount = pick([2, 3, 4, 6]);
+  const beatType = pick([4, 8]);
+  const barCount = 1 + Math.floor(random() * 4);
+  const selectedParts = ['S', 'A', 'T', 'B'].filter(() => random() < 0.65);
+  if (selectedParts.length === 0) selectedParts.push('S');
+  const header = random() < 0.5 ? 'Doh is C' : 'Doh is C · Lah is A';
+  const rows = selectedParts.map((part) => {
+    const bars = Array.from({ length: barCount }, () =>
+      Array.from({ length: beatCount }, beat).join(' : ')
+    );
+    return `${part}: | ${bars.join(' | ')} |`;
+  });
+  return [
+    header,
+    `Time ${beatCount}/${beatType}`,
+    `Tempo ${60 + Math.floor(random() * 121)}`,
+    '',
+    ...rows,
+  ].join('\n');
+}
+
+function generatedTieAndLyricText(seed: number): string {
+  const random = seededRandom(seed + 0x10000);
+  const syllables = ['d', 'di', 'r', 'ra', 'm', 'f', 's', 'le', 't'] as const;
+  const octaveMarks = ['', "'", ','] as const;
+  const pitch = () =>
+    `${syllables[Math.floor(random() * syllables.length)]}${octaveMarks[Math.floor(random() * octaveMarks.length)]}`;
+  let priorBeatWasSung = false;
+  let sungNoteCount = 0;
+  const bars = Array.from({ length: 3 }, (_, barIndex) =>
+    Array.from({ length: 4 }, (_, beatIndex) => {
+      const token =
+        barIndex === 0 && beatIndex === 0
+          ? pitch()
+          : priorBeatWasSung && random() < 0.22
+            ? '-'
+            : random() < 0.18
+              ? '0'
+              : pitch();
+      if (token === '0') priorBeatWasSung = false;
+      else if (token !== '-') {
+        priorBeatWasSung = true;
+        sungNoteCount += 1;
+      }
+      return token;
+    }).join(' : ')
+  );
+  const lyricVerse = () => {
+    const words: string[] = [];
+    let remaining = sungNoteCount;
+    while (remaining > 0) {
+      const wordLength = 1 + Math.floor(random() * Math.min(3, remaining));
+      const word = Array.from(
+        { length: wordLength },
+        () => ['ha', 'lu', 'jah', 'sing', 'joy'][Math.floor(random() * 5)]!
+      ).join('-');
+      words.push(word);
+      remaining -= wordLength;
+    }
+    return words.join(' ');
+  };
+  return [
+    'Doh is C',
+    'Time 4/4',
+    `Tempo ${60 + Math.floor(random() * 121)}`,
+    '',
+    `S: | ${bars.join(' | ')} |`,
+    '',
+    `L1: ${lyricVerse()}`,
+    `L2: ${lyricVerse()}`,
+  ].join('\n');
+}
+
 const SATB_TEXT = `Doh is C
 Time 4/4
 Tempo 96
@@ -110,6 +222,42 @@ S: | di : ri : fi : si | li : ra : me : se | le : te : d : r |`;
       'D4',
     ]);
     expect(modelToSolfaText(model)).toBe(text);
+  });
+
+  it('rejects unsupported double-quote octave marks rather than canonicalizing them away', () => {
+    expect(() =>
+      parseSolfaText(`Doh is C
+Time 4/4
+Tempo 90
+
+S: | d" : r : m : f |`)
+    ).toThrow(/Part S, Bar 1, Beat 1: unsupported beat token/);
+  });
+
+  it('round-trips deterministic generated examples across supported grammar combinations', () => {
+    for (let seed = 1; seed <= 96; seed += 1) {
+      const text = generatedSupportedText(seed);
+      const model = parseSolfaText(text);
+      const serialized = modelToSolfaText(model);
+      expect(serialized, `canonical text for seed ${seed}`).toBe(text);
+      expect(
+        parseSolfaText(serialized),
+        `model round-trip for seed ${seed}`
+      ).toEqual(model);
+    }
+  });
+
+  it('round-trips deterministic bar-crossing holds and lyric verses', () => {
+    for (let seed = 1; seed <= 48; seed += 1) {
+      const text = generatedTieAndLyricText(seed);
+      const model = parseSolfaText(text);
+      const serialized = modelToSolfaText(model);
+      expect(serialized, `tie and lyric text for seed ${seed}`).toBe(text);
+      expect(
+        parseSolfaText(serialized),
+        `tie and lyric model for seed ${seed}`
+      ).toEqual(model);
+    }
   });
 
   it('uses relative-major Doh/Lah for a minor key', () => {
@@ -233,5 +381,29 @@ S: | d : r : m : f |`);
     expect(() => modelToSolfaText(unsupportedPitch)).toThrow(
       /approved spelled-degree Sol-fa table/
     );
+  });
+
+  it('reports schema-invalid note durations at the note Part, Bar, and Beat', () => {
+    const valid = parseSolfaText(`Doh is C
+Time 4/4
+Tempo 90
+
+S: | d : r : m : f |`);
+    const invalidDuration = structuredClone(valid);
+    invalidDuration.parts[0]!.measures[0]!.notes[2]!.dur = 0;
+
+    try {
+      modelToSolfaText(invalidDuration);
+      throw new Error('expected serialization to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(SolfaTextError);
+      expect(error).toMatchObject({
+        code: 'INVALID_SCORE_MODEL',
+        part: 'S',
+        bar: 1,
+        beat: 3,
+      });
+      expect((error as Error).message).toContain('Part S, Bar 1, Beat 3:');
+    }
   });
 });

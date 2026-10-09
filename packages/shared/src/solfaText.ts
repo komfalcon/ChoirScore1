@@ -169,6 +169,75 @@ function headerLocation(): SolfaTextLocation {
   return { part: 'Header', bar: 1, beat: 1 };
 }
 
+function scoreModelIssueLocation(
+  input: unknown,
+  path: Array<string | number | symbol>
+): SolfaTextLocation {
+  const asRecord = (value: unknown): Record<string, unknown> | undefined =>
+    typeof value === 'object' && value !== null
+      ? (value as Record<string, unknown>)
+      : undefined;
+  const root = asRecord(input);
+  const parts = Array.isArray(root?.parts) ? root.parts : undefined;
+  const partIndex =
+    path[0] === 'parts' && typeof path[1] === 'number' ? path[1] : undefined;
+  const part =
+    partIndex === undefined ? undefined : asRecord(parts?.[partIndex]);
+  const partId = typeof part?.id === 'string' ? part.id : 'Header';
+  const measureIndex =
+    path[2] === 'measures' && typeof path[3] === 'number' ? path[3] : undefined;
+  if (partIndex === undefined || measureIndex === undefined) {
+    return { part: partId, bar: 1, beat: 1 };
+  }
+
+  const measures = Array.isArray(part?.measures) ? part.measures : undefined;
+  const measure = asRecord(measures?.[measureIndex]);
+  const location = { part: partId, bar: measureIndex + 1, beat: 1 };
+  const noteIndex =
+    path[4] === 'notes' && typeof path[5] === 'number' ? path[5] : undefined;
+  if (noteIndex === undefined) return location;
+
+  const notes = Array.isArray(measure?.notes) ? measure.notes : [];
+  const note = asRecord(notes[noteIndex]);
+  const suppliedOnset = note?.onset;
+  let onset: number;
+  if (
+    typeof suppliedOnset === 'number' &&
+    Number.isFinite(suppliedOnset) &&
+    suppliedOnset >= 0
+  ) {
+    onset = suppliedOnset;
+  } else {
+    onset = 0;
+    for (let index = 0; index < noteIndex; index += 1) {
+      const prior = asRecord(notes[index]);
+      const priorOnset = prior?.onset;
+      const priorDuration = prior?.dur;
+      const start =
+        typeof priorOnset === 'number' &&
+        Number.isFinite(priorOnset) &&
+        priorOnset >= 0
+          ? priorOnset
+          : onset;
+      onset =
+        start +
+        (typeof priorDuration === 'number' &&
+        Number.isFinite(priorDuration) &&
+        priorDuration > 0
+          ? priorDuration
+          : 0);
+    }
+  }
+
+  const time = asRecord(root?.time);
+  const beatType = time?.beatType;
+  const beatUnit =
+    typeof beatType === 'number' && Number.isFinite(beatType) && beatType > 0
+      ? 4 / beatType
+      : 1;
+  return { ...location, beat: Math.max(1, Math.floor(onset / beatUnit) + 1) };
+}
+
 function keySignatureAccidentals(
   key: Pick<ScoreKey, 'fifths'>
 ): Map<string, string> {
@@ -324,7 +393,7 @@ function parseCellToken(
   const value = token.trim();
   if (value === '' || value === '0') return { kind: 'rest' };
   if (value === '-') return { kind: 'hold' };
-  const match = /^(di|ri|fi|si|li|ra|me|se|le|te|d|r|m|f|s|l|t)(['",]*)$/.exec(
+  const match = /^(di|ri|fi|si|li|ra|me|se|le|te|d|r|m|f|s|l|t)([',]*)$/.exec(
     value
   );
   if (!match) {
@@ -834,17 +903,10 @@ export function parseSolfaText(
   const validated = scoreModelSchema.safeParse(modelInput);
   if (!validated.success) {
     const issue = validated.error.issues[0];
-    const path = issue?.path ?? [];
-    const partIndex = typeof path[1] === 'number' ? path[1] : 0;
-    const partId = parts[partIndex]?.id ?? 'Header';
     fail(
       'INVALID_SCORE_MODEL',
       issue?.message ?? 'score model validation failed',
-      {
-        part: partId,
-        bar: 1,
-        beat: 1,
-      }
+      scoreModelIssueLocation(modelInput, issue?.path ?? [])
     );
   }
   return validated.data;
@@ -1478,10 +1540,11 @@ function modelToSolfaTextValidated(model: ScoreModel): string {
 export function modelToSolfaText(modelInput: ScoreModel): string {
   const parsed = scoreModelSchema.safeParse(modelInput);
   if (!parsed.success) {
+    const issue = parsed.error.issues[0];
     fail(
       'INVALID_SCORE_MODEL',
-      parsed.error.issues[0]?.message ?? 'invalid score model',
-      headerLocation()
+      issue?.message ?? 'invalid score model',
+      scoreModelIssueLocation(modelInput, issue?.path ?? [])
     );
   }
   return modelToSolfaTextValidated(parsed.data);
