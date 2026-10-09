@@ -76,6 +76,7 @@ interface PartData {
 
 const MIN_SHIFT = -12;
 const MAX_SHIFT = 12;
+/** A hard violation is already counted outside comfortable; add only four points so its total weight is five. */
 const HARD_VIOLATION_WEIGHT = 5;
 const SUGGESTION_LIMIT = 3;
 
@@ -226,7 +227,7 @@ export function suggestFit(
 
   const candidates: FitSuggestion[] = [];
   for (let semitones = MIN_SHIFT; semitones <= MAX_SHIFT; semitones += 1) {
-    const perPart: Record<string, PartFitCounts> = {};
+    const perPart = Object.create(null) as Record<string, PartFitCounts>;
     for (const part of parts) {
       perPart[part.id] = {
         outsideComfortable: countViolations(
@@ -242,7 +243,8 @@ export function suggestFit(
       const counts = perPart[part.id]!;
       return (
         total +
-        counts.outsideComfortable +
+        counts.outsideComfortable -
+        counts.outsideHard +
         HARD_VIOLATION_WEIGHT * counts.outsideHard
       );
     }, 0);

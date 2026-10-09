@@ -159,7 +159,35 @@ describe('shared deterministic suggestFit', () => {
       Array.from({ length: 25 }, (_, index) => index - 12)
     );
     expect(first.suggestions.map((item) => item.semitones)).toEqual([0, -1, 1]);
-    expect(first.suggestions.map((item) => item.score)).toEqual([0, 6, 6]);
+    expect(first.suggestions.map((item) => item.score)).toEqual([0, 5, 5]);
+    expect(first.suggestions[1]?.perPart.S).toEqual({
+      outsideComfortable: 1,
+      outsideHard: 1,
+    });
+  });
+
+  it('stores a __proto__ part id as an ordinary own per-part result', () => {
+    const partId = '__proto__';
+    const model = modelWithParts([{ id: partId, notes: [{ pitch: 'C4' }] }]);
+    const voiceRanges = Object.fromEntries([
+      [
+        partId,
+        {
+          comfortable: { low: 'C4', high: 'C4' },
+          hard: { low: 'C4', high: 'C4' },
+        },
+      ],
+    ]) as VoiceRanges;
+
+    const result = suggestFit(model, voiceRanges);
+    const perPart = result.suggestions[0]!.perPart;
+
+    expect(Object.getPrototypeOf(perPart)).toBeNull();
+    expect(Object.hasOwn(perPart, partId)).toBe(true);
+    expect(perPart[partId]).toEqual({
+      outsideComfortable: 0,
+      outsideHard: 0,
+    });
   });
 
   it('rejects missing, reversed, non-nested, and unknown part ranges', () => {

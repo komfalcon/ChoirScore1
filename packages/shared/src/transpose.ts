@@ -3,6 +3,7 @@ import {
   intervalForSemitones,
   midiForPitch,
   parseInterval,
+  parsePitch,
   pitchNameWithoutOctave,
   transposePitch,
   type PitchInterval,
@@ -49,6 +50,19 @@ const MODE_TONIC_INTERVAL: Record<ScoreKey['mode'], string> = {
   locrian: 'M7',
   none: 'P1',
 };
+
+const PITCH_LETTERS = ['C', 'D', 'E', 'F', 'G', 'A', 'B'] as const;
+const NATURAL_PITCH_CLASSES: Record<(typeof PITCH_LETTERS)[number], number> = {
+  C: 0,
+  D: 2,
+  E: 4,
+  F: 5,
+  G: 7,
+  A: 9,
+  B: 11,
+};
+const SHARP_ORDER = ['F', 'C', 'G', 'D', 'A', 'E', 'B'];
+const FLAT_ORDER = ['B', 'E', 'A', 'D', 'G', 'C', 'F'];
 
 function keyTonic(key: ScoreKey): string {
   const majorTonic = MAJOR_TONICS_BY_FIFTHS[key.fifths];
@@ -108,6 +122,126 @@ function keyAfterInterval(key: ScoreKey, interval: PitchInterval): ScoreKey {
   return keyForTonic(tonic, key.mode);
 }
 
+function keySignatureAlteration(key: ScoreKey, letter: string): number {
+  if (key.fifths === 0) return 0;
+  const order = key.fifths > 0 ? SHARP_ORDER : FLAT_ORDER;
+  return order.slice(0, Math.abs(key.fifths)).includes(letter)
+    ? Math.sign(key.fifths)
+    : 0;
+}
+
+interface SpellingCandidate {
+  pitch: string;
+  accidental: number;
+  diatonicIndex: number;
+  letterIndex: number;
+}
+
+/**
+ * Keeps an interval's conventional spelling when it fits the target key;
+ * otherwise prefers a spelling from the target key. Chromatic notes retain
+ * their interval spelling where possible, with a bounded enharmonic fallback.
+ */
+function transposePitchInKey(
+  value: string,
+  interval: PitchInterval,
+  targetKey: ScoreKey
+): string {
+  const source = parsePitch(value);
+  const targetMidi = source.midi + interval.semitones;
+  const targetDiatonicIndex = source.diatonicIndex + interval.diatonicSteps;
+  if (
+    !Number.isSafeInteger(targetMidi) ||
+    !Number.isSafeInteger(targetDiatonicIndex)
+  ) {
+    throw new RangeError(
+      'The requested transposition is outside the supported pitch range.'
+    );
+  }
+
+  const expectedOctave = Math.floor(targetDiatonicIndex / 7);
+  const expectedLetterIndex = ((targetDiatonicIndex % 7) + 7) % 7;
+  const expectedLetter = PITCH_LETTERS[expectedLetterIndex]!;
+  const expectedNaturalMidi =
+    (expectedOctave + 1) * 12 + NATURAL_PITCH_CLASSES[expectedLetter];
+  let intervalSpelling: string | undefined;
+  let intervalAccidental: number | undefined;
+  if (Number.isSafeInteger(expectedNaturalMidi)) {
+    intervalAccidental = targetMidi - expectedNaturalMidi;
+    if (Math.abs(intervalAccidental) <= 2) {
+      const accidentalText =
+        intervalAccidental > 0
+          ? '#'.repeat(intervalAccidental)
+          : 'b'.repeat(-intervalAccidental);
+      intervalSpelling = `${expectedLetter}${accidentalText}${expectedOctave}`;
+    }
+  }
+
+  const approximateOctave = Math.floor(targetMidi / 12) - 1;
+  const candidates: SpellingCandidate[] = [];
+  for (
+    let octave = approximateOctave - 2;
+    octave <= approximateOctave + 2;
+    octave += 1
+  ) {
+    for (
+      let letterIndex = 0;
+      letterIndex < PITCH_LETTERS.length;
+      letterIndex += 1
+    ) {
+      const letter = PITCH_LETTERS[letterIndex]!;
+      const naturalMidi = (octave + 1) * 12 + NATURAL_PITCH_CLASSES[letter];
+      if (!Number.isSafeInteger(naturalMidi)) continue;
+      const accidental = targetMidi - naturalMidi;
+      if (!Number.isInteger(accidental) || Math.abs(accidental) > 2) continue;
+      const accidentalText =
+        accidental > 0 ? '#'.repeat(accidental) : 'b'.repeat(-accidental);
+      const diatonicIndex = octave * 7 + letterIndex;
+      if (!Number.isSafeInteger(diatonicIndex)) continue;
+      candidates.push({
+        pitch: `${letter}${accidentalText}${octave}`,
+        accidental,
+        diatonicIndex,
+        letterIndex,
+      });
+    }
+  }
+
+  const intervalIsInKey =
+    intervalAccidental !== undefined &&
+    intervalAccidental === keySignatureAlteration(targetKey, expectedLetter);
+  if (intervalSpelling && intervalIsInKey) return intervalSpelling;
+
+  const inKeyCandidates = candidates.filter(
+    (candidate) =>
+      candidate.accidental ===
+      keySignatureAlteration(targetKey, PITCH_LETTERS[candidate.letterIndex]!)
+  );
+  const byIntervalDistance = (
+    left: SpellingCandidate,
+    right: SpellingCandidate
+  ) =>
+    Math.abs(left.diatonicIndex - targetDiatonicIndex) -
+      Math.abs(right.diatonicIndex - targetDiatonicIndex) ||
+    Math.abs(left.accidental) - Math.abs(right.accidental) ||
+    left.letterIndex - right.letterIndex;
+  inKeyCandidates.sort(byIntervalDistance);
+  if (inKeyCandidates.length > 0) return inKeyCandidates[0]!.pitch;
+  if (intervalSpelling) return intervalSpelling;
+
+  candidates.sort(
+    (left, right) =>
+      Math.abs(left.accidental) - Math.abs(right.accidental) ||
+      byIntervalDistance(left, right)
+  );
+  if (candidates.length === 0) {
+    throw new RangeError(
+      'The requested transposition cannot be represented within the supported accidental limit.'
+    );
+  }
+  return candidates[0]!.pitch;
+}
+
 function resolveOptions(
   model: ScoreModel,
   options: TransposeOptions
@@ -157,10 +291,17 @@ function resolveOptions(
   }
 }
 
-function transformNote(note: ScoreNote, interval: PitchInterval): ScoreNote {
+function transformNote(
+  note: ScoreNote,
+  interval: PitchInterval,
+  targetKey: ScoreKey
+): ScoreNote {
   return {
     ...note,
-    pitch: note.pitch === null ? null : transposePitch(note.pitch, interval),
+    pitch:
+      note.pitch === null
+        ? null
+        : transposePitchInKey(note.pitch, interval, targetKey),
     ...(note.lyric ? { lyric: { ...note.lyric } } : {}),
     ...(note.lyrics
       ? { lyrics: note.lyrics.map((lyric) => ({ ...lyric })) }
@@ -179,18 +320,25 @@ export function transpose(
   options: TransposeOptions
 ): ScoreModel {
   const { interval, targetGlobalKey } = resolveOptions(model, options);
+  const resultingGlobalKey =
+    targetGlobalKey ?? keyAfterInterval(model.key, interval);
   return {
     ...model,
-    key: targetGlobalKey ?? keyAfterInterval(model.key, interval),
+    key: resultingGlobalKey,
     parts: model.parts.map((part) => ({
       ...part,
-      measures: part.measures.map((measure) => ({
-        ...measure,
-        ...(measure.key
-          ? { key: keyAfterInterval(measure.key, interval) }
-          : {}),
-        notes: measure.notes.map((note) => transformNote(note, interval)),
-      })),
+      measures: part.measures.map((measure) => {
+        const resultingMeasureKey = measure.key
+          ? keyAfterInterval(measure.key, interval)
+          : resultingGlobalKey;
+        return {
+          ...measure,
+          ...(measure.key ? { key: resultingMeasureKey } : {}),
+          notes: measure.notes.map((note) =>
+            transformNote(note, interval, resultingMeasureKey)
+          ),
+        };
+      }),
     })),
   };
 }

@@ -163,4 +163,24 @@ describe('shared pure transpose', () => {
       shifted.parts[0]?.measures[0]?.notes[0]?.pitch
     );
   });
+
+  it('spells transposed notes against the resulting key signature', () => {
+    const model = createModel();
+    model.key = { fifths: -5, mode: 'major' };
+    model.parts[0]!.measures[0]!.notes[0]!.pitch = 'Db4';
+
+    const shifted = transpose(model, { semitones: 1 });
+
+    expect(shifted.key).toEqual({ fifths: 2, mode: 'major' });
+    expect(shifted.parts[0]?.measures[0]?.notes[0]?.pitch).toBe('D4');
+  });
+
+  it('uses a bounded enharmonic spelling instead of an unnecessary triple accidental', () => {
+    const model = createModel();
+    model.parts[0]!.measures[0]!.notes[0]!.pitch = 'Cbb4';
+
+    const shifted = transpose(model, { semitones: 1 });
+
+    expect(shifted.parts[0]?.measures[0]?.notes[0]?.pitch).toBe('B3');
+  });
 });
