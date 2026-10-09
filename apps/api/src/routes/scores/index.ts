@@ -550,7 +550,12 @@ export function createScoresRouter(
         );
       }
 
-      if (saved.status === 'created' || saved.status === 'unchanged') {
+      if (
+        saved.status === 'created' ||
+        saved.status === 'replayed' ||
+        saved.status === 'unchanged' ||
+        saved.status === 'unchanged_replayed'
+      ) {
         markScoreAdminAuditRecorded(req as RequestWithContext, user);
       }
       const updatedRow = await repository.findScoreRow(row.score.id, user.id);

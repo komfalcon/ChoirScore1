@@ -259,6 +259,8 @@ Request (`createScoreAutosaveRequestSchema`):
 
 `model` is a valid shared `ScoreModel`; `baseVersionId` is the version the draft was based on; `requestId` is unique to one logical autosave and remains stable across retries of that operation. The API canonicalizes the model using the same source-preservation rules as explicit version saves.
 
+Each successful autosave POST by an active admin writes one success audit record in the same transaction, including saved-version and unchanged-request idempotency replays. An unchanged replay remains a `200` `unchanged` response and creates no version row.
+
 | Status                            | Outcome     | Behavior                                                                                                                                                                                             |
 | --------------------------------- | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `201`                             | `saved`     | New autosave version is current; response includes `{ score, versionId, currentVersionId, outcome }`.                                                                                                |

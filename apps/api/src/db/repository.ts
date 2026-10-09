@@ -925,6 +925,7 @@ class DrizzleApiRepository implements ApiRepository {
         ) {
           return { status: 'idempotency_conflict' };
         }
+        if (audit) await tx.insert(auditLog).values(audit).run();
         return {
           status: 'unchanged_replayed',
           versionId: unchangedRequest[0].baseVersionId,
@@ -950,6 +951,7 @@ class DrizzleApiRepository implements ApiRepository {
         ) {
           return { status: 'idempotency_conflict' };
         }
+        if (audit) await tx.insert(auditLog).values(audit).run();
         return { status: 'replayed', versionId: duplicate[0].id };
       }
 

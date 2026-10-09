@@ -1139,6 +1139,102 @@ describe('M2 score API routes', () => {
     expect(versions[0]?.versionKind).toBe('explicit');
   });
 
+  it('audits unchanged admin autosave replays transactionally without changing idempotency semantics', async () => {
+    const created = await asActor(
+      request(app).post('/scores'),
+      actors.admin,
+      true
+    ).send({ model: MODEL });
+    expect(created.status).toBe(201);
+    const id = created.body.score.id as string;
+    const detail = await asActor(
+      request(app).get(`/scores/${id}`),
+      actors.admin
+    );
+    const body = {
+      model: detail.body.score.model,
+      baseVersionId: detail.body.score.currentVersionId as string,
+      requestId: 'admin-unchanged-replay',
+    };
+    const triggerClient = createClient({
+      url: `file:${join(tempDirectory, 'scores.sqlite')}`,
+    });
+    await triggerClient.execute(`CREATE TRIGGER fail_autosave_success_audit
+      BEFORE INSERT ON audit_log
+      WHEN NEW.action = 'scores.autosave.create' AND NEW.outcome = 'success'
+      BEGIN SELECT RAISE(ABORT, 'simulated audit failure'); END`);
+    triggerClient.close();
+
+    const failed = await asActor(
+      request(app).post(`/scores/${id}/autosaves`),
+      actors.admin,
+      true
+    ).send(body);
+    expect(failed.status).toBe(500);
+    expect(await listScoreAutosaveNoopRequestIds(id)).toEqual([]);
+    const versionsAfterFailure = await listScoreVersions(id);
+    expect(versionsAfterFailure).toHaveLength(1);
+    expect(versionsAfterFailure[0]?.versionKind).toBe('explicit');
+    const failedAudits = (await repository.listAuditEntries()).filter(
+      (entry) =>
+        entry.action === 'scores.autosave.create' && entry.targetId === id
+    );
+    expect(failedAudits).toHaveLength(1);
+    expect(failedAudits[0]).toMatchObject({
+      actorId: actors.admin.id,
+      outcome: 'failed',
+      errorCode: 'INTERNAL_ERROR',
+      detailJson: '{}',
+    });
+
+    const cleanupClient = createClient({
+      url: `file:${join(tempDirectory, 'scores.sqlite')}`,
+    });
+    await cleanupClient.execute('DROP TRIGGER fail_autosave_success_audit');
+    cleanupClient.close();
+    const first = await asActor(
+      request(app).post(`/scores/${id}/autosaves`),
+      actors.admin,
+      true
+    ).send(body);
+    const replay = await asActor(
+      request(app).post(`/scores/${id}/autosaves`),
+      actors.admin,
+      true
+    ).send(body);
+    expect(first.status).toBe(200);
+    expect(replay.status).toBe(200);
+    expect(first.body.outcome).toBe('unchanged');
+    expect(replay.body.outcome).toBe('unchanged');
+    expect(first.body.versionId).toBe(body.baseVersionId);
+    expect(replay.body.versionId).toBe(first.body.versionId);
+    expect(await listScoreAutosaveNoopRequestIds(id)).toEqual([body.requestId]);
+    const versionsAfterReplay = await listScoreVersions(id);
+    expect(versionsAfterReplay).toHaveLength(1);
+    expect(versionsAfterReplay[0]?.versionKind).toBe('explicit');
+    const autosaveAudits = (await repository.listAuditEntries()).filter(
+      (entry) =>
+        entry.action === 'scores.autosave.create' && entry.targetId === id
+    );
+    expect(
+      autosaveAudits.filter((entry) => entry.outcome === 'success')
+    ).toHaveLength(2);
+    expect(
+      autosaveAudits.filter((entry) => entry.outcome === 'failed')
+    ).toHaveLength(1);
+    for (const audit of autosaveAudits.filter(
+      (entry) => entry.outcome === 'success'
+    )) {
+      expect(audit).toMatchObject({
+        actorId: actors.admin.id,
+        targetType: 'score',
+        targetId: id,
+        errorCode: null,
+        detailJson: '{}',
+      });
+    }
+  });
+
   it('reserves unchanged autosave keys and rejects mismatched reuse without creating a version', async () => {
     const created = await asActor(
       request(app).post('/scores'),
@@ -1357,6 +1453,54 @@ describe('M2 score API routes', () => {
     ).toHaveLength(1);
   });
 
+  it('audits successful admin autosave retries that replay a saved version', async () => {
+    const created = await asActor(
+      request(app).post('/scores'),
+      actors.admin,
+      true
+    ).send({ model: MODEL });
+    const id = created.body.score.id as string;
+    const detail = await asActor(
+      request(app).get(`/scores/${id}`),
+      actors.admin
+    );
+    const model = structuredClone(detail.body.score.model);
+    model.parts[0].measures[0].notes[0].pitch = 'D4';
+    const body = {
+      model,
+      baseVersionId: detail.body.score.currentVersionId as string,
+      requestId: 'admin-saved-autosave-replay',
+    };
+    const first = await asActor(
+      request(app).post(`/scores/${id}/autosaves`),
+      actors.admin,
+      true
+    ).send(body);
+    const replay = await asActor(
+      request(app).post(`/scores/${id}/autosaves`),
+      actors.admin,
+      true
+    ).send(body);
+    expect(first.status).toBe(201);
+    expect(replay.status).toBe(200);
+    expect(replay.body.outcome).toBe('replayed');
+    expect(replay.body.versionId).toBe(first.body.versionId);
+    expect(
+      (await listScoreVersions(id)).filter(
+        (version) => version.versionKind === 'autosave'
+      )
+    ).toHaveLength(1);
+    const autosaveAudits = (await repository.listAuditEntries()).filter(
+      (entry) =>
+        entry.action === 'scores.autosave.create' && entry.targetId === id
+    );
+    expect(autosaveAudits).toHaveLength(2);
+    expect(autosaveAudits.map((entry) => entry.outcome)).toEqual([
+      'success',
+      'success',
+    ]);
+  });
+
   it('rejects one of two concurrent autosaves from the same base as stale', async () => {
     const created = await asActor(
       request(app).post('/scores'),
@@ -1440,6 +1584,61 @@ describe('M2 score API routes', () => {
     expect(
       versions.filter((version) => version.versionKind === 'autosave')
     ).toHaveLength(1);
+  });
+
+  it('serializes concurrent identical no-op autosaves into two unchanged responses and one receipt', async () => {
+    const created = await asActor(
+      request(app).post('/scores'),
+      actors.admin,
+      true
+    ).send({ model: MODEL });
+    const id = created.body.score.id as string;
+    const detail = await asActor(
+      request(app).get(`/scores/${id}`),
+      actors.admin
+    );
+    const body = {
+      model: detail.body.score.model,
+      baseVersionId: detail.body.score.currentVersionId as string,
+      requestId: 'concurrent-identical-noop',
+    };
+    const results = await Promise.all([
+      asActor(
+        request(app).post(`/scores/${id}/autosaves`),
+        actors.admin,
+        true
+      ).send(body),
+      asActor(
+        request(app).post(`/scores/${id}/autosaves`),
+        actors.admin,
+        true
+      ).send(body),
+    ]);
+    expect(results.map((result) => result.status)).toEqual([200, 200]);
+    expect(results.map((result) => result.body.outcome)).toEqual([
+      'unchanged',
+      'unchanged',
+    ]);
+    expect(results.map((result) => result.body.versionId)).toEqual([
+      body.baseVersionId,
+      body.baseVersionId,
+    ]);
+    expect(results.map((result) => result.body.currentVersionId)).toEqual([
+      body.baseVersionId,
+      body.baseVersionId,
+    ]);
+    expect(await listScoreAutosaveNoopRequestIds(id)).toEqual([body.requestId]);
+    const versions = await listScoreVersions(id);
+    expect(versions).toHaveLength(1);
+    expect(versions[0]?.versionKind).toBe('explicit');
+    const autosaveAudits = (await repository.listAuditEntries()).filter(
+      (entry) =>
+        entry.action === 'scores.autosave.create' && entry.targetId === id
+    );
+    expect(autosaveAudits).toHaveLength(2);
+    expect(autosaveAudits.every((entry) => entry.outcome === 'success')).toBe(
+      true
+    );
   });
 
   it('keeps the newest 20 autosaves in order and never prunes explicit versions', async () => {
