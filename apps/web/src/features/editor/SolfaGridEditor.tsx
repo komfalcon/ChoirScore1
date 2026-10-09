@@ -20,6 +20,7 @@ import {
   setRest,
   setSolfaPitch,
   shiftOctave,
+  solfaGridSelectionForNote,
   toggleHoldToNext,
   type SolfaGridAccidental,
   type SolfaGridSelection,
@@ -31,6 +32,8 @@ import './SolfaGridEditor.css';
 export type SolfaGridEditorProps = {
   /** The shared score model is the only notation/editing representation. */
   model: ScoreModel;
+  /** Permission from score detail; required so read-only imports fail closed. */
+  canEditContent: boolean;
   /** Receives a schema-valid model whose canonical Sol-fa text round-trips. */
   onChange: (model: ScoreModel) => void;
   className?: string;
@@ -66,10 +69,12 @@ const ACCIDENTALS: Array<{ value: SolfaGridAccidental; label: string }> = [
 
 type GridCell = SolfaGridSelection & {
   note: ScoreModel['parts'][number]['measures'][number]['notes'][number];
+  noteIndex: number;
+  globalIndex: number;
 };
 
 function selectionKey(selection: SolfaGridSelection): string {
-  return `${selection.partId}:${selection.measureIndex}:${selection.noteIndex}`;
+  return `${selection.partId}:${selection.barIndex}:${selection.barNumber}:${selection.beat}:${selection.subdivision}:${selection.cellOrdinal}`;
 }
 
 function partLabel(part: ScoreModel['parts'][number]): string {
@@ -84,16 +89,17 @@ function partLabel(part: ScoreModel['parts'][number]): string {
 }
 
 function allGridCells(model: ScoreModel): GridCell[] {
-  return model.parts.flatMap((part) =>
-    part.measures.flatMap((measure, measureIndex) =>
+  return model.parts.flatMap((part) => {
+    let globalIndex = 0;
+    return part.measures.flatMap((measure, barIndex) =>
       measure.notes.map((note, noteIndex) => ({
-        partId: part.id,
-        measureIndex,
+        ...solfaGridSelectionForNote(model, part.id, barIndex, noteIndex),
         noteIndex,
+        globalIndex: globalIndex++,
         note,
       }))
-    )
-  );
+    );
+  });
 }
 
 function labelForSegment(segment: SolfaSegment | undefined): string {
@@ -106,18 +112,24 @@ function labelForSegment(segment: SolfaSegment | undefined): string {
 
 function projectedSegment(
   layout: ReturnType<typeof modelToSolfa>,
-  partId: string,
-  measureIndex: number,
-  noteIndex: number
+  selection: SolfaGridSelection
 ): SolfaSegment | undefined {
+  let barOffset = selection.barIndex;
   for (const system of layout.systems) {
-    const part = system.parts.find((candidate) => candidate.id === partId);
-    const systemStart = (system.number - 1) * 4;
-    const measure = part?.measures[measureIndex - systemStart];
-    const segment = measure?.beats
-      .flatMap((beat) => beat.segments)
-      .find((candidate) => candidate.eventId === noteIndex + 1);
-    if (segment) return segment;
+    if (barOffset >= system.measures.length) {
+      barOffset -= system.measures.length;
+      continue;
+    }
+    const part = system.parts.find(
+      (candidate) => candidate.id === selection.partId
+    );
+    const measure = part?.measures[barOffset];
+    if (measure?.number !== selection.barNumber) return undefined;
+    const beat = measure.beats.find(
+      (candidate) => candidate.number === selection.beat
+    );
+    if (!beat) return undefined;
+    return beat.segments[selection.subdivision] ?? beat.segments[0];
   }
   return undefined;
 }
@@ -137,34 +149,20 @@ function isSungOnset(
   model: ScoreModel,
   selection: SolfaGridSelection
 ): boolean {
+  const selected = allGridCells(model).find(
+    (cell) => selectionKey(cell) === selectionKey(selection)
+  );
+  if (!selected) return false;
   const part = model.parts.find(
     (candidate) => candidate.id === selection.partId
   );
   if (!part) return false;
   const notes = part.measures.flatMap((measure) => measure.notes);
-  let flatIndex = 0;
-  for (
-    let measureIndex = 0;
-    measureIndex < part.measures.length;
-    measureIndex += 1
-  ) {
-    const notesInMeasure = part.measures[measureIndex]!.notes;
-    for (let noteIndex = 0; noteIndex < notesInMeasure.length; noteIndex += 1) {
-      if (
-        measureIndex === selection.measureIndex &&
-        noteIndex === selection.noteIndex
-      ) {
-        const note = notesInMeasure[noteIndex]!;
-        const previous = notes[flatIndex - 1];
-        return (
-          note.pitch !== null &&
-          !(previous?.tie && previous.pitch === note.pitch)
-        );
-      }
-      flatIndex += 1;
-    }
-  }
-  return false;
+  const note = selected.note;
+  const previous = notes[selected.globalIndex - 1];
+  return (
+    note.pitch !== null && !(previous?.tie && previous.pitch === note.pitch)
+  );
 }
 
 function errorMessage(error: unknown): string {
@@ -175,6 +173,7 @@ function errorMessage(error: unknown): string {
 
 export function SolfaGridEditor({
   model,
+  canEditContent,
   onChange,
   className = '',
 }: SolfaGridEditorProps) {
@@ -183,13 +182,7 @@ export function SolfaGridEditor({
   const codecError = useMemo(() => codecErrorFor(model), [model]);
   const [selection, setSelection] = useState<SolfaGridSelection | null>(() => {
     const first = allGridCells(model)[0];
-    return first
-      ? {
-          partId: first.partId,
-          measureIndex: first.measureIndex,
-          noteIndex: first.noteIndex,
-        }
-      : null;
+    return first ?? null;
   });
   const [focusAfterNavigation, setFocusAfterNavigation] = useState<
     string | null
@@ -219,34 +212,20 @@ export function SolfaGridEditor({
     )
       return;
     const first = cells[0];
-    setSelection(
-      first
-        ? {
-            partId: first.partId,
-            measureIndex: first.measureIndex,
-            noteIndex: first.noteIndex,
-          }
-        : null
-    );
+    setSelection(first ?? null);
   }, [cells, selection]);
 
   const selectedCell = selection
     ? cells.find((cell) => selectionKey(cell) === selectionKey(selection))
     : undefined;
   const durationValue = durationOverride || String(selectedCell?.note.dur ?? 1);
-  const canEdit = !codecError;
+  const canEdit = canEditContent && !codecError;
   const selectedPart = selection
     ? model.parts.find((part) => part.id === selection.partId)
     : undefined;
   const selectedPartNotes =
     selectedPart?.measures.flatMap((measure) => measure.notes) ?? [];
-  const selectedGlobalNoteIndex =
-    selection && selectedPart
-      ? selectedPart.measures
-          .slice(0, selection.measureIndex)
-          .reduce((count, measure) => count + measure.notes.length, 0) +
-        selection.noteIndex
-      : -1;
+  const selectedGlobalNoteIndex = selectedCell?.globalIndex ?? -1;
   const incomingHold = Boolean(
     selectedGlobalNoteIndex > 0 &&
     selectedPartNotes[selectedGlobalNoteIndex - 1]?.tie &&
@@ -285,6 +264,7 @@ export function SolfaGridEditor({
   }
 
   function undo() {
+    if (!canEdit) return;
     const previous = undoStack.at(-1);
     if (!previous) return;
     setUndoStack((stack) => stack.slice(0, -1));
@@ -294,6 +274,7 @@ export function SolfaGridEditor({
   }
 
   function redo() {
+    if (!canEdit) return;
     const next = redoStack.at(-1);
     if (!next) return;
     setRedoStack((stack) => stack.slice(0, -1));
@@ -308,11 +289,7 @@ export function SolfaGridEditor({
     );
     const next = cells[index + direction];
     if (!next) return;
-    const nextSelection = {
-      partId: next.partId,
-      measureIndex: next.measureIndex,
-      noteIndex: next.noteIndex,
-    };
+    const nextSelection = next;
     setSelection(nextSelection);
     setFocusAfterNavigation(selectionKey(nextSelection));
   }
@@ -336,7 +313,7 @@ export function SolfaGridEditor({
             type="button"
             className="solfa-grid-editor__button"
             onClick={undo}
-            disabled={undoStack.length === 0}
+            disabled={!canEdit || undoStack.length === 0}
             aria-label="Undo edit"
           >
             Undo
@@ -345,7 +322,7 @@ export function SolfaGridEditor({
             type="button"
             className="solfa-grid-editor__button"
             onClick={redo}
-            disabled={redoStack.length === 0}
+            disabled={!canEdit || redoStack.length === 0}
             aria-label="Redo edit"
           >
             Redo
@@ -365,6 +342,13 @@ export function SolfaGridEditor({
         <aside className="solfa-grid-editor__notice" role="alert">
           <strong>This score is read-only in Sol-fa Grid.</strong> The canonical
           Sol-fa codec cannot represent this structure: {codecError}
+        </aside>
+      ) : null}
+      {!canEditContent && !codecError ? (
+        <aside className="solfa-grid-editor__notice" role="status">
+          <strong>This score is read-only.</strong> Content editing is not
+          permitted for this score. Use its supported viewer or fallback to
+          inspect preserved content.
         </aside>
       ) : null}
 
@@ -404,17 +388,16 @@ export function SolfaGridEditor({
                         aria-label={`${partLabel(part)}, bar ${measure.number} notes`}
                       >
                         {measure.notes.map((note, noteIndex) => {
-                          const itemSelection = {
-                            partId: part.id,
-                            measureIndex,
-                            noteIndex,
-                          };
-                          const key = selectionKey(itemSelection);
-                          const segment = projectedSegment(
-                            layout,
+                          const itemSelection = solfaGridSelectionForNote(
+                            model,
                             part.id,
                             measureIndex,
                             noteIndex
+                          );
+                          const key = selectionKey(itemSelection);
+                          const segment = projectedSegment(
+                            layout,
+                            itemSelection
                           );
                           const visible = labelForSegment(segment);
                           const span = Math.max(
@@ -439,8 +422,9 @@ export function SolfaGridEditor({
                               style={cellStyle}
                               data-grid-cell={key}
                               aria-pressed={selected}
+                              aria-disabled={!canEdit}
                               aria-describedby="solfa-grid-keyboard-help"
-                              aria-label={`${partLabel(part)}, bar ${measure.number}, event ${noteIndex + 1}: ${visible}, duration ${note.dur} quarter-note units`}
+                              aria-label={`${partLabel(part)}, bar ${measure.number}, beat ${itemSelection.beat}, ${itemSelection.subdivision === 0 ? 'first half' : 'second half'}: ${visible}, duration ${note.dur} quarter-note units`}
                               onClick={() => setSelection(itemSelection)}
                               onKeyDown={(event) => {
                                 if (
@@ -454,7 +438,6 @@ export function SolfaGridEditor({
                                   event.key === 'ArrowRight' ? 1 : -1
                                 );
                               }}
-                              disabled={!canEdit}
                             >
                               <span
                                 className="solfa-grid-editor__cell-symbol"
@@ -500,8 +483,8 @@ export function SolfaGridEditor({
                 );
                 return part ? partLabel(part) : selectedCell.partId;
               })()}
-              , bar {selectedCell.measureIndex + 1}, event{' '}
-              {selectedCell.noteIndex + 1}
+              , bar {selectedCell.barNumber}, beat {selectedCell.beat},{' '}
+              {selectedCell.subdivision === 0 ? 'first half' : 'second half'}
               {selectedCell.note.pitch
                 ? ` · ${selectedCell.note.pitch}`
                 : ' · Rest'}
@@ -685,14 +668,21 @@ export function SolfaGridEditor({
                     (next) => {
                       const nextMeasure = next.parts.find(
                         (part) => part.id === selection.partId
-                      )?.measures[selection.measureIndex];
-                      setSelection({
-                        ...selection,
-                        noteIndex: Math.min(
-                          selection.noteIndex,
-                          Math.max(0, (nextMeasure?.notes.length ?? 1) - 1)
-                        ),
-                      });
+                      )?.measures[selection.barIndex];
+                      const nextNoteIndex = Math.min(
+                        selectedCell.noteIndex,
+                        Math.max(0, (nextMeasure?.notes.length ?? 1) - 1)
+                      );
+                      setSelection(
+                        nextMeasure
+                          ? solfaGridSelectionForNote(
+                              next,
+                              selection.partId,
+                              selection.barIndex,
+                              nextNoteIndex
+                            )
+                          : null
+                      );
                     }
                   )
                 }

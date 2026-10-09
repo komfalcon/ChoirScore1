@@ -28,7 +28,7 @@ function model(withLyrics = false): ScoreModel {
   return parseSolfaText(text, { title: 'Morning Light' });
 }
 
-function mount(initialModel = model()) {
+function mount(initialModel = model(), canEditContent = true) {
   const host = document.createElement('div');
   document.body.append(host);
   const root: Root = createRoot(host);
@@ -39,7 +39,13 @@ function mount(initialModel = model()) {
     act(() => renderCurrent());
   });
   renderCurrent = () => {
-    root.render(<SolfaGridEditor model={currentModel} onChange={onChange} />);
+    root.render(
+      <SolfaGridEditor
+        model={currentModel}
+        canEditContent={canEditContent}
+        onChange={onChange}
+      />
+    );
   };
   act(() => renderCurrent());
   return {
@@ -101,13 +107,13 @@ describe('SolfaGridEditor', () => {
         view.host.querySelector('[aria-label="Scrollable score grid"]')
       ).not.toBeNull();
       expect(
-        view.host.querySelector('[data-grid-cell="S:0:0"]')
+        view.host.querySelector('[data-grid-cell="S:0:1:1:0:0"]')
       ).not.toBeNull();
       expect(
         view.host
-          .querySelector('[data-grid-cell="S:0:0"]')
+          .querySelector('[data-grid-cell="S:0:1:1:0:0"]')
           ?.getAttribute('aria-label')
-      ).toContain('Soprano, bar 1, event 1:');
+      ).toContain('Soprano, bar 1, beat 1, first half:');
       expect(
         view.host.querySelector('[aria-label="Sol-fa syllable"]')
       ).not.toBeNull();
@@ -218,7 +224,7 @@ describe('SolfaGridEditor', () => {
         )
       );
       const next = view.host.querySelector<HTMLButtonElement>(
-        '[data-grid-cell="S:0:1"]'
+        '[data-grid-cell="S:0:1:2:0:0"]'
       );
       expect(next?.getAttribute('aria-pressed')).toBe('true');
       expect(document.activeElement).toBe(next);
@@ -241,10 +247,70 @@ describe('SolfaGridEditor', () => {
         /read-only in Sol-fa Grid/
       );
       expect(
+        view.host
+          .querySelector<HTMLButtonElement>('button[data-grid-cell]')
+          ?.getAttribute('aria-disabled')
+      ).toBe('true');
+      expect(
         view.host.querySelector<HTMLButtonElement>('button[data-grid-cell]')
           ?.disabled
-      ).toBe(true);
+      ).toBe(false);
       expect(view.onChange).not.toHaveBeenCalled();
+    } finally {
+      view.unmount();
+      view.host.remove();
+    }
+  });
+
+  it('keeps canEditContent=false scores browsable but read-only and unchanged', () => {
+    const original = model();
+    const view = mount(original, false);
+    try {
+      expect(view.host.querySelector('[role="status"]')?.textContent).toMatch(
+        /This score is read-only/
+      );
+      expect(
+        view.host
+          .querySelector<HTMLButtonElement>('button[data-grid-cell]')
+          ?.getAttribute('aria-disabled')
+      ).toBe('true');
+      expect(
+        view.host.querySelector<HTMLButtonElement>('button[data-grid-cell]')
+          ?.disabled
+      ).toBe(false);
+      expect(
+        view.host.querySelector<HTMLButtonElement>(
+          'button[aria-label="Undo edit"]'
+        )?.disabled
+      ).toBe(true);
+      expect(
+        view.host.querySelector<HTMLButtonElement>(
+          'button[aria-label="Redo edit"]'
+        )?.disabled
+      ).toBe(true);
+      expect(
+        view.host.querySelector<HTMLButtonElement>(
+          'button[aria-label="Delete selected event"]'
+        )?.disabled
+      ).toBe(true);
+      expect(
+        view.host
+          .querySelector('[data-grid-cell]')
+          ?.getAttribute('aria-describedby')
+      ).toBe('solfa-grid-keyboard-help');
+      const firstCell = view.host.querySelector<HTMLButtonElement>(
+        'button[data-grid-cell]'
+      );
+      act(() =>
+        firstCell?.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })
+        )
+      );
+      expect(document.activeElement).toBe(
+        view.host.querySelector('[data-grid-cell="S:0:1:2:0:0"]')
+      );
+      expect(view.onChange).not.toHaveBeenCalled();
+      expect(view.current()).toBe(original);
     } finally {
       view.unmount();
       view.host.remove();

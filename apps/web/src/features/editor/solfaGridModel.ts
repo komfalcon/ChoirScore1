@@ -10,8 +10,14 @@ import {
 
 export type SolfaGridSelection = {
   partId: string;
-  measureIndex: number;
-  noteIndex: number;
+  /** Zero-based bar position in the part; the score's displayed bar number is also checked. */
+  barIndex: number;
+  barNumber: number;
+  /** One-based beat and zero-based half-beat subdivision within that bar. */
+  beat: number;
+  subdivision: 0 | 1;
+  /** Disambiguates overlapping/chord cells without treating eventId as persistent. */
+  cellOrdinal: number;
 };
 
 export type SolfaGridAccidental =
@@ -36,8 +42,11 @@ export type SolfaGridSyllable =
   | 't'
   | 'te';
 
-type NoteLocation = SolfaGridSelection & {
+type NoteLocation = {
+  partId: string;
   note: ScoreNote;
+  measureIndex: number;
+  noteIndex: number;
   globalIndex: number;
 };
 
@@ -86,15 +95,65 @@ function locationsFor(part: ScorePart): NoteLocation[] {
   return locations;
 }
 
+function cellCoordinatesForMeasure(
+  model: ScoreModel,
+  measure: ScorePart['measures'][number]
+): Array<
+  Pick<SolfaGridSelection, 'barNumber' | 'beat' | 'subdivision' | 'cellOrdinal'>
+> {
+  const halfBeat = 2 / model.time.beatType;
+  const countsBySlot = new Map<number, number>();
+  let cursor = 0;
+  let previousOnset = 0;
+  return measure.notes.map((note) => {
+    const onset = note.onset ?? (note.chord ? previousOnset : cursor);
+    if (!note.chord) {
+      previousOnset = onset;
+      cursor = onset + note.dur;
+    }
+    const slot = Math.round(onset / halfBeat);
+    const beat = Math.floor(slot / 2) + 1;
+    const subdivision = (slot % 2) as 0 | 1;
+    const cellOrdinal = countsBySlot.get(slot) ?? 0;
+    countsBySlot.set(slot, cellOrdinal + 1);
+    return { barNumber: measure.number, beat, subdivision, cellOrdinal };
+  });
+}
+
+/** Create a positional cell address from a model note; no codec eventId is persisted. */
+export function solfaGridSelectionForNote(
+  model: ScoreModel,
+  partId: string,
+  barIndex: number,
+  noteIndex: number
+): SolfaGridSelection {
+  const part = partFor(model, partId);
+  const measure = part.measures[barIndex];
+  if (!measure) throw new Error('The selected bar is not in this score.');
+  const coordinates = cellCoordinatesForMeasure(model, measure)[noteIndex];
+  if (!coordinates) throw new Error('The selected cell is not in this bar.');
+  return { partId, barIndex, ...coordinates };
+}
+
 function selectedLocation(
   model: ScoreModel,
   selection: SolfaGridSelection
 ): NoteLocation {
   const part = partFor(model, selection.partId);
+  const measure = part.measures[selection.barIndex];
+  if (!measure || measure.number !== selection.barNumber) {
+    throw new Error('The selected bar is no longer in this score.');
+  }
+  const coordinates = cellCoordinatesForMeasure(model, measure);
+  const noteIndex = coordinates.findIndex(
+    (item) =>
+      item.beat === selection.beat &&
+      item.subdivision === selection.subdivision &&
+      item.cellOrdinal === selection.cellOrdinal
+  );
   const location = locationsFor(part).find(
     (item) =>
-      item.measureIndex === selection.measureIndex &&
-      item.noteIndex === selection.noteIndex
+      item.measureIndex === selection.barIndex && item.noteIndex === noteIndex
   );
   if (!location) throw new Error('Select a note cell before editing.');
   return location;
@@ -248,7 +307,7 @@ export function setNoteDuration(
 ): ScoreModel {
   const location = selectedLocation(model, selection);
   const measure = partFor(model, selection.partId).measures[
-    selection.measureIndex
+    location.measureIndex
   ]!;
   const halfBeat = 2 / model.time.beatType;
   if (
@@ -265,9 +324,9 @@ export function setNoteDuration(
   if (Math.abs(delta) < EPSILON) return model;
   const notes = [...measure.notes];
   const neighborIndex =
-    selection.noteIndex + 1 < notes.length
-      ? selection.noteIndex + 1
-      : selection.noteIndex - 1;
+    location.noteIndex + 1 < notes.length
+      ? location.noteIndex + 1
+      : location.noteIndex - 1;
   if (neighborIndex < 0) {
     if (delta > 0)
       throw new Error('The note cannot be longer than the remaining bar.');
@@ -277,7 +336,7 @@ export function setNoteDuration(
       dur: -delta,
       tie: false,
     });
-    notes[selection.noteIndex] = {
+    notes[location.noteIndex] = {
       ...location.note,
       dur: duration,
       tie: false,
@@ -291,7 +350,7 @@ export function setNoteDuration(
         'The adjacent event is too short to rebalance this duration.'
       );
     }
-    notes[selection.noteIndex] = { ...location.note, dur: duration };
+    notes[location.noteIndex] = { ...location.note, dur: duration };
     notes[neighborIndex] = { ...neighbor, dur: nextNeighborDuration };
   }
   const parts = model.parts.map((part) =>
@@ -300,7 +359,7 @@ export function setNoteDuration(
       : {
           ...part,
           measures: part.measures.map((item, index) =>
-            index !== selection.measureIndex
+            index !== location.measureIndex
               ? item
               : {
                   ...item,
@@ -370,9 +429,9 @@ export function deleteGridEvent(
   const part = partFor(model, selection.partId);
   const location = selectedLocation(model, selection);
   const locations = locationsFor(part);
-  const measure = part.measures[selection.measureIndex]!;
+  const measure = part.measures[location.measureIndex]!;
   const notes = [...measure.notes];
-  const removed = notes.splice(selection.noteIndex, 1)[0]!;
+  const removed = notes.splice(location.noteIndex, 1)[0]!;
   const updates = new Map<number, (note: ScoreNote) => ScoreNote>();
   if (location.globalIndex > 0) {
     const previous = locations[location.globalIndex - 1]!;
@@ -384,7 +443,7 @@ export function deleteGridEvent(
   const changedPart: ScorePart = {
     ...part,
     measures: part.measures.map((item, index) =>
-      index !== selection.measureIndex
+      index !== location.measureIndex
         ? item
         : {
             ...item,

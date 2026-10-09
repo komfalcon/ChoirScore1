@@ -12,6 +12,7 @@ import {
   setNoteDuration,
   setRest,
   setSolfaPitch,
+  solfaGridSelectionForNote,
   shiftOctave,
   toggleHoldToNext,
 } from './solfaGridModel';
@@ -36,8 +37,8 @@ L1: one two three four`,
   );
 }
 
-function cell(partId = 'S', noteIndex = 0) {
-  return { partId, measureIndex: 0, noteIndex };
+function cell(partId = 'S', noteIndex = 0, model = baseModel()) {
+  return solfaGridSelectionForNote(model, partId, 0, noteIndex);
 }
 
 function notes(model: ScoreModel, partId = 'S') {
@@ -53,8 +54,11 @@ function expectCanonicalParity(model: ScoreModel) {
 
 describe('Sol-fa Grid model edits', () => {
   it('edits a note through codec-resolved syllable, accidental and octave actions', () => {
-    const pitched = setSolfaPitch(baseModel(), cell(), 'r');
+    const original = baseModel();
+    const pitched = setSolfaPitch(original, cell(), 'r');
     expect(notes(pitched)[0]!.pitch).toBe('D4');
+    expect(original.parts[0]!.measures[0]!.notes[0]!.pitch).toBe('C4');
+    expect(pitched).not.toBe(original);
 
     const accidental = applyAccidental(pitched, cell(), 'sharp');
     expect(notes(accidental)[0]!.pitch).toBe('D#4');
@@ -86,6 +90,58 @@ describe('Sol-fa Grid model edits', () => {
     const continued = toggleHoldToNext(held, cell());
     expect(notes(continued)[0]!.tie).toBe(false);
     expectCanonicalParity(continued);
+  });
+
+  it('propagates pitch through a tie chain and preserves its bar total on duration edits', () => {
+    const held = toggleHoldToNext(baseModel(), cell());
+    const changedPitch = setSolfaPitch(held, cell('S', 1, held), 'r');
+    expect(
+      notes(changedPitch)
+        .slice(0, 2)
+        .map((note) => note.pitch)
+    ).toEqual(['D4', 'D4']);
+    expect(notes(changedPitch)[0]!.tie).toBe(true);
+
+    const resized = setNoteDuration(
+      changedPitch,
+      cell('S', 0, changedPitch),
+      1.5
+    );
+    expect(
+      resized.parts[0]!.measures[0]!.notes.reduce(
+        (sum, note) => sum + note.dur,
+        0
+      )
+    ).toBe(4);
+    expect(
+      notes(resized)
+        .slice(0, 2)
+        .map(({ pitch, tie }) => ({ pitch, tie }))
+    ).toEqual([
+      { pitch: 'D4', tie: true },
+      { pitch: 'D4', tie: false },
+    ]);
+    expectCanonicalParity(resized);
+  });
+
+  it('addresses cells by part, bar, beat, and subdivision even when event ordinals reset per bar', () => {
+    const twoBars = parseSolfaText(
+      `Doh is C\nTime 4/4\nTempo 96\nS: | d : r : m : f | d : r : m : f |\nA: | d : r : m : f | d : r : m : f |\nT: | d : r : m : f | d : r : m : f |\nB: | d : r : m : f | d : r : m : f |`,
+      { title: 'Two bars' }
+    );
+    const secondBarFirstBeat = solfaGridSelectionForNote(twoBars, 'S', 1, 0);
+    expect(secondBarFirstBeat).toMatchObject({
+      partId: 'S',
+      barIndex: 1,
+      barNumber: 2,
+      beat: 1,
+      subdivision: 0,
+      cellOrdinal: 0,
+    });
+    const edited = setSolfaPitch(twoBars, secondBarFirstBeat, 'r');
+    expect(edited.parts[0]!.measures[0]!.notes[0]!.pitch).toBe('C4');
+    expect(edited.parts[0]!.measures[1]!.notes[0]!.pitch).toBe('D4');
+    expectCanonicalParity(edited);
   });
 
   it('sets a rest and deletes an event without changing measure duration', () => {
