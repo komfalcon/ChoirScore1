@@ -1,0 +1,112 @@
+.score-sharing-panel {
+  display: grid;
+  gap: 1.15rem;
+  margin: 0 0 2rem;
+  padding: 1.2rem clamp(1rem, 2.5vw, 1.5rem);
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  background: var(--surface);
+}
+
+.score-sharing-panel__heading h2,
+.score-sharing-panel__grants h3 {
+  margin: 0;
+  color: var(--ink);
+  font-family: Georgia, 'Times New Roman', serif;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+}
+
+.score-sharing-panel__heading .eyebrow {
+  margin: 0 0 0.3rem;
+}
+
+.score-sharing-panel__visibility,
+.score-sharing-panel__grants {
+  display: grid;
+  justify-items: start;
+  gap: 0.65rem;
+}
+
+.score-sharing-panel__visibility > label {
+  color: var(--ink);
+  font-size: 0.92rem;
+  font-weight: 650;
+}
+
+.score-sharing-panel__visibility-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.score-sharing-panel select {
+  min-height: 2.6rem;
+  padding: 0.45rem 2rem 0.45rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 0.65rem;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+
+.score-sharing-panel select:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.score-sharing-panel__help,
+.score-sharing-panel__grants p,
+.score-sharing-panel__confirmation p {
+  max-width: 58rem;
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.score-sharing-panel__confirmation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.85rem;
+  border: 1px solid #e8c6bf;
+  border-radius: 0.75rem;
+  background: var(--danger-wash);
+}
+
+.score-sharing-panel__confirmation p {
+  flex-basis: 100%;
+  color: var(--danger);
+}
+
+.score-sharing-panel__error,
+.score-sharing-panel__notice {
+  margin: 0;
+  padding: 0.75rem 0.9rem;
+  border-radius: 0.7rem;
+  line-height: 1.5;
+}
+
+.score-sharing-panel__error {
+  color: var(--danger);
+  background: var(--danger-wash);
+}
+
+.score-sharing-panel__notice {
+  color: var(--success);
+  background: var(--success-wash);
+}
+
+@media (max-width: 34rem) {
+  .score-sharing-panel__visibility-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .score-sharing-panel__visibility-actions select,
+  .score-sharing-panel__visibility-actions button {
+    width: 100%;
+  }
+}

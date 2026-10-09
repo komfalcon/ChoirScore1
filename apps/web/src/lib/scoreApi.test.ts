@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  clearScoreAccess,
   createScoreVersion,
   exportScoreMusicXml,
   getScoreDetail,
   importScoreFile,
   listScores,
   patchScoreMetadata,
+  patchScoreVisibility,
+  ScoreApiResponseError,
   toScoreUiError,
 } from './scoreApi';
 import { ApiError } from './apiClient';
@@ -89,6 +92,69 @@ describe('score API client', () => {
     );
     expect(new Headers(init.headers).get('Content-Type')).toBe(
       'application/json'
+    );
+  });
+
+  it('changes visibility through the CSRF-protected score PATCH contract', async () => {
+    const updatedScore = {
+      ...scoreLibraryResponse.scores[0],
+      visibility: 'shared' as const,
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ score: updatedScore }), { status: 200 })
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(patchScoreVisibility('score-1', 'shared')).resolves.toEqual({
+      score: updatedScore,
+    });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/scores/score-1');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(String(init.body))).toEqual({ visibility: 'shared' });
+    expect(new Headers(init.headers).get('X-Requested-With')).toBe(
+      'choirscore'
+    );
+  });
+
+  it('revokes all explicit grants with an empty replacement and rejects unexpected grants', async () => {
+    const accessResponse = {
+      scoreId: 'score-1',
+      visibility: 'shared' as const,
+      users: [],
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify(accessResponse), { status: 200 })
+      );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(clearScoreAccess('score-1')).resolves.toEqual(accessResponse);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/scores/score-1/access');
+    expect(init.method).toBe('PUT');
+    expect(JSON.parse(String(init.body))).toEqual({ users: [] });
+    expect(new Headers(init.headers).get('X-Requested-With')).toBe(
+      'choirscore'
+    );
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ...accessResponse,
+          users: [
+            { userId: 'unexpected', displayName: 'Unexpected', canEdit: false },
+          ],
+        }),
+        { status: 200 }
+      )
+    );
+    await expect(clearScoreAccess('score-1')).rejects.toBeInstanceOf(
+      ScoreApiResponseError
     );
   });
 
