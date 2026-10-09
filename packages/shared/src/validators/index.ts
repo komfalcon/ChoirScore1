@@ -5,6 +5,10 @@ import {
   type VoicePartId,
   type VoiceRanges,
 } from '../voiceRanges.js';
+import {
+  VoiceMappingError,
+  type VoiceMappingFailureKind,
+} from '../voiceMappingError.js';
 import { midiForPitch } from '../pitch.js';
 import type {
   ScoreModel,
@@ -17,6 +21,7 @@ import type {
 export type ValidationIssueCode =
   | 'MEASURE_DURATION'
   | 'OUT_OF_RANGE'
+  | 'VOICE_MAPPING'
   | 'VOICE_CROSSING'
   | 'SPACING'
   | 'PARALLEL_FIFTHS'
@@ -42,6 +47,54 @@ export interface ValidationResult {
 }
 
 const DURATION_EPSILON = 1e-9;
+
+const VOICE_MAPPING_MESSAGES: Readonly<
+  Record<VoiceMappingFailureKind, string>
+> = {
+  'duplicate-part-id':
+    'Score-part IDs are duplicated; SATB validation was skipped.',
+  'conflicting-identities':
+    'A score part has conflicting canonical ID and name identities; SATB validation was skipped.',
+  'unmapped-part':
+    'A score part has no exact canonical SATB identity; SATB validation was skipped.',
+  'duplicate-identity':
+    'Multiple score parts share a canonical SATB identity; SATB validation was skipped.',
+  'noncanonical-profile-key':
+    'A voice-range profile key is not canonical SATB; range validation was skipped.',
+  'missing-profile-range':
+    'A mapped SATB part has no configured range; range validation was skipped.',
+};
+
+function comparePartIds(first: string, second: string): number {
+  return first < second ? -1 : first > second ? 1 : 0;
+}
+
+/**
+ * Locate a score-level mapping failure deterministically without exposing the
+ * resolver's exception text or guessing a voice identity. Part-specific errors
+ * use that part; multi-part ambiguities use the lowest implicated part ID.
+ */
+function voiceMappingIssue(model: ScoreModel, error: VoiceMappingError): Issue {
+  const lowestMeasure = (part: ScorePart) =>
+    Math.min(...part.measures.map((candidate) => candidate.number));
+  const implicatedIds = new Set(error.partIds);
+  const byLocation = (first: ScorePart, second: ScorePart) =>
+    comparePartIds(first.id, second.id) ||
+    lowestMeasure(first) - lowestMeasure(second);
+  const implicatedParts = model.parts
+    .filter((part) => implicatedIds.has(part.id))
+    .sort(byLocation);
+  const part = implicatedParts[0] ?? [...model.parts].sort(byLocation)[0];
+  const measure = part ? lowestMeasure(part) : 1;
+
+  return {
+    part: part?.id ?? 'score',
+    measure,
+    beat: 1,
+    code: 'VOICE_MAPPING',
+    message: VOICE_MAPPING_MESSAGES[error.kind],
+  };
+}
 
 function roundedBeat(positionInQuarterNotes: number, beatType: number): number {
   const beat = 1 + (positionInQuarterNotes * beatType) / 4;
@@ -163,7 +216,13 @@ function soundingPitchesByOnset(measure: ScoreMeasure): SoundingOnset[] {
  * Score-part identity follows the shared exact-ID/canonical-name mapping.
  */
 export function validateVoiceCrossing(model: ScoreModel): ValidationResult {
-  const mapping = mapScorePartsToVoiceParts(model.parts);
+  let mapping: ReturnType<typeof mapScorePartsToVoiceParts>;
+  try {
+    mapping = mapScorePartsToVoiceParts(model.parts);
+  } catch (error) {
+    if (!(error instanceof VoiceMappingError)) throw error;
+    return { errors: [voiceMappingIssue(model, error)], warnings: [] };
+  }
   const partsById = new Map<string, ScorePart>(
     model.parts.map((part) => [part.id, part])
   );
@@ -229,7 +288,13 @@ export function validateOutOfRange(
   model: ScoreModel,
   ranges: VoiceRanges = DEFAULT_VOICE_RANGES
 ): ValidationResult {
-  const rangesByPartId = voiceRangesForScoreParts(model.parts, ranges);
+  let rangesByPartId: ReturnType<typeof voiceRangesForScoreParts>;
+  try {
+    rangesByPartId = voiceRangesForScoreParts(model.parts, ranges);
+  } catch (error) {
+    if (!(error instanceof VoiceMappingError)) throw error;
+    return { errors: [voiceMappingIssue(model, error)], warnings: [] };
+  }
   const errors: Issue[] = [];
   const warnings: Issue[] = [];
 

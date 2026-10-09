@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { scoreModelSchema } from '../scoreModel.js';
+import { scoreModelSchema, type ScoreModel } from '../scoreModel.js';
 import type { VoiceRanges } from '../voiceRanges.js';
 import { validateOutOfRange, type Issue } from './index.js';
 
@@ -203,5 +203,82 @@ describe('validateOutOfRange', () => {
       code: 'OUT_OF_RANGE',
     });
     expect(result.warnings[0]!.message).toContain('comfortable range');
+  });
+
+  it('returns a located VOICE_MAPPING error for an unmapped part', () => {
+    const model = scoreWithNotes('S', ['C4']);
+    model.parts[0]!.id = 'P1';
+    model.parts[0]!.name = 'Violin';
+    model.parts[0]!.measures[0]!.number = 5;
+
+    expect(validateOutOfRange(model)).toEqual({
+      errors: [
+        {
+          part: 'P1',
+          measure: 5,
+          beat: 1,
+          code: 'VOICE_MAPPING',
+          message:
+            'A score part has no exact canonical SATB identity; SATB validation was skipped.',
+        },
+      ],
+      warnings: [],
+    });
+  });
+
+  it('returns VOICE_MAPPING for conflicting canonical ID and name identities', () => {
+    const model = scoreWithNotes('S', ['C4']);
+    model.parts[0]!.name = 'Alto';
+    model.parts[0]!.measures[0]!.number = 7;
+
+    expect(validateOutOfRange(model)).toEqual({
+      errors: [
+        {
+          part: 'S',
+          measure: 7,
+          beat: 1,
+          code: 'VOICE_MAPPING',
+          message:
+            'A score part has conflicting canonical ID and name identities; SATB validation was skipped.',
+        },
+      ],
+      warnings: [],
+    });
+  });
+
+  it('locates duplicate canonical identities on the lowest implicated part and measure', () => {
+    const base = scoreWithNotes('S', ['C4']);
+    const template = base.parts[0]!;
+    const model: ScoreModel = scoreModelSchema.parse({
+      ...base,
+      parts: [
+        {
+          ...template,
+          id: 'P2',
+          name: 'Soprano',
+          measures: [{ ...template.measures[0]!, number: 8 }],
+        },
+        {
+          ...template,
+          id: 'P1',
+          name: 'Soprano',
+          measures: [{ ...template.measures[0]!, number: 4 }],
+        },
+      ],
+    });
+
+    expect(validateOutOfRange(model)).toEqual({
+      errors: [
+        {
+          part: 'P1',
+          measure: 4,
+          beat: 1,
+          code: 'VOICE_MAPPING',
+          message:
+            'Multiple score parts share a canonical SATB identity; SATB validation was skipped.',
+        },
+      ],
+      warnings: [],
+    });
   });
 });

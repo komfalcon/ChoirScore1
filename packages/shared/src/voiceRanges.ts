@@ -1,5 +1,6 @@
 import { midiForPitch } from './pitch.js';
 import { scorePitchSchema } from './scoreModel.js';
+import { VoiceMappingError } from './voiceMappingError.js';
 import { z } from 'zod';
 
 export const VOICE_PART_IDS = ['S', 'A', 'T', 'B'] as const;
@@ -131,6 +132,10 @@ export interface ScoreVoicePartMapping {
   byVoicePart: Readonly<Partial<Record<VoicePartId, string>>>;
 }
 
+function compareScorePartIds(first: string, second: string): number {
+  return first < second ? -1 : first > second ? 1 : 0;
+}
+
 function canonicalVoicePartName(name: string | undefined): VoicePartId | null {
   const normalized = name?.trim().toLocaleLowerCase('en-US');
   if (!normalized) return null;
@@ -151,11 +156,19 @@ function canonicalVoicePartName(name: string | undefined): VoicePartId | null {
 export function mapScorePartsToVoiceParts(
   parts: ReadonlyArray<{ id: string; name?: string }>
 ): ScoreVoicePartMapping {
-  const ids = parts.map((part) => part.id);
-  if (new Set(ids).size !== ids.length) {
-    throw new TypeError(
-      'Score part IDs must be unique for voice-range mapping.'
-    );
+  const sortedParts = [...parts].sort((first, second) =>
+    compareScorePartIds(first.id, second.id)
+  );
+  const seenIds = new Set<string>();
+  for (const part of sortedParts) {
+    if (seenIds.has(part.id)) {
+      throw new VoiceMappingError(
+        'duplicate-part-id',
+        [part.id],
+        'Score part IDs must be unique for voice-range mapping.'
+      );
+    }
+    seenIds.add(part.id);
   }
 
   const byPartId = Object.create(null) as Record<string, VoicePartId>;
@@ -163,23 +176,29 @@ export function mapScorePartsToVoiceParts(
     Record<VoicePartId, string>
   >;
 
-  for (const part of parts) {
+  for (const part of sortedParts) {
     const idVoicePart = isVoicePartId(part.id) ? part.id : null;
     const nameVoicePart = canonicalVoicePartName(part.name);
     if (idVoicePart && nameVoicePart && idVoicePart !== nameVoicePart) {
-      throw new TypeError(
+      throw new VoiceMappingError(
+        'conflicting-identities',
+        [part.id],
         `Score part ${part.id} has conflicting canonical voice identities (${idVoicePart} ID, ${nameVoicePart} name).`
       );
     }
     const voicePart = idVoicePart ?? nameVoicePart;
     if (!voicePart) {
-      throw new TypeError(
+      throw new VoiceMappingError(
+        'unmapped-part',
+        [part.id],
         `Score part ${part.id} has no canonical SATB ID or voice name.`
       );
     }
     const previousPartId = byVoicePart[voicePart];
     if (previousPartId !== undefined) {
-      throw new TypeError(
+      throw new VoiceMappingError(
+        'duplicate-identity',
+        [previousPartId, part.id],
         `Ambiguous voice-range mapping: score parts ${previousPartId} and ${part.id} both map to ${VOICE_PART_NAMES[voicePart]} (${voicePart}).`
       );
     }
@@ -204,19 +223,26 @@ export function voiceRangesForScoreParts(
   ranges: VoiceRanges
 ): VoiceRanges {
   const mapping = mapScorePartsToVoiceParts(parts);
-  for (const key of Object.keys(ranges)) {
-    if (!isVoicePartId(key)) {
-      throw new TypeError(
-        `Voice-range settings key ${key} is not a canonical SATB profile key.`
-      );
-    }
+  const invalidProfileKey = Object.keys(ranges)
+    .filter((key) => !isVoicePartId(key))
+    .sort(compareScorePartIds)[0];
+  if (invalidProfileKey !== undefined) {
+    throw new VoiceMappingError(
+      'noncanonical-profile-key',
+      [],
+      `Voice-range settings key ${invalidProfileKey} is not a canonical SATB profile key.`
+    );
   }
 
   const relevantRanges = Object.create(null) as Record<string, PartVoiceRange>;
-  for (const part of parts) {
+  for (const part of [...parts].sort((first, second) =>
+    compareScorePartIds(first.id, second.id)
+  )) {
     const voicePart = mapping.byPartId[part.id]!;
     if (!Object.hasOwn(ranges, voicePart)) {
-      throw new TypeError(
+      throw new VoiceMappingError(
+        'missing-profile-range',
+        [part.id],
         `No configured voice range is available for score part ${part.id} (${voicePart}).`
       );
     }

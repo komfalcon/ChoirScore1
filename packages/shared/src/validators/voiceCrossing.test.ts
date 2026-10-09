@@ -144,14 +144,70 @@ describe('validateVoiceCrossing', () => {
     });
   });
 
-  it('fails closed rather than guessing the identity of an unmapped part', () => {
+  it('returns a located VOICE_MAPPING error rather than guessing an unmapped identity', () => {
     const model = scoreWithNotesByVoice({ S: [{ pitch: 'C5', dur: 1 }] });
     model.parts[0]!.id = 'P1';
     model.parts[0]!.name = 'Violin';
 
-    expect(() => validateVoiceCrossing(model)).toThrow(
-      /no canonical SATB ID or voice name/
-    );
+    expect(validateVoiceCrossing(model)).toEqual({
+      errors: [
+        {
+          part: 'P1',
+          measure: 1,
+          beat: 1,
+          code: 'VOICE_MAPPING',
+          message:
+            'A score part has no exact canonical SATB identity; SATB validation was skipped.',
+        },
+      ],
+      warnings: [],
+    });
+  });
+
+  it('returns VOICE_MAPPING for conflicting canonical ID and name identities', () => {
+    const model = scoreWithNotesByVoice({ S: [{ pitch: 'C5', dur: 1 }] });
+    model.parts[0]!.name = 'Alto';
+
+    expect(validateVoiceCrossing(model)).toEqual({
+      errors: [
+        {
+          part: 'S',
+          measure: 1,
+          beat: 1,
+          code: 'VOICE_MAPPING',
+          message:
+            'A score part has conflicting canonical ID and name identities; SATB validation was skipped.',
+        },
+      ],
+      warnings: [],
+    });
+  });
+
+  it('locates duplicate canonical identities on the lowest implicated part and measure', () => {
+    const model = scoreWithNotesByVoice({
+      S: [{ pitch: 'C5', dur: 1 }],
+      A: [{ pitch: 'G4', dur: 1 }],
+    });
+    model.parts[0]!.id = 'P2';
+    model.parts[0]!.name = 'Soprano';
+    model.parts[0]!.measures[0]!.number = 8;
+    model.parts[1]!.id = 'P1';
+    model.parts[1]!.name = 'Soprano';
+    model.parts[1]!.measures[0]!.number = 4;
+
+    expect(validateVoiceCrossing(model)).toEqual({
+      errors: [
+        {
+          part: 'P1',
+          measure: 4,
+          beat: 1,
+          code: 'VOICE_MAPPING',
+          message:
+            'Multiple score parts share a canonical SATB identity; SATB validation was skipped.',
+        },
+      ],
+      warnings: [],
+    });
   });
 
   it('aligns by resolved onset rather than event-array index', () => {
@@ -184,6 +240,37 @@ describe('validateVoiceCrossing', () => {
         {
           part: 'S',
           measure: 4,
+          beat: 3,
+          code: 'VOICE_CROSSING',
+          message: 'S (G4) is below A (A4) at a shared onset.',
+        },
+      ],
+      warnings: [],
+    });
+  });
+
+  it('detects a crossing at a shared onset when the two voices use different event grids', () => {
+    const result = validateVoiceCrossing(
+      scoreWithNotesByVoice({
+        S: [
+          { pitch: 'C5', dur: 1 },
+          { pitch: 'D5', dur: 1 },
+          { pitch: 'G4', dur: 1 },
+        ],
+        A: [
+          { pitch: 'F4', dur: 2 },
+          { pitch: 'A4', dur: 1 },
+        ],
+        T: [{ pitch: 'C4', dur: 3 }],
+        B: [{ pitch: 'C3', dur: 3 }],
+      })
+    );
+
+    expect(result).toEqual({
+      errors: [
+        {
+          part: 'S',
+          measure: 1,
           beat: 3,
           code: 'VOICE_CROSSING',
           message: 'S (G4) is below A (A4) at a shared onset.',
