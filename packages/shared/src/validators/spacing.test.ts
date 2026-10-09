@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { scoreModelSchema, type ScoreModel } from '../scoreModel.js';
-import { validateSpacing } from './index.js';
+import { validateSpacing, validateVoiceCrossing } from './index.js';
 
 type VoicePart = 'S' | 'A' | 'T' | 'B';
 
@@ -254,6 +254,38 @@ describe('validateSpacing', () => {
         {
           part: 'A',
           measure: 2,
+          beat: 1,
+          code: 'MEASURE_IDENTITY',
+          message:
+            'A part contains duplicate measure numbers; cross-part validation was skipped.',
+        },
+      ],
+      warnings: [],
+    });
+  });
+
+  it('ignores duplicate measure labels on a lone soprano with no alto partner', () => {
+    const model = scoreWithNotesByVoice({
+      S: [{ pitch: 'D6', dur: 1 }],
+    });
+    appendMeasure(model, 'S', 1);
+
+    expect(validateSpacing(model)).toEqual({ errors: [], warnings: [] });
+  });
+
+  it('keeps T–B measure identities outside the spacing pair scope', () => {
+    const model = scoreWithNotesByVoice({
+      T: [{ pitch: 'C4', dur: 1 }],
+      B: [{ pitch: 'C3', dur: 1 }],
+    });
+    appendMeasure(model, 'B', 1);
+
+    expect(validateSpacing(model)).toEqual({ errors: [], warnings: [] });
+    expect(validateVoiceCrossing(model)).toEqual({
+      errors: [
+        {
+          part: 'B',
+          measure: 1,
           beat: 1,
           code: 'MEASURE_IDENTITY',
           message:

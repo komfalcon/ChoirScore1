@@ -274,6 +274,15 @@ describe('validateVoiceCrossing', () => {
     });
   });
 
+  it('ignores duplicate measure labels on a lone soprano with no alto partner', () => {
+    const model = scoreWithNotesByVoice({
+      S: [{ pitch: 'G4', dur: 1 }],
+    });
+    appendMeasure(model, 'S', 1);
+
+    expect(validateVoiceCrossing(model)).toEqual({ errors: [], warnings: [] });
+  });
+
   it('allows the same measure number in different parts', () => {
     expect(
       validateVoiceCrossing(

@@ -177,8 +177,9 @@ const ADJACENT_VOICE_PARTS: ReadonlyArray<readonly [VoicePartId, VoicePartId]> =
 
 /**
  * Cross-part comparisons join measures by their score number. A repeated
- * number within any participating part makes that join ambiguous, so return
- * one deterministic issue before either validator emits partial findings.
+ * number within a part in a fully present comparison pair makes that join
+ * ambiguous, so return one deterministic issue before either validator emits
+ * partial findings.
  */
 function crossPartMeasureIdentityIssue(
   model: ScoreModel,
@@ -189,8 +190,9 @@ function crossPartMeasureIdentityIssue(
   for (const [upperVoice, lowerVoice] of voicePairs) {
     const upperPartId = mapping.byVoicePart[upperVoice];
     const lowerPartId = mapping.byVoicePart[lowerVoice];
-    if (upperPartId) participatingPartIds.add(upperPartId);
-    if (lowerPartId) participatingPartIds.add(lowerPartId);
+    if (!upperPartId || !lowerPartId) continue;
+    participatingPartIds.add(upperPartId);
+    participatingPartIds.add(lowerPartId);
   }
 
   const duplicates: Array<{ part: string; measure: number }> = [];
