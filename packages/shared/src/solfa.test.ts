@@ -142,27 +142,61 @@ describe('modelToSolfa', () => {
     expect(beats[3]!.segments[0]).toMatchObject({ kind: 'rest', text: '' });
   });
 
-  it('keeps chromatic notes visibly unsupported and never substitutes a natural syllable', () => {
+  it.each([
+    { sharp: 'C#4', flat: 'Db4', sharpSyllable: 'di', flatSyllable: 'ra' },
+    { sharp: 'D#4', flat: 'Eb4', sharpSyllable: 'ri', flatSyllable: 'me' },
+    { sharp: 'F#4', flat: 'Gb4', sharpSyllable: 'fi', flatSyllable: 'se' },
+    { sharp: 'G#4', flat: 'Ab4', sharpSyllable: 'si', flatSyllable: 'le' },
+    { sharp: 'A#4', flat: 'Bb4', sharpSyllable: 'li', flatSyllable: 'te' },
+  ])(
+    'maps enharmonic spellings $sharp and $flat by written degree',
+    ({ sharp, flat, sharpSyllable, flatSyllable }) => {
+      const score = model([
+        part('S', 'Soprano', [
+          {
+            number: 1,
+            notes: [
+              { pitch: sharp, dur: 1 },
+              { pitch: flat, dur: 1 },
+            ],
+          },
+        ]),
+      ]);
+      const layout = modelToSolfa(score);
+
+      expect(cell(score, 'S', 0, 0)).toMatchObject({
+        kind: 'syllable',
+        text: sharpSyllable,
+      });
+      expect(cell(score, 'S', 0, 1)).toMatchObject({
+        kind: 'syllable',
+        text: flatSyllable,
+      });
+      expect(layout.warnings).toEqual([]);
+    }
+  );
+
+  it('keeps chromatic pitches without an approved table entry visibly unsupported', () => {
     const score = model([
-      part('S', 'Soprano', [{ number: 1, notes: [{ pitch: 'F#4', dur: 1 }] }]),
+      part('S', 'Soprano', [{ number: 1, notes: [{ pitch: 'E#4', dur: 1 }] }]),
     ]);
     const layout = modelToSolfa(score);
 
     expect(cell(score, 'S', 0, 0)).toMatchObject({
       kind: 'unsupported',
       text: '?',
-      pitch: 'F#4',
+      pitch: 'E#4',
     });
     expect(layout.warnings).toContainEqual(
       expect.objectContaining({
         code: 'CHROMATIC_NOTE',
-        pitch: 'F#4',
-        message: expect.stringContaining('owner/director confirms'),
+        pitch: 'E#4',
+        message: expect.stringContaining(
+          'approved spelled-degree movable-Do table'
+        ),
       })
     );
-    expect(layout.warnings[0]!.message).toContain(
-      'No natural-note substitution'
-    );
+    expect(layout.warnings[0]!.message).toContain('No enharmonic respelling');
   });
 
   it('rejects and marks a quarter-beat duration instead of rounding it into a syllable', () => {

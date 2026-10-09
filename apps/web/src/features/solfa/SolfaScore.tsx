@@ -24,7 +24,22 @@ const SOLFA_NAMES: Record<string, string> = {
   s: 'so',
   l: 'la',
   t: 'ti',
+  di: 'di',
+  ri: 'ri',
+  fi: 'fi',
+  si: 'si',
+  li: 'li',
+  ra: 'ra',
+  me: 'me',
+  se: 'se',
+  le: 'le',
+  te: 'te',
 };
+
+function syllableAndOctave(text: string): { syllable: string; marks: string } {
+  const marks = /[',]+$/.exec(text)?.[0] ?? '';
+  return { syllable: text.slice(0, text.length - marks.length), marks };
+}
 
 function segmentDescription(segment: SolfaSegment): string {
   if (segment.kind === 'rest') return 'Rest';
@@ -34,8 +49,7 @@ function segmentDescription(segment: SolfaSegment): string {
       ? `Unsupported note ${segment.pitch}; use staff view`
       : 'Unsupported score event; use staff view';
   }
-  const syllable = segment.text[0] ?? '';
-  const marks = segment.text.slice(1);
+  const { syllable, marks } = syllableAndOctave(segment.text);
   const octave = marks.length
     ? marks.includes("'")
       ? ', octave above'.repeat(marks.length)
@@ -46,8 +60,7 @@ function segmentDescription(segment: SolfaSegment): string {
 
 function Syllable({ segment }: { segment: SolfaSegment }) {
   if (segment.kind !== 'syllable') return null;
-  const syllable = segment.text[0] ?? '';
-  const marks = segment.text.slice(1);
+  const { syllable, marks } = syllableAndOctave(segment.text);
   const octaveMarks = marks.includes("'") ? (
     <sup aria-hidden="true">
       {marks
@@ -248,10 +261,10 @@ export function SolfaScore({
         >
           <div className="solfa-warning__heading">
             <div>
-              <h3>Some score features need staff view</h3>
+              <h3>Some notes or score features need staff view</h3>
               <p>
-                Unsupported notes are marked in place; no chromatic syllables
-                have been guessed.
+                Pitches or rhythms outside the supported Sol-fa table are marked
+                in place.
               </p>
             </div>
             <button

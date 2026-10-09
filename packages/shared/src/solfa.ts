@@ -1,3 +1,5 @@
+import { chromaticSolfaSyllable } from './chromaticSolfa.js';
+import type { DiatonicSolfaSyllable } from './chromaticSolfa.js';
 import type {
   ScoreKey,
   ScoreLyric,
@@ -110,7 +112,15 @@ const MAJOR_TONIC_BY_FIFTHS: Record<number, (typeof LETTERS)[number]> = {
   6: 'F',
   7: 'C',
 };
-const SYLLABLES = ['d', 'r', 'm', 'f', 's', 'l', 't'] as const;
+const SYLLABLES: readonly DiatonicSolfaSyllable[] = [
+  'd',
+  'r',
+  'm',
+  'f',
+  's',
+  'l',
+  't',
+];
 const EPSILON = 0.000001;
 const MAX_DISPLAY_BEATS = 64;
 const MEASURES_PER_SYSTEM = 4;
@@ -201,6 +211,13 @@ function midiPitchClass(letter: string, accidental: string): number {
   return (base + alteration + 12) % 12;
 }
 
+function accidentalSemitones(accidental: string): number {
+  return [...accidental].reduce(
+    (semitones, symbol) => semitones + (symbol === '#' ? 1 : -1),
+    0
+  );
+}
+
 function nearestDohCoordinate(
   key: ScoreKey,
   dohLetter: (typeof LETTERS)[number]
@@ -237,13 +254,27 @@ function pitchToSolfa(
   const accidental = match[2] ?? '';
   const octave = Number(match[3]);
   const expectedAccidental = signatureAccidentals(key).get(letter) ?? '';
-  if (accidental !== expectedAccidental) return { unsupported: true };
+  const accidentalDifference =
+    accidentalSemitones(accidental) - accidentalSemitones(expectedAccidental);
 
   const degree =
     (LETTERS.indexOf(letter as (typeof LETTERS)[number]) -
       LETTERS.indexOf(dohLetter) +
       7) %
     7;
+  let syllable: string = SYLLABLES[degree]!;
+  if (accidentalDifference !== 0) {
+    if (accidentalDifference !== -1 && accidentalDifference !== 1) {
+      return { unsupported: true };
+    }
+    const chromaticSyllable = chromaticSolfaSyllable(
+      SYLLABLES[degree]!,
+      accidentalDifference > 0 ? 'raised' : 'lowered'
+    );
+    if (!chromaticSyllable) return { unsupported: true };
+    syllable = chromaticSyllable;
+  }
+
   const octaveDifference = Math.floor(
     (diatonicCoordinate(letter, octave) - baseDohCoordinate) / 7
   );
@@ -251,7 +282,7 @@ function pitchToSolfa(
     octaveDifference > 0
       ? "'".repeat(octaveDifference)
       : ','.repeat(Math.abs(octaveDifference));
-  return { text: `${SYLLABLES[degree]}${octaveMarks}` };
+  return { text: `${syllable}${octaveMarks}` };
 }
 
 function normalizedLyrics(
@@ -302,8 +333,9 @@ function lyricCells(
 
 /**
  * Deterministically projects the shared score model into a beat-aligned Tonic
- * Sol-fa layout. Chromatic pitches and rhythms finer than half a beat are
- * returned as visible warnings/cells; no chromatic syllable is guessed.
+ * Sol-fa layout. Chromatic pitches without an entry in the approved
+ * spelled-degree table and rhythms finer than half a beat are returned as
+ * visible warnings/cells.
  */
 export function modelToSolfa(model: ScoreModel): SolfaLayout {
   const warnings: SolfaWarning[] = [];
@@ -427,7 +459,7 @@ export function modelToSolfa(model: ScoreModel): SolfaLayout {
         if (unsupportedCode) {
           const message =
             unsupportedCode === 'CHROMATIC_NOTE'
-              ? `Bar ${number}, ${label}, beat ${beat}: chromatic pitch ${note.pitch ?? ''} is unsupported until the owner/director confirms the Curwen chromatic syllable table. No natural-note substitution was made.`
+              ? `Bar ${number}, ${label}, beat ${beat}: chromatic pitch ${note.pitch ?? ''} has no entry in the approved spelled-degree movable-Do table. No enharmonic respelling was applied.`
               : unsupportedCode === 'TUPLET'
                 ? `Bar ${number}, ${label}, beat ${beat}: tuplet rhythm is not represented in the Sol-fa view. Switch to staff view to inspect it.`
                 : unsupportedCode === 'UNSUPPORTED_SUBDIVISION'

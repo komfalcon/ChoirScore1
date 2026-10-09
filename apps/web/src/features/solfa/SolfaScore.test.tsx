@@ -76,21 +76,52 @@ describe('responsive Tonic Sol-fa renderer', () => {
     expect(html).toContain('Joy');
   });
 
-  it('shows unsupported chromatic notes in place and offers staff notation', () => {
+  it('renders spelling-sensitive chromatic syllables for enharmonic notes', () => {
     const model = scoreModelSchema.parse({
       ...baseModel,
+      key: { fifths: 0, mode: 'major' },
       parts: [
         {
           ...baseModel.parts[0],
-          measures: [{ number: 1, notes: [{ pitch: 'F#4', dur: 1 }] }],
+          measures: [
+            {
+              number: 1,
+              notes: [
+                { pitch: 'C#4', dur: 1 },
+                { pitch: 'Db4', dur: 1 },
+              ],
+            },
+          ],
         },
       ],
     });
     const html = render(model);
 
-    expect(html).toContain('chromatic pitch F#4 is unsupported');
+    expect(html).toContain('class="solfa-token__syllable">di</span>');
+    expect(html).toContain('class="solfa-token__syllable">ra</span>');
+    expect(html).not.toContain('solfa-warning');
+  });
+
+  it('marks chromatic pitches without an approved spelling in place and offers staff notation', () => {
+    const model = scoreModelSchema.parse({
+      ...baseModel,
+      key: { fifths: 0, mode: 'major' },
+      parts: [
+        {
+          ...baseModel.parts[0],
+          measures: [{ number: 1, notes: [{ pitch: 'E#4', dur: 1 }] }],
+        },
+      ],
+    });
+    const html = render(model);
+
+    expect(html).toContain(
+      'chromatic pitch E#4 has no entry in the approved spelled-degree movable-Do table'
+    );
     expect(html).toContain('>?</span>');
-    expect(html).toContain('no chromatic syllables have been guessed');
+    expect(html).toContain(
+      'Pitches or rhythms outside the supported Sol-fa table are marked in place.'
+    );
     expect(html).toContain('View staff notation');
     expect(html).not.toContain('solfa-halfbeat-separator');
   });
