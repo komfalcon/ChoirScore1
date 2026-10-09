@@ -2,6 +2,7 @@
   display: grid;
   gap: 1rem;
   width: 100%;
+  min-width: 0;
   padding: 1rem;
   border: 1px solid var(--line);
   border-radius: 1rem;
@@ -76,10 +77,13 @@
   color: var(--muted);
 }
 .playback-controls__error {
+  min-width: 0;
+  max-width: 100%;
   padding: 0.65rem 0.8rem;
   border-radius: 0.65rem;
   background: var(--danger-wash);
   color: var(--danger);
+  overflow-wrap: anywhere;
 }
 .playback-controls__options {
   align-items: flex-start;
