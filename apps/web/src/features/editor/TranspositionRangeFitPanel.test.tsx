@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  DEFAULT_VOICE_RANGES,
   scoreModelSchema,
   suggestFit,
   type FitSuggestion,
@@ -71,6 +72,22 @@ function firstRecommendationShift(html: string): number {
 }
 
 describe('TranspositionRangeFitPanel', () => {
+  it('uses the shared admin voice-range defaults directly in the M4 fit workflow', () => {
+    const html = renderToStaticMarkup(
+      <TranspositionRangeFitPanel
+        model={sourceModel}
+        voiceRanges={DEFAULT_VOICE_RANGES}
+        onApply={vi.fn()}
+      />
+    );
+
+    expect(html).toContain('C4–G5');
+    expect(html).toContain('B3–A5');
+    expect(html).toContain('G3–D5');
+    expect(html).toContain('F3–E5');
+    expect(html).toContain('Recommendation 1');
+  });
+
   it('defaults to all parts when no resolved user part is supplied and previews without applying', () => {
     const sourceBeforePreview = structuredClone(sourceModel);
     const onApply =

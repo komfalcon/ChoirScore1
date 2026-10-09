@@ -15,6 +15,7 @@ import {
 } from 'vitest';
 import type { ApiConfig } from './config';
 import { createApp } from './app';
+import { DEFAULT_VOICE_RANGES } from '@choirscore/shared';
 import {
   createRepository,
   type ApiRepository,
@@ -958,7 +959,7 @@ describe('M1 admin users, roles and audit', () => {
         code: 'VALIDATION_ERROR',
         action: 'admin.settings.update',
         targetType: 'settings',
-        targetId: 'requirePasswordChangeAtFirstLogin',
+        targetId: null,
         actorId: adminId,
       }
     );
@@ -1058,6 +1059,7 @@ describe('M1 admin users, roles and audit', () => {
     );
     expect(settings.status).toBe(200);
     expect(settings.body.requirePasswordChangeAtFirstLogin).toBe(true);
+    expect(settings.body.voiceRanges).toEqual(DEFAULT_VOICE_RANGES);
     await checkAudit('admin.settings.read');
 
     const create = await stateChanging(
@@ -1177,6 +1179,53 @@ describe('M1 admin users, roles and audit', () => {
     expect(
       (await repository.findUserById(created.body.user.id))?.mustChangePassword
     ).toBe(false);
+  });
+
+  it('persists validated admin voice ranges and returns them to range-fit clients', async () => {
+    const { cookie } = await login();
+    const initial = await withCookie(
+      request(app).get('/admin/settings'),
+      cookie
+    );
+    expect(initial.status).toBe(200);
+    expect(initial.body.voiceRanges).toEqual(DEFAULT_VOICE_RANGES);
+    expect(await repository.getSetting('voice_ranges_json')).toBeNull();
+
+    const customRanges = structuredClone(DEFAULT_VOICE_RANGES);
+    customRanges.S.comfortable = { low: 'D4', high: 'F5' };
+    const saved = await stateChanging(
+      withCookie(request(app).patch('/admin/settings'), cookie)
+    ).send({ voiceRanges: customRanges });
+    expect(saved.status).toBe(200);
+    expect(saved.body.voiceRanges).toEqual(customRanges);
+    expect(await repository.getSetting('voice_ranges_json')).toBe(
+      JSON.stringify(customRanges)
+    );
+    const rangeAudit = (await repository.listAuditEntries()).at(-1)!;
+    expect(rangeAudit.action).toBe('admin.settings.update');
+    expect(rangeAudit.targetId).toBe('voice_ranges_json');
+    expect(JSON.parse(rangeAudit.detailJson)).toEqual({
+      changedFields: ['voiceRanges'],
+    });
+    expect(rangeAudit.detailJson).not.toContain('D4');
+
+    const reread = await withCookie(
+      request(app).get('/admin/settings'),
+      cookie
+    );
+    expect(reread.status).toBe(200);
+    expect(reread.body.voiceRanges).toEqual(customRanges);
+
+    const invalidRanges = structuredClone(customRanges);
+    invalidRanges.S.hard = { low: 'E4', high: 'F5' };
+    const rejected = await stateChanging(
+      withCookie(request(app).patch('/admin/settings'), cookie)
+    ).send({ voiceRanges: invalidRanges });
+    expect(rejected.status).toBe(400);
+    expect(rejected.body.error.code).toBe('VALIDATION_ERROR');
+    expect(await repository.getSetting('voice_ranges_json')).toBe(
+      JSON.stringify(customRanges)
+    );
   });
 
   it('immediately blocks an already-authenticated user after deactivation', async () => {

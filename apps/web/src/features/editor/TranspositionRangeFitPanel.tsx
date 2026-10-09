@@ -2,6 +2,7 @@ import { useId, useMemo, useState } from 'react';
 import {
   suggestFit,
   transpose,
+  voiceRangesForScoreParts,
   type FitSuggestion,
   type ScoreModel,
   type VoiceRanges,
@@ -101,16 +102,20 @@ export function TranspositionRangeFitPanel({
     chosenPartId && model.parts.some((part) => part.id === chosenPartId)
       ? chosenPartId
       : null;
+  const scoreVoiceRanges = useMemo(
+    () => voiceRangesForScoreParts(model.parts, voiceRanges),
+    [model.parts, voiceRanges]
+  );
   const fitResult = useMemo(() => {
     try {
       return {
-        fit: suggestFit(model, voiceRanges, partId ? { partId } : {}),
+        fit: suggestFit(model, scoreVoiceRanges, partId ? { partId } : {}),
         error: null,
       };
     } catch (error) {
       return { fit: null, error: errorMessage(error) };
     }
-  }, [model, voiceRanges, partId]);
+  }, [model, scoreVoiceRanges, partId]);
   const fit = fitResult.fit;
   const selectedSuggestion = fit
     ? (fit.suggestions.find(

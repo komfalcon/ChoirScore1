@@ -1,19 +1,8 @@
 import { midiForPitch } from './pitch.js';
 import { type ScoreKey, type ScoreModel } from './scoreModel.js';
 import { keyAfterSemitoneShift } from './transpose.js';
-
-export interface PitchRange {
-  low: string;
-  high: string;
-}
-
-export interface PartVoiceRange {
-  comfortable: PitchRange;
-  hard: PitchRange;
-}
-
-/** Ranges are keyed by the stable shared-model part id. */
-export type VoiceRanges = Readonly<Record<string, PartVoiceRange>>;
+import type { PartVoiceRange, PitchRange, VoiceRanges } from './voiceRanges.js';
+export type { PartVoiceRange, PitchRange, VoiceRanges } from './voiceRanges.js';
 
 export interface SuggestFitOptions {
   /** When omitted, all score parts must fit. */

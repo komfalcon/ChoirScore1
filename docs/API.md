@@ -77,8 +77,10 @@ Creation, bulk creation, and reset return credentials once in that response. Onl
 
 Both routes are authentication-required and admin-only. The setting belongs on Admin Settings, not in the Users form. State-changing requests require `X-Requested-With: choirscore`.
 
-- `GET /admin/settings` → `200 { "requirePasswordChangeAtFirstLogin": boolean }` (`GetAdminSettingsResponse`). An unset value defaults to `true`.
-- `PATCH /admin/settings` accepts exactly `{ "requirePasswordChangeAtFirstLogin": boolean }` (`PatchAdminSettingsRequest`) and returns the same object with status `200` (`PatchAdminSettingsResponse`). The value applies to newly created and admin-reset accounts; it does not clear flags on existing users.
+- `GET /admin/settings` → `200 { "requirePasswordChangeAtFirstLogin": boolean, "voiceRanges": VoicePartRanges }` (`GetAdminSettingsResponse`). An unset password-change value defaults to `true`; an unset `voice_ranges_json` setting returns the PRD §10.5 defaults: S C4–G5 (hard B3–A5), A G3–D5 (hard F3–E5), T C3–G4 (hard B2–A4), and B E2–D4 (hard D2–F4).
+- `PATCH /admin/settings` accepts a non-empty subset of `{ "requirePasswordChangeAtFirstLogin": boolean, "voiceRanges": VoicePartRanges }` (`PatchAdminSettingsRequest`), rejects unknown keys, and returns the full current settings object with status `200` (`PatchAdminSettingsResponse`). `voiceRanges` must contain exactly S, A, T, and B; each comfortable range must have valid ordered scientific-pitch endpoints and be contained within its ordered hard range. The validated profile is stored as JSON in the existing `settings` table under `voice_ranges_json`; its shared schema and defaults are also consumed by the M4 fit workflow. The password-change value applies to newly created and admin-reset accounts; it does not clear flags on existing users.
+
+Each voice-part value has the shape `{ "comfortable": { "low": "C4", "high": "G5" }, "hard": { "low": "B3", "high": "A5" } }`; pitch strings use scientific notation, including accidentals where needed.
 
 ## Database and M1 boundaries
 

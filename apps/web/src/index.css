@@ -2204,6 +2204,84 @@ a:focus-visible {
   font-size: 0.78rem;
   line-height: 1.55;
 }
+.admin-settings-card--voice-ranges {
+  width: min(100%, 69rem);
+}
+.voice-ranges-editor {
+  padding: 1.1rem 0;
+}
+.voice-ranges-editor__help {
+  margin: 0 0 0.8rem;
+  color: #53645b;
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+.voice-ranges-editor__table-scroll {
+  overflow-x: auto;
+  border: 1px solid #e1e8df;
+  border-radius: 0.85rem;
+}
+.voice-ranges-editor__table {
+  width: 100%;
+  min-width: 38rem;
+  border-collapse: collapse;
+  color: #31483c;
+  font-size: 0.78rem;
+  text-align: left;
+}
+.voice-ranges-editor__table caption {
+  padding: 0.65rem 0.8rem;
+  color: #53645b;
+  font-size: 0.72rem;
+  text-align: left;
+}
+.voice-ranges-editor__table th,
+.voice-ranges-editor__table td {
+  padding: 0.65rem 0.75rem;
+  border-top: 1px solid #edf0eb;
+  white-space: nowrap;
+}
+.voice-ranges-editor__table thead th {
+  background: #f6f8f4;
+  color: #53645b;
+  font-size: 0.7rem;
+  font-weight: 750;
+}
+.voice-ranges-editor__table tbody th {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 700;
+}
+.voice-ranges-editor__part-id {
+  display: inline-grid;
+  min-width: 1.65rem;
+  height: 1.65rem;
+  place-items: center;
+  border-radius: 50%;
+  background: #edf5ed;
+  color: var(--accent-dark);
+  font-size: 0.68rem;
+}
+.voice-ranges-editor__table input {
+  width: 5.4rem;
+  min-height: 2.3rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid #d9e2d8;
+  border-radius: 0.55rem;
+  background: white;
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.8rem;
+}
+.voice-ranges-editor__table input:focus-visible {
+  outline: 3px solid rgb(25 118 210 / 45%);
+  border-color: var(--focus);
+}
+.voice-ranges-editor__table input:disabled {
+  background: #f3f5f1;
+  color: #64736a;
+}
 .admin-settings-card__footer {
   display: flex;
   align-items: center;

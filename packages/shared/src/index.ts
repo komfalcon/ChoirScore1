@@ -1,4 +1,5 @@
 export * from './adminSettings.js';
+export * from './voiceRanges.js';
 export * from './auth.js';
 export * from './timestamps.js';
 export * from './users.js';
