@@ -63,14 +63,23 @@ function preserveModelMetadata(
   const namesByPart = new Map(
     current.parts.map((part) => [part.id, part.name] as const)
   );
+  const orderByPart = new Map(
+    current.parts.map((part, index) => [part.id, index] as const)
+  );
   return {
     ...parsed,
     title: current.title,
     ...(current.composer !== undefined ? { composer: current.composer } : {}),
-    parts: parsed.parts.map((part) => {
-      const name = namesByPart.get(part.id);
-      return name === undefined ? part : { ...part, name };
-    }),
+    parts: parsed.parts
+      .map((part) => {
+        const name = namesByPart.get(part.id);
+        return name === undefined ? part : { ...part, name };
+      })
+      .sort(
+        (left, right) =>
+          (orderByPart.get(left.id) ?? Number.MAX_SAFE_INTEGER) -
+          (orderByPart.get(right.id) ?? Number.MAX_SAFE_INTEGER)
+      ),
   };
 }
 

@@ -122,6 +122,41 @@ describe('SolfaTextEditor', () => {
     }
   });
 
+  it('preserves a non-SATB incoming part order when publishing a valid Text edit', () => {
+    const canonicalModel = model();
+    const original = {
+      ...canonicalModel,
+      parts: [...canonicalModel.parts].reverse(),
+    };
+    const originalOrder = original.parts.map((part) => part.id);
+    expect(originalOrder).toEqual(['B', 'T', 'A', 'S']);
+    expect(modelToSolfaText(original)).toBe(modelToSolfaText(canonicalModel));
+
+    const view = mount(original);
+    try {
+      const editedText = modelToSolfaText(original).replace(
+        'S: | d : r : m : f |',
+        'S: | d : m : m : f |'
+      );
+      changeText(view.host, editedText);
+
+      expect(view.onChange).toHaveBeenCalledTimes(1);
+      expect(view.current().parts.map((part) => part.id)).toEqual(
+        originalOrder
+      );
+      expect(
+        view.current().parts.find((part) => part.id === 'S')?.measures[0]
+          ?.notes[1]?.pitch
+      ).toBe(
+        parseSolfaText(editedText).parts.find((part) => part.id === 'S')
+          ?.measures[0]?.notes[1]?.pitch
+      );
+    } finally {
+      view.unmount();
+      view.host.remove();
+    }
+  });
+
   it('parses lyric edits and keeps invalid lyric drafts without changing the last valid model', () => {
     const view = mount(model(true));
     try {
