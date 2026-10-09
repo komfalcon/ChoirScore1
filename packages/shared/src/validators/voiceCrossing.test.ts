@@ -246,7 +246,7 @@ describe('validateVoiceCrossing', () => {
     });
   });
 
-  it('fails closed on duplicate numbers within a part before partial crossing findings', () => {
+  it('selects a matched duplicate deterministically while ignoring unmatched labels', () => {
     const model = scoreWithNotesByVoice({
       S: [{ pitch: 'G4', dur: 1 }],
       A: [{ pitch: 'A4', dur: 1 }],
@@ -262,8 +262,56 @@ describe('validateVoiceCrossing', () => {
     expect(validateVoiceCrossing(model)).toEqual({
       errors: [
         {
+          part: 'S',
+          measure: 1,
+          beat: 1,
+          code: 'MEASURE_IDENTITY',
+          message:
+            'A part contains duplicate measure numbers; cross-part validation was skipped.',
+        },
+      ],
+      warnings: [],
+    });
+  });
+
+  it('does not let an unmatched duplicate block valid crossing findings elsewhere', () => {
+    const model = scoreWithNotesByVoice({
+      S: [{ pitch: 'G4', dur: 1 }],
+      A: [{ pitch: 'A4', dur: 1 }],
+      T: [{ pitch: 'C4', dur: 1 }],
+      B: [{ pitch: 'C3', dur: 1 }],
+    });
+    appendMeasure(model, 'T', 9);
+    appendMeasure(model, 'T', 9);
+
+    expect(validateVoiceCrossing(model)).toEqual({
+      errors: [
+        {
+          part: 'S',
+          measure: 1,
+          beat: 1,
+          code: 'VOICE_CROSSING',
+          message: 'S (G4) is below A (A4) at a shared onset.',
+        },
+      ],
+      warnings: [],
+    });
+  });
+
+  it('fails closed when a duplicated label is present on its configured counterpart', () => {
+    const model = scoreWithNotesByVoice({
+      S: [{ pitch: 'G4', dur: 1 }],
+      A: [{ pitch: 'A4', dur: 1 }],
+      T: [{ pitch: 'C4', dur: 1 }],
+      B: [{ pitch: 'C3', dur: 1 }],
+    });
+    appendMeasure(model, 'A', 1);
+
+    expect(validateVoiceCrossing(model)).toEqual({
+      errors: [
+        {
           part: 'A',
-          measure: 2,
+          measure: 1,
           beat: 1,
           code: 'MEASURE_IDENTITY',
           message:

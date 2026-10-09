@@ -70,6 +70,16 @@ function comparePartIds(first: string, second: string): number {
   return first < second ? -1 : first > second ? 1 : 0;
 }
 
+function duplicateMeasureNumbers(part: ScorePart): Set<number> {
+  const duplicates = new Set<number>();
+  const seenMeasures = new Set<number>();
+  for (const measure of part.measures) {
+    if (seenMeasures.has(measure.number)) duplicates.add(measure.number);
+    seenMeasures.add(measure.number);
+  }
+  return duplicates;
+}
+
 /**
  * Locate a score-level mapping failure deterministically without exposing the
  * resolver's exception text or guessing a voice identity. Part-specific errors
@@ -177,37 +187,56 @@ const ADJACENT_VOICE_PARTS: ReadonlyArray<readonly [VoicePartId, VoicePartId]> =
 
 /**
  * Cross-part comparisons join measures by their score number. A repeated
- * number within a part in a fully present comparison pair makes that join
- * ambiguous, so return one deterministic issue before either validator emits
- * partial findings.
+ * number is ambiguous only when a complete configured comparison pair has
+ * that same label on the counterpart part, so unrelated labels do not block
+ * valid findings elsewhere.
  */
 function crossPartMeasureIdentityIssue(
   model: ScoreModel,
   mapping: ReturnType<typeof mapScorePartsToVoiceParts>,
   voicePairs: ReadonlyArray<readonly [VoicePartId, VoicePartId]>
 ): Issue | null {
-  const participatingPartIds = new Set<string>();
+  const partsById = new Map(model.parts.map((part) => [part.id, part]));
+  const duplicateNumbersByPart = new Map(
+    model.parts.map((part) => [part.id, duplicateMeasureNumbers(part)])
+  );
+  const duplicateMeasuresByPart = new Map<string, Set<number>>();
   for (const [upperVoice, lowerVoice] of voicePairs) {
     const upperPartId = mapping.byVoicePart[upperVoice];
     const lowerPartId = mapping.byVoicePart[lowerVoice];
     if (!upperPartId || !lowerPartId) continue;
-    participatingPartIds.add(upperPartId);
-    participatingPartIds.add(lowerPartId);
+
+    const upperPart = partsById.get(upperPartId);
+    const lowerPart = partsById.get(lowerPartId);
+    if (!upperPart || !lowerPart) continue;
+
+    const upperNumbers = new Set(
+      upperPart.measures.map(({ number }) => number)
+    );
+    const lowerNumbers = new Set(
+      lowerPart.measures.map(({ number }) => number)
+    );
+
+    for (const measure of duplicateNumbersByPart.get(upperPart.id) ?? []) {
+      if (!lowerNumbers.has(measure)) continue;
+      const measures =
+        duplicateMeasuresByPart.get(upperPart.id) ?? new Set<number>();
+      measures.add(measure);
+      duplicateMeasuresByPart.set(upperPart.id, measures);
+    }
+    for (const measure of duplicateNumbersByPart.get(lowerPart.id) ?? []) {
+      if (!upperNumbers.has(measure)) continue;
+      const measures =
+        duplicateMeasuresByPart.get(lowerPart.id) ?? new Set<number>();
+      measures.add(measure);
+      duplicateMeasuresByPart.set(lowerPart.id, measures);
+    }
   }
 
   const duplicates: Array<{ part: string; measure: number }> = [];
-  for (const part of model.parts) {
-    if (!participatingPartIds.has(part.id)) continue;
-    const seenMeasures = new Set<number>();
-    const duplicateMeasures = new Set<number>();
-    for (const measure of part.measures) {
-      if (seenMeasures.has(measure.number)) {
-        duplicateMeasures.add(measure.number);
-      }
-      seenMeasures.add(measure.number);
-    }
-    for (const measure of duplicateMeasures) {
-      duplicates.push({ part: part.id, measure });
+  for (const [part, measures] of duplicateMeasuresByPart) {
+    for (const measure of measures) {
+      duplicates.push({ part, measure });
     }
   }
 

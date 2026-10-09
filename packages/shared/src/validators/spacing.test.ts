@@ -236,7 +236,7 @@ describe('validateSpacing', () => {
     expect(validateSpacing(model)).toEqual({ errors: [], warnings: [] });
   });
 
-  it('fails closed on duplicate numbers within a part before partial spacing warnings', () => {
+  it('selects a matched duplicate deterministically while ignoring unmatched labels', () => {
     const model = scoreWithNotesByVoice({
       S: [{ pitch: 'D6', dur: 1 }],
       A: [{ pitch: 'C5', dur: 1 }],
@@ -252,8 +252,48 @@ describe('validateSpacing', () => {
     expect(validateSpacing(model)).toEqual({
       errors: [
         {
+          part: 'S',
+          measure: 1,
+          beat: 1,
+          code: 'MEASURE_IDENTITY',
+          message:
+            'A part contains duplicate measure numbers; cross-part validation was skipped.',
+        },
+      ],
+      warnings: [],
+    });
+  });
+
+  it('does not let an unmatched duplicate block valid spacing warnings elsewhere', () => {
+    const model = scoreWithNotesByVoice({
+      S: [{ pitch: 'D6', dur: 1 }],
+      A: [{ pitch: 'C5', dur: 1 }],
+      T: [{ pitch: 'C4', dur: 1 }],
+      B: [{ pitch: 'C3', dur: 1 }],
+    });
+    appendMeasure(model, 'T', 9);
+    appendMeasure(model, 'T', 9);
+
+    expect(validateSpacing(model)).toEqual({
+      errors: [],
+      warnings: [warning('S', 'S–A')],
+    });
+  });
+
+  it('fails closed when a duplicated label is present on its configured counterpart', () => {
+    const model = scoreWithNotesByVoice({
+      S: [{ pitch: 'D6', dur: 1 }],
+      A: [{ pitch: 'C5', dur: 1 }],
+      T: [{ pitch: 'C4', dur: 1 }],
+      B: [{ pitch: 'C3', dur: 1 }],
+    });
+    appendMeasure(model, 'A', 1);
+
+    expect(validateSpacing(model)).toEqual({
+      errors: [
+        {
           part: 'A',
-          measure: 2,
+          measure: 1,
           beat: 1,
           code: 'MEASURE_IDENTITY',
           message:
