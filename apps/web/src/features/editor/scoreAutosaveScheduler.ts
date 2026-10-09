@@ -111,6 +111,8 @@ export class ScoreAutosaveScheduler {
   private conflict: ScoreAutosaveConflict | null = null;
   private conflictLoading = false;
   private blockedAfterError = false;
+  private contentReadOnlyBlocked = false;
+  private contentReadOnlyError: unknown | null = null;
   private active = false;
   private disposed = false;
   private generation = 0;
@@ -151,6 +153,13 @@ export class ScoreAutosaveScheduler {
   }
 
   update(input: ScoreAutosaveSchedulerInput): void {
+    const previousDraft = this.draft;
+    const wasDirty = !!(
+      previousDraft &&
+      this.baseline &&
+      previousDraft.signature !== this.baseline.signature
+    );
+    const wasBlockedAfterError = this.blockedAfterError;
     const oldScoreId = this.scoreId;
     const scoreChanged = oldScoreId !== input.scoreId;
     const externalVersionChanged =
@@ -166,7 +175,18 @@ export class ScoreAutosaveScheduler {
     this.draft = parseModel(input.model);
     if (this.draft?.signature !== this.lastObservedDraftSignature) {
       this.lastObservedDraftSignature = this.draft?.signature ?? null;
-      this.lastChangedAt = this.now();
+      const isDirty = !!(
+        this.draft &&
+        this.baseline &&
+        this.draft.signature !== this.baseline.signature
+      );
+      if (
+        wasBlockedAfterError ||
+        !isDirty ||
+        (!wasDirty && !this.pending && !this.activeController)
+      ) {
+        this.lastChangedAt = this.now();
+      }
       this.blockedAfterError = false;
     }
 
@@ -221,12 +241,21 @@ export class ScoreAutosaveScheduler {
   /** Retry a transient failure now, or refresh a conflict whose detail load failed. */
   retryNow(): void {
     if (!this.active || this.disposed) return;
+    if (this.contentReadOnlyBlocked) return;
     this.blockedAfterError = false;
     if (this.conflict && !this.conflict.latestModel) {
+      if (this.conflictLoading) return;
       void this.refreshConflict(this.generation);
       return;
     }
     if (this.pending) {
+      if (
+        this.pending.controller &&
+        this.activeController === this.pending.controller &&
+        !this.pending.controller.signal.aborted
+      ) {
+        return;
+      }
       this.clearTimer();
       void this.send(this.pending, this.generation);
       return;
@@ -262,6 +291,8 @@ export class ScoreAutosaveScheduler {
     this.conflict = null;
     this.conflictLoading = false;
     this.blockedAfterError = false;
+    this.contentReadOnlyBlocked = false;
+    this.contentReadOnlyError = null;
     this.setState({
       status: 'idle',
       currentVersionId: this.currentVersionId,
@@ -280,6 +311,7 @@ export class ScoreAutosaveScheduler {
     this.currentVersionId = input.currentVersionId;
     this.lastExternalVersionId = input.currentVersionId;
     this.baseline = parseModel(input.persistedModel);
+    this.lastChangedAt = this.now();
     this.conflict = null;
     this.conflictLoading = false;
     this.blockedAfterError = false;
@@ -296,6 +328,14 @@ export class ScoreAutosaveScheduler {
     if (this.conflict || this.conflictLoading) {
       this.clearTimer();
       this.setState({ status: 'conflict', conflict: this.conflict });
+      return;
+    }
+    if (this.contentReadOnlyBlocked) {
+      this.clearTimer();
+      this.setState({
+        status: 'read-only',
+        error: this.contentReadOnlyError,
+      });
       return;
     }
     if (!this.input.canEditContent || !this.input.scoreId) {
@@ -378,6 +418,7 @@ export class ScoreAutosaveScheduler {
       this.setState({ status: 'invalid' });
       return;
     }
+    this.lastChangedAt = this.now();
     const operation: PendingOperation = {
       scoreId: this.input.scoreId,
       request: request.data,
@@ -433,6 +474,18 @@ export class ScoreAutosaveScheduler {
       if (!this.isCurrentOperation(operation, controller, generation)) return;
       this.activeController = null;
       operation.controller = null;
+      if (
+        error instanceof ApiError &&
+        error.code === 'SCORE_CONTENT_READ_ONLY'
+      ) {
+        this.pending = null;
+        this.contentReadOnlyBlocked = true;
+        this.contentReadOnlyError = error;
+        this.blockedAfterError = true;
+        this.clearTimer();
+        this.setState({ status: 'read-only', error });
+        return;
+      }
       if (
         error instanceof ApiError &&
         error.status === 409 &&

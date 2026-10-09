@@ -105,7 +105,23 @@ describe('ScoreAutosaveScheduler', () => {
     scheduler.dispose();
   });
 
-  it('uses currentVersionId as the next base and debounces the second dirty snapshot to 60 seconds', async () => {
+  it('captures an edit at 29 seconds on the existing 30-second tick', async () => {
+    const { scheduler, dependencies } = makeScheduler();
+
+    await advance(29_000);
+    scheduler.update(input({ model: changedModel(101) }));
+    await advance(999);
+    expect(dependencies.save).not.toHaveBeenCalled();
+    await advance(1);
+
+    expect(dependencies.save).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(dependencies.save).mock.calls[0]?.[1].model).toEqual(
+      changedModel(101)
+    );
+    scheduler.dispose();
+  });
+
+  it('uses currentVersionId as the next base and saves the next dirty snapshot on the following 30-second tick', async () => {
     const { scheduler, dependencies } = makeScheduler();
 
     await advance(30_000);
@@ -298,6 +314,57 @@ describe('ScoreAutosaveScheduler', () => {
       model: changedModel(103),
       baseVersionId: 'version-2',
     });
+    scheduler.dispose();
+  });
+
+  it('does not start a duplicate POST when retryNow is called during an in-flight save', async () => {
+    let finishFirst: ((value: CreateScoreAutosaveResponse) => void) | undefined;
+    const save = vi.fn<ScoreAutosaveSchedulerDependencies['save']>(
+      () =>
+        new Promise((resolve) => {
+          finishFirst = resolve;
+        })
+    );
+    const { scheduler } = makeScheduler({ save });
+
+    await advance(30_000);
+    expect(save).toHaveBeenCalledTimes(1);
+    const firstSignal = save.mock.calls[0]?.[2];
+    scheduler.retryNow();
+
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(firstSignal?.aborted).toBe(false);
+    finishFirst?.(response('version-2'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(firstSignal?.aborted).toBe(false);
+    scheduler.dispose();
+  });
+
+  it('keeps SCORE_CONTENT_READ_ONLY blocked after edits and manual retry', async () => {
+    const save = vi
+      .fn<ScoreAutosaveSchedulerDependencies['save']>()
+      .mockRejectedValueOnce(
+        new ApiError(403, {
+          code: 'SCORE_CONTENT_READ_ONLY',
+          message: 'Score content is read-only.',
+        })
+      )
+      .mockResolvedValue(response('version-2'));
+    const { scheduler } = makeScheduler({ save });
+
+    await advance(30_000);
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(scheduler.getState().status).toBe('read-only');
+
+    scheduler.update(input({ model: changedModel(101), canEditContent: true }));
+    scheduler.retryNow();
+    await advance(60_000);
+
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(scheduler.getState().status).toBe('read-only');
     scheduler.dispose();
   });
 });
