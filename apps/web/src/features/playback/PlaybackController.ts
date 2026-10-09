@@ -182,10 +182,7 @@ export class PlaybackController {
         this.patchPartSettings(part.id, {
           muted: false,
           solo: false,
-          volume:
-            part.id === voicePart
-              ? 1
-              : Math.max(clampPartVolume(part.volume), 0.2),
+          volume: part.id === voicePart ? 1 : 0.2,
         });
       } else if (part.id === voicePart) {
         this.patchPartSettings(part.id, {

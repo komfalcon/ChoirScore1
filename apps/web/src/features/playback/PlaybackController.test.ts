@@ -135,6 +135,27 @@ describe('PlaybackController', () => {
     ]);
   });
 
+  it('sets every non-assigned part audible at the quiet 20% level for My Part', () => {
+    const fixture = makeFixture({
+      parts: [
+        { id: 'P1', name: 'Soprano', muted: true, solo: true, volume: 0.35 },
+        { id: 'P2', name: 'Alto', muted: false, solo: false, volume: 0.8 },
+        { id: 'P3', name: 'Tenor', muted: true, solo: false, volume: 0.6 },
+        { id: 'P4', name: 'Bass', muted: true, solo: true, volume: 1 },
+      ],
+      voicePart: 'P1',
+    });
+
+    fixture.controller.callbacks.onPreset('my-part');
+
+    expect(fixture.patches).toEqual([
+      ['P1', { muted: false, solo: false, volume: 1 }],
+      ['P2', { muted: false, solo: false, volume: 0.2 }],
+      ['P3', { muted: false, solo: false, volume: 0.2 }],
+      ['P4', { muted: false, solo: false, volume: 0.2 }],
+    ]);
+  });
+
   it('does not apply authenticated-part presets when voicePart is unresolved', () => {
     const fixture = makeFixture({ voicePart: null });
 
