@@ -88,6 +88,35 @@ describe('validateMeasureDuration', () => {
     expect(result).toEqual({ errors: [], warnings: [] });
   });
 
+  it('resolves explicit onsets when measuring the timeline extent', () => {
+    const result = validateMeasureDuration(
+      scoreWithNotes(
+        [
+          { pitch: null, dur: 1, onset: 0 },
+          { pitch: null, dur: 1, onset: 2 },
+          { pitch: null, dur: 1 },
+        ],
+        { beats: 4, beatType: 4 }
+      )
+    );
+
+    expect(result).toEqual({ errors: [], warnings: [] });
+  });
+
+  it('resolves the same voice number independently on distinct staves', () => {
+    const result = validateMeasureDuration(
+      scoreWithNotes(
+        [
+          { pitch: null, dur: 4, voice: '1', staff: 1 },
+          { pitch: null, dur: 4, voice: '1', staff: 2 },
+        ],
+        { beats: 4, beatType: 4 }
+      )
+    );
+
+    expect(result).toEqual({ errors: [], warnings: [] });
+  });
+
   it('validates simultaneous independent voices on separate timelines', () => {
     const notes = ['1', '2'].flatMap((voice) =>
       [1, 1, 1, 1].map((dur) => ({ pitch: null, dur, voice }))

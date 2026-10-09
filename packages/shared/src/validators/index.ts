@@ -84,8 +84,9 @@ interface NotePosition {
 }
 
 /**
- * Derives note onsets for range findings when the model omits them. Each voice
- * and staff advances independently; chord members share the preceding onset.
+ * Resolves explicit note onsets and derives omitted ones. Each (staff, voice)
+ * timeline advances independently; chord members share the preceding onset.
+ * Used by validators that need event positions, including duration and range.
  */
 function notePositions(measure: ScoreMeasure): NotePosition[] {
   const nextOnsetByStream = new Map<string, number>();
