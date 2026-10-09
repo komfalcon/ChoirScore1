@@ -22,6 +22,7 @@ export type ValidationIssueCode =
   | 'MEASURE_DURATION'
   | 'OUT_OF_RANGE'
   | 'VOICE_MAPPING'
+  | 'MEASURE_IDENTITY'
   | 'VOICE_CROSSING'
   | 'SPACING'
   | 'PARALLEL_FIFTHS'
@@ -174,6 +175,57 @@ const ADJACENT_VOICE_PARTS: ReadonlyArray<readonly [VoicePartId, VoicePartId]> =
     ['T', 'B'],
   ];
 
+/**
+ * Cross-part comparisons join measures by their score number. A repeated
+ * number within any participating part makes that join ambiguous, so return
+ * one deterministic issue before either validator emits partial findings.
+ */
+function crossPartMeasureIdentityIssue(
+  model: ScoreModel,
+  mapping: ReturnType<typeof mapScorePartsToVoiceParts>,
+  voicePairs: ReadonlyArray<readonly [VoicePartId, VoicePartId]>
+): Issue | null {
+  const participatingPartIds = new Set<string>();
+  for (const [upperVoice, lowerVoice] of voicePairs) {
+    const upperPartId = mapping.byVoicePart[upperVoice];
+    const lowerPartId = mapping.byVoicePart[lowerVoice];
+    if (upperPartId) participatingPartIds.add(upperPartId);
+    if (lowerPartId) participatingPartIds.add(lowerPartId);
+  }
+
+  const duplicates: Array<{ part: string; measure: number }> = [];
+  for (const part of model.parts) {
+    if (!participatingPartIds.has(part.id)) continue;
+    const seenMeasures = new Set<number>();
+    const duplicateMeasures = new Set<number>();
+    for (const measure of part.measures) {
+      if (seenMeasures.has(measure.number)) {
+        duplicateMeasures.add(measure.number);
+      }
+      seenMeasures.add(measure.number);
+    }
+    for (const measure of duplicateMeasures) {
+      duplicates.push({ part: part.id, measure });
+    }
+  }
+
+  duplicates.sort(
+    (first, second) =>
+      comparePartIds(first.part, second.part) || first.measure - second.measure
+  );
+  const duplicate = duplicates[0];
+  if (!duplicate) return null;
+
+  return {
+    part: duplicate.part,
+    measure: duplicate.measure,
+    beat: 1,
+    code: 'MEASURE_IDENTITY',
+    message:
+      'A part contains duplicate measure numbers; cross-part validation was skipped.',
+  };
+}
+
 const ONSET_EPSILON = 1e-9;
 
 interface SoundingPitch {
@@ -223,6 +275,15 @@ export function validateVoiceCrossing(model: ScoreModel): ValidationResult {
     if (!(error instanceof VoiceMappingError)) throw error;
     return { errors: [voiceMappingIssue(model, error)], warnings: [] };
   }
+  const measureIdentityIssue = crossPartMeasureIdentityIssue(
+    model,
+    mapping,
+    ADJACENT_VOICE_PARTS
+  );
+  if (measureIdentityIssue) {
+    return { errors: [measureIdentityIssue], warnings: [] };
+  }
+
   const partsById = new Map<string, ScorePart>(
     model.parts.map((part) => [part.id, part])
   );
@@ -297,6 +358,14 @@ export function validateSpacing(model: ScoreModel): ValidationResult {
   } catch (error) {
     if (!(error instanceof VoiceMappingError)) throw error;
     return { errors: [voiceMappingIssue(model, error)], warnings: [] };
+  }
+  const measureIdentityIssue = crossPartMeasureIdentityIssue(
+    model,
+    mapping,
+    SPACING_VOICE_PARTS
+  );
+  if (measureIdentityIssue) {
+    return { errors: [measureIdentityIssue], warnings: [] };
   }
 
   const partsById = new Map<string, ScorePart>(

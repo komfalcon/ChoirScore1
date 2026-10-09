@@ -42,6 +42,15 @@ function scoreWithNotesByVoice(
   });
 }
 
+function appendMeasure(
+  model: ScoreModel,
+  partId: string,
+  number: number
+): void {
+  const part = model.parts.find((candidate) => candidate.id === partId)!;
+  part.measures.push({ ...part.measures[0]!, number });
+}
+
 function readFixture(name: string): ScoreModel {
   const path = fileURLToPath(
     new URL(`../../test/fixtures/${name}`, import.meta.url)
@@ -235,6 +244,82 @@ describe('validateVoiceCrossing', () => {
       ],
       warnings: [],
     });
+  });
+
+  it('fails closed on duplicate numbers within a part before partial crossing findings', () => {
+    const model = scoreWithNotesByVoice({
+      S: [{ pitch: 'G4', dur: 1 }],
+      A: [{ pitch: 'A4', dur: 1 }],
+      T: [{ pitch: 'C4', dur: 1 }],
+      B: [{ pitch: 'D4', dur: 1 }],
+    });
+    appendMeasure(model, 'A', 2);
+    appendMeasure(model, 'A', 2);
+    appendMeasure(model, 'A', 8);
+    appendMeasure(model, 'A', 8);
+    appendMeasure(model, 'S', 1);
+
+    expect(validateVoiceCrossing(model)).toEqual({
+      errors: [
+        {
+          part: 'A',
+          measure: 2,
+          beat: 1,
+          code: 'MEASURE_IDENTITY',
+          message:
+            'A part contains duplicate measure numbers; cross-part validation was skipped.',
+        },
+      ],
+      warnings: [],
+    });
+  });
+
+  it('allows the same measure number in different parts', () => {
+    expect(
+      validateVoiceCrossing(
+        scoreWithNotesByVoice(
+          {
+            S: [{ pitch: 'G4', dur: 1 }],
+            A: [{ pitch: 'A4', dur: 1 }],
+            T: [{ pitch: 'C4', dur: 1 }],
+            B: [{ pitch: 'D4', dur: 1 }],
+          },
+          7
+        )
+      )
+    ).toEqual({
+      errors: [
+        {
+          part: 'S',
+          measure: 7,
+          beat: 1,
+          code: 'VOICE_CROSSING',
+          message: 'S (G4) is below A (A4) at a shared onset.',
+        },
+        {
+          part: 'T',
+          measure: 7,
+          beat: 1,
+          code: 'VOICE_CROSSING',
+          message: 'T (C4) is below B (D4) at a shared onset.',
+        },
+      ],
+      warnings: [],
+    });
+  });
+
+  it('accepts globally unique measure labels when there are no crossing findings', () => {
+    const model = scoreWithNotesByVoice({
+      S: [{ pitch: 'C5', dur: 1 }],
+      A: [{ pitch: 'G4', dur: 1 }],
+      T: [{ pitch: 'C4', dur: 1 }],
+      B: [{ pitch: 'C3', dur: 1 }],
+    });
+    model.parts.forEach((part, index) => {
+      part.measures[0]!.number = index + 1;
+    });
+
+    expect(validateVoiceCrossing(model)).toEqual({ errors: [], warnings: [] });
   });
 
   it('aligns by resolved onset rather than event-array index', () => {

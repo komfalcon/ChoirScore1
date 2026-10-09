@@ -40,6 +40,15 @@ function scoreWithNotesByVoice(
   });
 }
 
+function appendMeasure(
+  model: ScoreModel,
+  partId: string,
+  number: number
+): void {
+  const part = model.parts.find((candidate) => candidate.id === partId)!;
+  part.measures.push({ ...part.measures[0]!, number });
+}
+
 function warning(part: string, voices: 'S–A' | 'A–T', measure = 1, beat = 1) {
   return {
     part,
@@ -223,6 +232,64 @@ describe('validateSpacing', () => {
       B: [{ pitch: 'C3', dur: 1, onset: 0 }],
     });
     model.parts.find((part) => part.id === 'A')!.measures[0]!.number = 2;
+
+    expect(validateSpacing(model)).toEqual({ errors: [], warnings: [] });
+  });
+
+  it('fails closed on duplicate numbers within a part before partial spacing warnings', () => {
+    const model = scoreWithNotesByVoice({
+      S: [{ pitch: 'D6', dur: 1 }],
+      A: [{ pitch: 'C5', dur: 1 }],
+      T: [{ pitch: 'C4', dur: 1 }],
+      B: [{ pitch: 'C3', dur: 1 }],
+    });
+    appendMeasure(model, 'A', 2);
+    appendMeasure(model, 'A', 2);
+    appendMeasure(model, 'A', 8);
+    appendMeasure(model, 'A', 8);
+    appendMeasure(model, 'S', 1);
+
+    expect(validateSpacing(model)).toEqual({
+      errors: [
+        {
+          part: 'A',
+          measure: 2,
+          beat: 1,
+          code: 'MEASURE_IDENTITY',
+          message:
+            'A part contains duplicate measure numbers; cross-part validation was skipped.',
+        },
+      ],
+      warnings: [],
+    });
+  });
+
+  it('allows the same measure number in different parts', () => {
+    expect(
+      validateSpacing(
+        scoreWithNotesByVoice(
+          {
+            S: [{ pitch: 'D6', dur: 1 }],
+            A: [{ pitch: 'C5', dur: 1 }],
+            T: [{ pitch: 'C4', dur: 1 }],
+            B: [{ pitch: 'C3', dur: 1 }],
+          },
+          7
+        )
+      )
+    ).toEqual({ errors: [], warnings: [warning('S', 'S–A', 7)] });
+  });
+
+  it('accepts globally unique measure labels when there are no spacing findings', () => {
+    const model = scoreWithNotesByVoice({
+      S: [{ pitch: 'C5', dur: 1 }],
+      A: [{ pitch: 'G4', dur: 1 }],
+      T: [{ pitch: 'C4', dur: 1 }],
+      B: [{ pitch: 'C3', dur: 1 }],
+    });
+    model.parts.forEach((part, index) => {
+      part.measures[0]!.number = index + 1;
+    });
 
     expect(validateSpacing(model)).toEqual({ errors: [], warnings: [] });
   });
