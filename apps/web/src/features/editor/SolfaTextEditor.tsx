@@ -133,13 +133,13 @@ export function SolfaTextEditor({
 
   function updateDraft(value: string, cursor: { start: number; end: number }) {
     if (!canEdit) return;
-    session?.rememberTextCursor(cursor);
 
     let next: ScoreModel;
     try {
       const parsed = parseSolfaText(value, { title: model.title });
       next = preserveModelMetadata(parsed, model);
     } catch (error) {
+      session?.rememberTextCursor(cursor);
       setEditorState((current) => ({
         ...current,
         draft: value,
@@ -149,9 +149,12 @@ export function SolfaTextEditor({
     }
 
     setEditorState({ draft: value, draftIssue: null, codecIssue: null });
-    if (sameModel(next, model)) return;
+    if (sameModel(next, model)) {
+      session?.rememberTextCursor(cursor);
+      return;
+    }
 
-    session?.recordEdit(model, next);
+    session?.recordEdit(model, next, { textCursor: cursor });
     lastEmittedModel.current = next;
     onChange(next);
   }

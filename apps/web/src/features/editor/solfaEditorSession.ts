@@ -15,10 +15,20 @@ export type SolfaEditorSessionSnapshot = {
   textCursor: SolfaTextCursor | null;
 };
 
-type HistoryEntry = {
+type EditorPosition = {
+  gridSelection?: SolfaGridSelection | null;
+  textCursor?: SolfaTextCursor | null;
+};
+
+type HistorySnapshot = {
   model: ScoreModel;
   gridSelection: SolfaGridSelection | null;
   textCursor: SolfaTextCursor | null;
+};
+
+type HistoryTransition = {
+  before: HistorySnapshot;
+  after: HistorySnapshot;
 };
 
 const EMPTY_SNAPSHOT: SolfaEditorSessionSnapshot = {
@@ -39,8 +49,8 @@ const getEmptySnapshot = () => EMPTY_SNAPSHOT;
  */
 export class SolfaEditorSession {
   private readonly listeners = new Set<() => void>();
-  private readonly undoStack: HistoryEntry[] = [];
-  private readonly redoStack: HistoryEntry[] = [];
+  private readonly undoStack: HistoryTransition[] = [];
+  private readonly redoStack: HistoryTransition[] = [];
   private positionRevision = 0;
   private gridSelection: SolfaGridSelection | null = null;
   private textCursor: SolfaTextCursor | null = null;
@@ -54,30 +64,40 @@ export class SolfaEditorSession {
   readonly getSnapshot = () => this.snapshot;
 
   /** Record an accepted model transition. Invalid drafts must never call this. */
-  recordEdit(previous: ScoreModel, next: ScoreModel): boolean {
+  recordEdit(
+    previous: ScoreModel,
+    next: ScoreModel,
+    afterPosition: EditorPosition = {}
+  ): boolean {
     if (JSON.stringify(previous) === JSON.stringify(next)) return false;
-    this.undoStack.push(this.capture(previous));
+    const before = this.capture(previous);
+    const after = this.capture(next, afterPosition);
+    this.undoStack.push({ before, after });
     this.redoStack.length = 0;
+    this.gridSelection = after.gridSelection
+      ? { ...after.gridSelection }
+      : null;
+    this.textCursor = after.textCursor ? { ...after.textCursor } : null;
     this.publish();
     return true;
   }
 
-  undo(current: ScoreModel): ScoreModel | null {
-    const entry = this.undoStack.pop();
-    if (!entry) return null;
-    this.redoStack.push(this.capture(current));
-    this.restore(entry);
+  undo(_current: ScoreModel): ScoreModel | null {
+    const transition = this.undoStack.pop();
+    if (!transition) return null;
+    this.redoStack.push(transition);
+    this.restore(transition.before);
     this.publish();
-    return entry.model;
+    return transition.before.model;
   }
 
-  redo(current: ScoreModel): ScoreModel | null {
-    const entry = this.redoStack.pop();
-    if (!entry) return null;
-    this.undoStack.push(this.capture(current));
-    this.restore(entry);
+  redo(_current: ScoreModel): ScoreModel | null {
+    const transition = this.redoStack.pop();
+    if (!transition) return null;
+    this.undoStack.push(transition);
+    this.restore(transition.after);
     this.publish();
-    return entry.model;
+    return transition.after.model;
   }
 
   /** Save Grid's positional address so it can be restored after a mode switch. */
@@ -112,19 +132,28 @@ export class SolfaEditorSession {
     this.publish();
   }
 
-  private capture(model: ScoreModel): HistoryEntry {
+  private capture(
+    model: ScoreModel,
+    position: EditorPosition = {}
+  ): HistorySnapshot {
+    const gridSelection = Object.hasOwn(position, 'gridSelection')
+      ? position.gridSelection
+      : this.gridSelection;
+    const textCursor = Object.hasOwn(position, 'textCursor')
+      ? position.textCursor
+      : this.textCursor;
     return {
       model,
-      gridSelection: this.gridSelection ? { ...this.gridSelection } : null,
-      textCursor: this.textCursor ? { ...this.textCursor } : null,
+      gridSelection: gridSelection ? { ...gridSelection } : null,
+      textCursor: textCursor ? { ...textCursor } : null,
     };
   }
 
-  private restore(entry: HistoryEntry): void {
-    this.gridSelection = entry.gridSelection
-      ? { ...entry.gridSelection }
+  private restore(snapshot: HistorySnapshot): void {
+    this.gridSelection = snapshot.gridSelection
+      ? { ...snapshot.gridSelection }
       : null;
-    this.textCursor = entry.textCursor ? { ...entry.textCursor } : null;
+    this.textCursor = snapshot.textCursor ? { ...snapshot.textCursor } : null;
     this.positionRevision += 1;
   }
 

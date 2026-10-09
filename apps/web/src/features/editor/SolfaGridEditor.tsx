@@ -299,7 +299,7 @@ export function SolfaGridEditor({
 
   function commit(
     edit: (current: ScoreModel) => ScoreModel,
-    after?: (next: ScoreModel) => void
+    after?: (next: ScoreModel) => SolfaGridSelection | null
   ) {
     if (!selection || !canEdit) return;
     try {
@@ -308,13 +308,15 @@ export function SolfaGridEditor({
         setActionError('');
         return;
       }
-      if (session) session.recordEdit(model, next);
+      const nextSelection = after ? after(next) : selection;
+      if (session)
+        session.recordEdit(model, next, { gridSelection: nextSelection });
       else {
         setUndoStack((stack) => [...stack, { model, selection }]);
         setRedoStack([]);
       }
       setActionError('');
-      after?.(next);
+      if (after) setSelection(nextSelection);
       onChange(next);
     } catch (error) {
       setActionError(errorMessage(error));
@@ -722,13 +724,11 @@ export function SolfaGridEditor({
                         Number(durationValue)
                       ),
                     (next) =>
-                      setSelection(
-                        solfaGridSelectionForNote(
-                          next,
-                          selection.partId,
-                          selection.barIndex,
-                          selectedCell.noteIndex
-                        )
+                      solfaGridSelectionForNote(
+                        next,
+                        selection.partId,
+                        selection.barIndex,
+                        selectedCell.noteIndex
                       )
                   )
                 }
@@ -770,16 +770,14 @@ export function SolfaGridEditor({
                         selectedCell.noteIndex,
                         Math.max(0, (nextMeasure?.notes.length ?? 1) - 1)
                       );
-                      setSelection(
-                        nextMeasure
-                          ? solfaGridSelectionForNote(
-                              next,
-                              selection.partId,
-                              selection.barIndex,
-                              nextNoteIndex
-                            )
-                          : null
-                      );
+                      return nextMeasure
+                        ? solfaGridSelectionForNote(
+                            next,
+                            selection.partId,
+                            selection.barIndex,
+                            nextNoteIndex
+                          )
+                        : null;
                     }
                   )
                 }

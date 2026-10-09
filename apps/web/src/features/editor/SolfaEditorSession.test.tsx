@@ -203,6 +203,162 @@ describe('shared Sol-fa editor session', () => {
     }
   });
 
+  it('keeps each Grid history selection fixed when navigation happens after an edit', () => {
+    const original = model();
+    const view = mount(original, 'grid');
+    try {
+      click(
+        view.host.querySelector<HTMLButtonElement>(
+          '[data-grid-cell="S:0:1:4:0:0"]'
+        )
+      );
+      expect(view.session.getSnapshot().gridSelection).toMatchObject({
+        partId: 'S',
+        beat: 4,
+        subdivision: 0,
+      });
+
+      changeSelect(view.host, 'Duration in quarter-note units', '1.5');
+      click(buttonWithText(view.host, 'Set duration'));
+      const edited = view.current();
+      expect(edited).not.toEqual(original);
+      expect(view.session.getSnapshot()).toMatchObject({
+        undoCount: 1,
+        redoCount: 0,
+        gridSelection: { partId: 'S', beat: 3, subdivision: 1 },
+      });
+
+      const editedCell = view.host.querySelector<HTMLButtonElement>(
+        '[data-grid-cell="S:0:1:3:1:0"]'
+      );
+      if (!editedCell) throw new Error('Expected the edited Grid cell.');
+      act(() =>
+        editedCell.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })
+        )
+      );
+      expect(
+        view.host
+          .querySelector<HTMLButtonElement>('[data-grid-cell="A:0:1:1:0:0"]')
+          ?.getAttribute('aria-pressed')
+      ).toBe('true');
+      expect(view.session.getSnapshot()).toMatchObject({
+        undoCount: 1,
+        redoCount: 0,
+        gridSelection: { partId: 'A', beat: 1, subdivision: 0 },
+      });
+
+      view.switchTo('text');
+      click(view.host.querySelector('button[aria-label="Undo edit"]'));
+      expect(view.current()).toEqual(original);
+      expect(view.session.getSnapshot().gridSelection).toMatchObject({
+        partId: 'S',
+        beat: 4,
+        subdivision: 0,
+      });
+
+      view.switchTo('grid');
+      expect(
+        view.host
+          .querySelector<HTMLButtonElement>('[data-grid-cell="S:0:1:4:0:0"]')
+          ?.getAttribute('aria-pressed')
+      ).toBe('true');
+      click(view.host.querySelector('button[aria-label="Redo edit"]'));
+      expect(view.current()).toEqual(edited);
+      expect(
+        view.host
+          .querySelector<HTMLButtonElement>('[data-grid-cell="S:0:1:3:1:0"]')
+          ?.getAttribute('aria-pressed')
+      ).toBe('true');
+      expect(view.session.getSnapshot()).toMatchObject({
+        undoCount: 1,
+        redoCount: 0,
+        gridSelection: { partId: 'S', beat: 3, subdivision: 1 },
+      });
+    } finally {
+      view.unmount();
+    }
+  });
+
+  it('keeps each Text history cursor fixed when caret navigation happens after an edit', () => {
+    const original = model();
+    const originalText = modelToSolfaText(original);
+    const view = mount(original, 'text');
+    try {
+      const beforeCursor = 5;
+      const initialTextarea = view.host.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Sol-fa text"]'
+      );
+      if (!initialTextarea) throw new Error('Missing Sol-fa Text textarea.');
+      act(() => {
+        initialTextarea.setSelectionRange(beforeCursor, beforeCursor);
+        view.session.rememberTextCursor({
+          start: beforeCursor,
+          end: beforeCursor,
+        });
+      });
+
+      const editedText = originalText.replace(
+        'S: | d : r : m : f |',
+        'S: | d : f : m : f |'
+      );
+      const afterCursor = editedText.indexOf('S: |') + 11;
+      changeText(view.host, editedText, afterCursor);
+      expect(modelToSolfaText(view.current())).toBe(editedText);
+      expect(view.session.getSnapshot()).toMatchObject({
+        undoCount: 1,
+        redoCount: 0,
+        textCursor: { start: afterCursor, end: afterCursor },
+      });
+
+      const editedTextarea = view.host.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Sol-fa text"]'
+      );
+      if (!editedTextarea) throw new Error('Missing Sol-fa Text textarea.');
+      const laterCursor = editedText.length - 2;
+      act(() => {
+        editedTextarea.setSelectionRange(laterCursor, laterCursor);
+        view.session.rememberTextCursor({
+          start: laterCursor,
+          end: laterCursor,
+        });
+      });
+      expect(view.session.getSnapshot()).toMatchObject({
+        undoCount: 1,
+        redoCount: 0,
+        textCursor: { start: laterCursor, end: laterCursor },
+      });
+
+      view.switchTo('grid');
+      click(view.host.querySelector('button[aria-label="Undo edit"]'));
+      expect(view.current()).toEqual(original);
+      expect(view.session.getSnapshot()).toMatchObject({
+        textCursor: { start: beforeCursor, end: beforeCursor },
+      });
+
+      view.switchTo('text');
+      const restoredTextarea = view.host.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Sol-fa text"]'
+      );
+      expect(restoredTextarea?.selectionStart).toBe(beforeCursor);
+      expect(restoredTextarea?.selectionEnd).toBe(beforeCursor);
+      click(view.host.querySelector('button[aria-label="Redo edit"]'));
+      expect(modelToSolfaText(view.current())).toBe(editedText);
+      const redoneTextarea = view.host.querySelector<HTMLTextAreaElement>(
+        'textarea[aria-label="Sol-fa text"]'
+      );
+      expect(redoneTextarea?.selectionStart).toBe(afterCursor);
+      expect(redoneTextarea?.selectionEnd).toBe(afterCursor);
+      expect(view.session.getSnapshot()).toMatchObject({
+        undoCount: 1,
+        redoCount: 0,
+        textCursor: { start: afterCursor, end: afterCursor },
+      });
+    } finally {
+      view.unmount();
+    }
+  });
+
   it('undoes and redoes a Text edit from Grid, restoring the model, lyrics, and a usable Text cursor', () => {
     const original = model();
     const originalText = modelToSolfaText(original);
