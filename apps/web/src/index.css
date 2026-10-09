@@ -64,6 +64,12 @@ a:focus-visible {
   outline-offset: 3px;
 }
 
+.score-range-fit-workflow:focus {
+  outline: 3px solid var(--focus);
+  outline-offset: 4px;
+  border-radius: 0.75rem;
+}
+
 .health-page {
   display: grid;
   min-height: 100vh;

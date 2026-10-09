@@ -60,7 +60,11 @@ afterAll(() => {
 });
 
 type ApiRequest = { url: string; method: string; body?: string };
-type MockApiOptions = { delayProfile?: boolean; failApply?: boolean };
+type MockApiOptions = {
+  delayProfile?: boolean;
+  failApply?: boolean;
+  failProfile?: boolean;
+};
 
 function jsonResponse(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), {
@@ -89,6 +93,12 @@ function mockScoreApi(options: MockApiOptions = {}) {
       requests.push({ url, method, ...(body ? { body } : {}) });
 
       if (url === '/api/settings/voice-ranges') {
+        if (options.failProfile) {
+          return jsonResponse(
+            { error: { message: 'Profile load failed' } },
+            500
+          );
+        }
         return pendingProfile ?? jsonResponse(DEFAULT_VOICE_RANGES);
       }
       if (url === '/api/scores/score-1/versions' && method === 'POST') {
@@ -271,12 +281,15 @@ describe('score-route range-fit integration', () => {
       method: 'GET',
     });
     await clickButton(page, 'Find a comfortable key');
+    const workflow = page.querySelector('.score-range-fit-workflow');
+    expect(document.activeElement).toBe(workflow);
     expect(page.textContent).toContain('Loading your saved voice ranges…');
 
     await act(async () =>
       api.releaseProfile(jsonResponse(DEFAULT_VOICE_RANGES))
     );
     await waitForElement(page, '.transposition-panel');
+    expect(document.activeElement).toBe(workflow);
     expect(
       page.querySelector<HTMLSelectElement>(
         '.transposition-panel__scope select'
@@ -286,6 +299,27 @@ describe('score-route range-fit integration', () => {
     expect(
       api.requests.filter((request) => request.method === 'POST')
     ).toHaveLength(0);
+    await clickButton(page, 'Cancel');
+    expect(document.activeElement).toBe(
+      page.querySelector('.score-range-fit-workflow button')
+    );
+  });
+
+  it('keeps focus in the workflow on voice-range errors and restores the opener on Cancel', async () => {
+    mockScoreApi({ failProfile: true });
+    const page = await renderPage();
+    await waitForElement(page, 'h1');
+    await clickButton(page, 'Find a comfortable key');
+
+    const workflow = page.querySelector('.score-range-fit-workflow');
+    expect(document.activeElement).toBe(workflow);
+    await waitForText(page, 'Your saved voice ranges could not be loaded.');
+    expect(document.activeElement).toBe(workflow);
+
+    await clickButton(page, 'Cancel');
+    expect(document.activeElement).toBe(
+      page.querySelector('.score-range-fit-workflow button')
+    );
   });
 
   it('keeps preview and Cancel local with no version write or source mutation', async () => {
@@ -300,6 +334,9 @@ describe('score-route range-fit integration', () => {
 
     await clickButton(page, 'Cancel');
     expect(page.querySelector('.transposition-panel')).toBeNull();
+    expect(document.activeElement).toBe(
+      page.querySelector('.score-range-fit-workflow button')
+    );
     expect(page.querySelector('h1')?.textContent).toBe('Morning Light');
     expect(api.detailReads).toBe(1);
     expect(scoreDetailResponse.score.model).toEqual(api.originalModel);
@@ -312,6 +349,9 @@ describe('score-route range-fit integration', () => {
     await chooseTargetKey(page);
     await doubleClickButton(page, 'Apply to a new score/version');
     await waitForText(page, 'A new transposed score version was saved.');
+    expect(document.activeElement).toBe(
+      page.querySelector('.score-range-fit-workflow [role="status"]')
+    );
 
     const writes = api.requests.filter(
       (request) =>
