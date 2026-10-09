@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FormEvent,
+} from 'react';
 import type { OpenSheetMusicDisplay } from 'opensheetmusicdisplay';
 import { Link, useParams } from 'react-router-dom';
 import {
@@ -254,6 +260,11 @@ export function StaffViewerWorkspace({
   versionNotice = '',
   onApplyTransposition = () => undefined,
 }: WorkspaceProps) {
+  const rangeFitWorkflowRef = useRef<HTMLElement>(null);
+  const rangeFitOpenerRef = useRef<HTMLButtonElement>(null);
+  const versionNoticeRef = useRef<HTMLParagraphElement>(null);
+  const previousRangeFitPanelOpen = useRef(rangeFitPanelOpen);
+  const previousApplyingVersion = useRef(applyingVersion);
   const [metadataEditorOpen, setMetadataEditorOpen] = useState(false);
   const [notationModeState, setNotationModeState] = useState<{
     userId: string | null;
@@ -263,6 +274,23 @@ export function StaffViewerWorkspace({
     notationModeState.userId === userId
       ? notationModeState.mode
       : loadNotationMode(userId);
+  useLayoutEffect(() => {
+    const wasOpen = previousRangeFitPanelOpen.current;
+    const wasApplying = previousApplyingVersion.current;
+    if (rangeFitPanelOpen && !wasOpen) {
+      rangeFitWorkflowRef.current?.focus();
+    } else if (!rangeFitPanelOpen && wasOpen) {
+      if (versionNotice) {
+        versionNoticeRef.current?.focus();
+      } else {
+        rangeFitOpenerRef.current?.focus();
+      }
+    } else if (rangeFitPanelOpen && applyingVersion && !wasApplying) {
+      rangeFitWorkflowRef.current?.focus();
+    }
+    previousRangeFitPanelOpen.current = rangeFitPanelOpen;
+    previousApplyingVersion.current = applyingVersion;
+  }, [applyingVersion, rangeFitPanelOpen, versionNotice]);
   function changeNotationMode(mode: NotationMode) {
     saveNotationMode(userId, mode);
     setNotationModeState({ userId, mode });
@@ -365,16 +393,24 @@ export function StaffViewerWorkspace({
           />
           {score.canEdit && score.canEditContent ? (
             <section
+              ref={rangeFitWorkflowRef}
               className="score-range-fit-workflow"
               aria-label="Transpose and fit score to voice ranges"
+              tabIndex={rangeFitPanelOpen ? -1 : undefined}
             >
               {versionNotice ? (
-                <p className="score-metadata-notice" role="status">
+                <p
+                  ref={versionNoticeRef}
+                  className="score-metadata-notice"
+                  role="status"
+                  tabIndex={-1}
+                >
                   {versionNotice}
                 </p>
               ) : null}
               {!rangeFitPanelOpen ? (
                 <button
+                  ref={rangeFitOpenerRef}
                   className="button button--quiet"
                   type="button"
                   onClick={onOpenRangeFit}
@@ -656,6 +692,7 @@ export function ScoreViewPage() {
         rangeFitPanelOpen={rangeFitPanelOpen}
         onOpenRangeFit={() => {
           setApplyVersionError('');
+          setVersionNotice('');
           setRangeFitPanelOpen(true);
         }}
         onCancelRangeFit={() => setRangeFitPanelOpen(false)}
