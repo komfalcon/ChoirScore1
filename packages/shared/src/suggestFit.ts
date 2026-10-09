@@ -23,6 +23,8 @@ export interface FitSuggestion {
   semitones: number;
   score: number;
   key: ScoreKey;
+  /** Present only when the user explicitly chose a target key in the panel. */
+  manualTargetKey?: ScoreKey;
   keyAccidentalCount: number;
   fitsComfortable: boolean;
   fitsHard: boolean;
@@ -275,5 +277,71 @@ export function suggestFit(
       hard: isInterval(hard),
       allPartsHard: isInterval(allPartsHard),
     },
+  };
+}
+
+/** Evaluate one explicit shift with the same validation and scoring rules. */
+export function evaluateFitShift(
+  model: ScoreModel,
+  ranges: VoiceRanges,
+  semitones: number,
+  options: SuggestFitOptions = {}
+): FitSuggestion {
+  if (
+    !Number.isSafeInteger(semitones) ||
+    semitones < MIN_SHIFT ||
+    semitones > MAX_SHIFT
+  ) {
+    throw new RangeError(
+      `Fit shift must be an integer from ${MIN_SHIFT} through ${MAX_SHIFT}.`
+    );
+  }
+
+  const parts = collectParts(model, ranges);
+  const selectedPartId = options.partId;
+  if (
+    selectedPartId !== undefined &&
+    !parts.some((part) => part.id === selectedPartId)
+  ) {
+    throw new TypeError(
+      `Selected fit part ${selectedPartId} is not present in the score.`
+    );
+  }
+  const scopedParts = selectedPartId
+    ? parts.filter((part) => part.id === selectedPartId)
+    : parts;
+  const perPart = Object.create(null) as Record<string, PartFitCounts>;
+  for (const part of parts) {
+    perPart[part.id] = {
+      outsideComfortable: countViolations(
+        part.notes,
+        part.range.comfortable,
+        semitones
+      ),
+      outsideHard: countViolations(part.notes, part.range.hard, semitones),
+    };
+  }
+  const score = scopedParts.reduce((total, part) => {
+    const counts = perPart[part.id]!;
+    return (
+      total +
+      counts.outsideComfortable -
+      counts.outsideHard +
+      HARD_VIOLATION_WEIGHT * counts.outsideHard
+    );
+  }, 0);
+  const comfortable = intervalForParts(scopedParts, 'comfortable');
+  const hard = intervalForParts(scopedParts, 'hard');
+
+  return {
+    semitones,
+    score,
+    key: keyAfterSemitoneShift(model.key, semitones),
+    keyAccidentalCount: Math.abs(
+      keyAfterSemitoneShift(model.key, semitones).fifths
+    ),
+    fitsComfortable: intervalContains(comfortable, semitones),
+    fitsHard: intervalContains(hard, semitones),
+    perPart,
   };
 }

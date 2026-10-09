@@ -4,6 +4,7 @@ import {
   DEFAULT_VOICE_RANGES,
   scoreModelSchema,
   suggestFit,
+  voiceRangesForScoreParts,
   type FitSuggestion,
   type ScoreModel,
   type VoiceRanges,
@@ -103,6 +104,8 @@ describe('TranspositionRangeFitPanel', () => {
     );
 
     expect(html).toContain('<select');
+    expect(html).toContain('Manual target key');
+    expect(html).toContain('C major');
     expect(html).toContain('<option value="" selected="">All parts</option>');
     expect(html).toContain('<option value="S">Soprano (S)</option>');
     expect(html).toContain('<option value="A">Alto (A)</option>');
@@ -127,7 +130,7 @@ describe('TranspositionRangeFitPanel', () => {
     expect(sourceModel).toEqual(sourceBeforePreview);
   });
 
-  it('defaults to the resolved score-part ID and labels rankings selected-only while showing every part consequence', () => {
+  it('resolves the profile voice part to its score ID and shows every part consequence', () => {
     const onApply =
       vi.fn<
         (model: ScoreModel, suggestion: FitSuggestion, scope: FitScope) => void
@@ -136,7 +139,7 @@ describe('TranspositionRangeFitPanel', () => {
       <TranspositionRangeFitPanel
         model={sourceModel}
         voiceRanges={voiceRanges}
-        resolvedUserPartId="A"
+        profileVoicePart="A"
         onApply={onApply}
       />
     );
@@ -152,23 +155,26 @@ describe('TranspositionRangeFitPanel', () => {
     expect(firstRecommendationShift(html)).toBe(
       selectedPartFit.suggestions[0]!.semitones
     );
-    expect(html).toContain('<th scope="row">Soprano</th>');
-    expect(html).toContain('<th scope="row">Alto</th>');
+    expect(html).toContain('<th scope="row">Soprano (S)</th>');
+    expect(html).toContain('<th scope="row">Alto (A)</th>');
     expect(onApply).not.toHaveBeenCalled();
   });
 
-  it('falls back to all parts if the resolved user part ID is absent from the score', () => {
+  it('shows unavailable when the profile voice part has no unique score mapping', () => {
     const html = renderToStaticMarkup(
       <TranspositionRangeFitPanel
         model={sourceModel}
         voiceRanges={voiceRanges}
-        resolvedUserPartId="TENOR"
+        profileVoicePart="T"
         onApply={vi.fn()}
       />
     );
 
-    expect(html).toContain('<option value="" selected="">All parts</option>');
-    expect(html).toContain('Ranked across all score parts.');
+    expect(html).toContain('Range fit unavailable');
+    expect(html).toContain(
+      'No score part uniquely maps to profile voice part Tenor (T).'
+    );
+    expect(html).not.toContain('Recommendation 1');
   });
 
   it('renders a clear unavailable state when any actual score part lacks complete ranges', () => {
@@ -181,7 +187,7 @@ describe('TranspositionRangeFitPanel', () => {
       <TranspositionRangeFitPanel
         model={sourceModel}
         voiceRanges={incompleteRanges}
-        resolvedUserPartId="S"
+        profileVoicePart="S"
         onApply={onApply}
       />
     );
@@ -189,9 +195,11 @@ describe('TranspositionRangeFitPanel', () => {
     expect(html).toContain('role="alert"');
     expect(html).toContain('Range fit unavailable');
     expect(html).toContain(
-      'Fit requires complete, valid comfortable and hard ranges for every score part.'
+      'Fit requires a unique canonical SATB mapping and complete, valid comfortable and hard ranges for every score part.'
     );
-    expect(html).toContain('required for part A');
+    expect(html).toContain(
+      'No configured voice range is available for score part A (A).'
+    );
     expect(html).not.toContain('Recommendation 1');
     expect(html).not.toContain('Apply to a new score/version');
     expect(onApply).not.toHaveBeenCalled();
@@ -209,7 +217,7 @@ describe('TranspositionRangeFitPanel', () => {
       <TranspositionRangeFitPanel
         model={sourceModel}
         voiceRanges={invalidRanges}
-        resolvedUserPartId="S"
+        profileVoicePart="S"
         onApply={vi.fn()}
       />
     );
@@ -219,6 +227,118 @@ describe('TranspositionRangeFitPanel', () => {
       'comfortable range must be contained within its hard range'
     );
     expect(html).not.toContain('Recommendation 1');
+  });
+
+  it('maps imported P1–P4 to their canonical profiles and selects the actual P3 ID for a tenor profile', () => {
+    const importedModel = scoreModelSchema.parse({
+      ...sourceModel,
+      parts: [
+        { ...sourceModel.parts[0]!, id: 'P1', name: 'Soprano' },
+        { ...sourceModel.parts[1]!, id: 'P2', name: 'Alto' },
+        {
+          id: 'P3',
+          name: 'Tenor',
+          clef: 'treble',
+          measures: [{ number: 1, notes: [{ pitch: 'C4', dur: 1 }] }],
+        },
+        {
+          id: 'P4',
+          name: 'Bass',
+          clef: 'bass',
+          measures: [{ number: 1, notes: [{ pitch: 'C3', dur: 1 }] }],
+        },
+      ],
+    });
+    const scoreRanges = voiceRangesForScoreParts(
+      importedModel.parts,
+      DEFAULT_VOICE_RANGES
+    );
+    const html = renderToStaticMarkup(
+      <TranspositionRangeFitPanel
+        model={importedModel}
+        voiceRanges={DEFAULT_VOICE_RANGES}
+        profileVoicePart="T"
+        onApply={vi.fn()}
+      />
+    );
+
+    expect(Object.keys(scoreRanges)).toEqual(['P1', 'P2', 'P3', 'P4']);
+    expect(scoreRanges.P3).toEqual(DEFAULT_VOICE_RANGES.T);
+    expect(html).toContain(
+      '<option value="P3" selected="">Tenor (P3)</option>'
+    );
+    expect(html).toContain('Ranked for Tenor (P3) only');
+    expect(html).toContain('Tenor (P3)');
+  });
+
+  it('shows unavailable for ambiguous or unrecognized score-part names', () => {
+    const ambiguousModel = scoreModelSchema.parse({
+      ...sourceModel,
+      parts: sourceModel.parts.map((part, index) => ({
+        ...part,
+        id: `P${index + 1}`,
+        name: 'Soprano',
+      })),
+    });
+    const unknownModel = scoreModelSchema.parse({
+      ...sourceModel,
+      parts: [{ ...sourceModel.parts[0]!, id: 'P1', name: 'Violin' }],
+    });
+    const ambiguousHtml = renderToStaticMarkup(
+      <TranspositionRangeFitPanel
+        model={ambiguousModel}
+        voiceRanges={DEFAULT_VOICE_RANGES}
+        onApply={vi.fn()}
+      />
+    );
+    const unknownHtml = renderToStaticMarkup(
+      <TranspositionRangeFitPanel
+        model={unknownModel}
+        voiceRanges={DEFAULT_VOICE_RANGES}
+        onApply={vi.fn()}
+      />
+    );
+
+    expect(ambiguousHtml).toContain('Range fit unavailable');
+    expect(ambiguousHtml).toContain('Ambiguous voice-range mapping');
+    expect(unknownHtml).toContain('Range fit unavailable');
+    expect(unknownHtml).toContain('no canonical SATB ID or voice name');
+    expect(ambiguousHtml).not.toContain('Apply to a new score/version');
+    expect(unknownHtml).not.toContain('Apply to a new score/version');
+  });
+
+  it('marks each out-of-range preview note red and announces its range status', () => {
+    const outsideModel = scoreModelSchema.parse({
+      ...sourceModel,
+      parts: [
+        {
+          id: 'S',
+          name: 'Soprano',
+          clef: 'treble',
+          measures: [{ number: 4, notes: [{ pitch: 'C9', dur: 1 }] }],
+        },
+      ],
+    });
+    const narrowRanges: VoiceRanges = {
+      S: {
+        comfortable: { low: 'C4', high: 'C5' },
+        hard: { low: 'C4', high: 'C5' },
+      },
+    };
+    const html = renderToStaticMarkup(
+      <TranspositionRangeFitPanel
+        model={outsideModel}
+        voiceRanges={narrowRanges}
+        onApply={vi.fn()}
+      />
+    );
+
+    expect(html).toContain('Note-level preview');
+    expect(html).toContain('transposition-panel__preview-note--out-of-range');
+    expect(html).toContain(
+      'aria-label="Soprano, measure 4, note 1: C9, outside hard range"'
+    );
+    expect(html).toContain('Outside hard range');
   });
 
   it('only calls Apply with a newly transposed copy and the selected scope', () => {
@@ -252,6 +372,36 @@ describe('TranspositionRangeFitPanel', () => {
     expect(appliedModel.parts[0]?.measures[0]?.notes[0]?.pitch).toBe('D5');
     expect(appliedModel.parts[1]?.measures[0]?.notes[0]?.pitch).toBe('A4');
     expect(sourceModel).toEqual(sourceBeforeApply);
+  });
+
+  it('passes the imported actual score ID through the fit and Apply seam', () => {
+    const importedModel = scoreModelSchema.parse({
+      ...sourceModel,
+      parts: [
+        {
+          id: 'P3',
+          name: 'Tenor',
+          clef: 'treble',
+          measures: [{ number: 1, notes: [{ pitch: 'C4', dur: 1 }] }],
+        },
+      ],
+    });
+    const mappedRanges = voiceRangesForScoreParts(
+      importedModel.parts,
+      DEFAULT_VOICE_RANGES
+    );
+    const suggestion = suggestFit(importedModel, mappedRanges, {
+      partId: 'P3',
+    }).suggestions[0]!;
+    const onApply =
+      vi.fn<
+        (model: ScoreModel, candidate: FitSuggestion, scope: FitScope) => void
+      >();
+
+    applyFitSuggestion(importedModel, suggestion, { partId: 'P3' }, onApply);
+
+    expect(onApply.mock.calls[0]?.[2]).toEqual({ partId: 'P3' });
+    expect(onApply.mock.calls[0]?.[1].perPart.P3).toBeDefined();
   });
 
   it('passes an explicit all-parts scope through Apply', () => {

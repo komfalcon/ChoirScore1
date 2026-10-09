@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { scoreModelSchema, type ScoreModel } from './scoreModel.js';
-import { suggestFit, type VoiceRanges } from './suggestFit.js';
+import {
+  evaluateFitShift,
+  suggestFit,
+  type VoiceRanges,
+} from './suggestFit.js';
 
 function modelWithParts(
   parts: Array<{
@@ -55,6 +59,25 @@ function ranges(
 }
 
 describe('shared deterministic suggestFit', () => {
+  it('evaluates an explicit manual shift with the same per-part score and bounds', () => {
+    const model = modelWithParts([{ id: 'S', notes: [{ pitch: 'C4' }] }]);
+    const voiceRanges = ranges({
+      S: { comfortable: ['D4', 'D4'], hard: ['C4', 'E4'] },
+    });
+
+    expect(evaluateFitShift(model, voiceRanges, 2)).toMatchObject({
+      semitones: 2,
+      score: 0,
+      key: { fifths: 2, mode: 'major' },
+      fitsComfortable: true,
+      fitsHard: true,
+      perPart: { S: { outsideComfortable: 0, outsideHard: 0 } },
+    });
+    expect(() => evaluateFitShift(model, voiceRanges, 13)).toThrow(
+      /integer from -12 through 12/
+    );
+  });
+
   it('treats both comfortable and hard endpoints as inclusive', () => {
     const model = modelWithParts([
       { id: 'S', notes: [{ pitch: 'C4' }, { pitch: 'E4' }] },

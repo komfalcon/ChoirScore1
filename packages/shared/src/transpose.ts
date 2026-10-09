@@ -117,6 +117,22 @@ function normalizedKey(key: ScoreKey): ScoreKey {
   return keyForTonic(keyTonic(validated), validated.mode);
 }
 
+/** Canonical tonic spelling for a supported score key. */
+export function scoreKeyTonicName(key: ScoreKey): string {
+  return pitchNameWithoutOctave(keyTonic(normalizedKey(key)));
+}
+
+/** Nearest signed chromatic shift from one key's tonic to another's. */
+export function semitoneShiftBetweenKeys(
+  sourceKey: ScoreKey,
+  targetKey: ScoreKey
+): number {
+  return intervalBetweenTonicNames(
+    scoreKeyTonicName(sourceKey),
+    scoreKeyTonicName(targetKey)
+  ).semitones;
+}
+
 function keyAfterInterval(key: ScoreKey, interval: PitchInterval): ScoreKey {
   const tonic = transposePitch(keyTonic(key), interval);
   return keyForTonic(tonic, key.mode);

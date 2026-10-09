@@ -4,6 +4,7 @@ export * from './auth.js';
 export * from './timestamps.js';
 export * from './users.js';
 export * from './scoreModel.js';
+export { midiForPitch } from './pitch.js';
 export * from './scoreContracts.js';
 export * from './musicxml.js';
 export * from './solfa.js';

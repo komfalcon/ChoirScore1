@@ -117,16 +117,110 @@ export function isVoicePartId(value: string): value is VoicePartId {
   return voicePartIdSchema.safeParse(value).success;
 }
 
-/** Keep only configured ranges for this score; absent parts need no fit range. */
+const VOICE_PART_NAMES: Readonly<Record<VoicePartId, string>> = {
+  S: 'Soprano',
+  A: 'Alto',
+  T: 'Tenor',
+  B: 'Bass',
+};
+
+export interface ScoreVoicePartMapping {
+  /** Canonical SATB identity for each opaque score-part ID. */
+  byPartId: Readonly<Record<string, VoicePartId>>;
+  /** Actual score-part ID for each uniquely mapped SATB identity. */
+  byVoicePart: Readonly<Partial<Record<VoicePartId, string>>>;
+}
+
+function canonicalVoicePartName(name: string | undefined): VoicePartId | null {
+  const normalized = name?.trim().toLocaleLowerCase('en-US');
+  if (!normalized) return null;
+  return (
+    VOICE_PART_IDS.find(
+      (voicePart) =>
+        normalized === voicePart.toLowerCase() ||
+        normalized === VOICE_PART_NAMES[voicePart].toLowerCase()
+    ) ?? null
+  );
+}
+
+/**
+ * Resolve only exact canonical SATB IDs or names. IDs remain opaque outside
+ * this explicit boundary; P1–P4 imports are resolved from their part names.
+ * Any missing, conflicting, or duplicate identity fails closed.
+ */
+export function mapScorePartsToVoiceParts(
+  parts: ReadonlyArray<{ id: string; name?: string }>
+): ScoreVoicePartMapping {
+  const ids = parts.map((part) => part.id);
+  if (new Set(ids).size !== ids.length) {
+    throw new TypeError(
+      'Score part IDs must be unique for voice-range mapping.'
+    );
+  }
+
+  const byPartId = Object.create(null) as Record<string, VoicePartId>;
+  const byVoicePart = Object.create(null) as Partial<
+    Record<VoicePartId, string>
+  >;
+
+  for (const part of parts) {
+    const idVoicePart = isVoicePartId(part.id) ? part.id : null;
+    const nameVoicePart = canonicalVoicePartName(part.name);
+    if (idVoicePart && nameVoicePart && idVoicePart !== nameVoicePart) {
+      throw new TypeError(
+        `Score part ${part.id} has conflicting canonical voice identities (${idVoicePart} ID, ${nameVoicePart} name).`
+      );
+    }
+    const voicePart = idVoicePart ?? nameVoicePart;
+    if (!voicePart) {
+      throw new TypeError(
+        `Score part ${part.id} has no canonical SATB ID or voice name.`
+      );
+    }
+    const previousPartId = byVoicePart[voicePart];
+    if (previousPartId !== undefined) {
+      throw new TypeError(
+        `Ambiguous voice-range mapping: score parts ${previousPartId} and ${part.id} both map to ${VOICE_PART_NAMES[voicePart]} (${voicePart}).`
+      );
+    }
+    byPartId[part.id] = voicePart;
+    byVoicePart[voicePart] = part.id;
+  }
+
+  return { byPartId, byVoicePart };
+}
+
+/** Resolve a member's canonical profile voice part to its actual score ID. */
+export function scorePartIdForVoicePart(
+  parts: ReadonlyArray<{ id: string; name?: string }>,
+  voicePart: VoicePartId
+): string | null {
+  return mapScorePartsToVoiceParts(parts).byVoicePart[voicePart] ?? null;
+}
+
+/** Map canonical settings ranges onto actual, uniquely identified score IDs. */
 export function voiceRangesForScoreParts(
-  parts: ReadonlyArray<{ id: string }>,
+  parts: ReadonlyArray<{ id: string; name?: string }>,
   ranges: VoiceRanges
 ): VoiceRanges {
+  const mapping = mapScorePartsToVoiceParts(parts);
+  for (const key of Object.keys(ranges)) {
+    if (!isVoicePartId(key)) {
+      throw new TypeError(
+        `Voice-range settings key ${key} is not a canonical SATB profile key.`
+      );
+    }
+  }
+
   const relevantRanges = Object.create(null) as Record<string, PartVoiceRange>;
   for (const part of parts) {
-    if (Object.hasOwn(ranges, part.id)) {
-      relevantRanges[part.id] = ranges[part.id]!;
+    const voicePart = mapping.byPartId[part.id]!;
+    if (!Object.hasOwn(ranges, voicePart)) {
+      throw new TypeError(
+        `No configured voice range is available for score part ${part.id} (${voicePart}).`
+      );
     }
+    relevantRanges[part.id] = ranges[voicePart]!;
   }
   return relevantRanges;
 }

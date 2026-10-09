@@ -1,15 +1,14 @@
 import { Router, type Request } from 'express';
 import {
-  DEFAULT_VOICE_RANGES,
   getAdminSettingsResponseSchema,
   patchAdminSettingsRequestSchema,
   patchAdminSettingsResponseSchema,
-  voiceRangesSchema,
 } from '@choirscore/shared';
 import type { ApiRepository } from '../../db/repository';
 import { ApiError } from '../../errors';
 import { requireRole } from '../../middleware/auth';
 import { runAdminAction } from '../../services/adminAction';
+import { readVoiceRanges } from '../../services/voiceRanges';
 
 function invalidPayload() {
   return new ApiError(
@@ -17,12 +16,6 @@ function invalidPayload() {
     'VALIDATION_ERROR',
     'The request payload is invalid.'
   );
-}
-
-async function readVoiceRanges(repository: Pick<ApiRepository, 'getSetting'>) {
-  const stored = await repository.getSetting('voice_ranges_json');
-  if (stored === null) return DEFAULT_VOICE_RANGES;
-  return voiceRangesSchema.parse(JSON.parse(stored) as unknown);
 }
 
 async function readAdminSettings(
