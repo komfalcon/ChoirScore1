@@ -131,7 +131,11 @@ function jsonResponse(value: unknown, status = 200): Response {
 
 type ApiRequest = { url: string; method: string; body?: string };
 
-type ApiOptions = { conflictOnFirstAutosave?: boolean };
+type ApiOptions = {
+  conflictOnFirstAutosave?: boolean;
+  holdFirstAutosaveUntilAbort?: boolean;
+  transientFailureOnFirstAutosave?: boolean;
+};
 
 function mockScoreApi(options: ApiOptions = {}) {
   const initial = makeDetail();
@@ -144,6 +148,7 @@ function mockScoreApi(options: ApiOptions = {}) {
     [scoreTwo.id, scoreTwo],
   ]);
   const requests: ApiRequest[] = [];
+  const autosaveSignals: AbortSignal[] = [];
   let immutableSaveCount = 0;
   let autosaveCount = 0;
   const fetchMock = vi.fn(
@@ -193,6 +198,19 @@ function mockScoreApi(options: ApiOptions = {}) {
         }
 
         autosaveCount += 1;
+        const signal = init?.signal ?? undefined;
+        if (signal) autosaveSignals.push(signal);
+        if (options.holdFirstAutosaveUntilAbort && autosaveCount === 1) {
+          return await new Promise<Response>((_resolve, reject) => {
+            const abort = () =>
+              reject(new DOMException('Request aborted.', 'AbortError'));
+            if (signal?.aborted) abort();
+            else signal?.addEventListener('abort', abort, { once: true });
+          });
+        }
+        if (options.transientFailureOnFirstAutosave && autosaveCount === 1) {
+          throw new TypeError('Temporary network failure.');
+        }
         if (options.conflictOnFirstAutosave && autosaveCount === 1) {
           const remote = replaceDetail(current, {
             currentVersionId: 'version-remote',
@@ -226,7 +244,7 @@ function mockScoreApi(options: ApiOptions = {}) {
     }
   );
   vi.stubGlobal('fetch', fetchMock);
-  return { requests, latest, fetchMock };
+  return { requests, latest, fetchMock, autosaveSignals };
 }
 
 let root: Root | undefined;
@@ -497,22 +515,87 @@ describe('ScoreEditPage host integration', () => {
     expect(autosaveBodies[1]?.requestId).not.toBe(autosaveBodies[0]?.requestId);
   });
 
+  it.each([
+    [
+      'in-flight',
+      { holdFirstAutosaveUntilAbort: true },
+      true,
+      'Saving a working draft',
+    ],
+    [
+      'retrying',
+      { transientFailureOnFirstAutosave: true },
+      false,
+      'will retry',
+    ],
+  ] as const)(
+    'invalidates a %s autosave when the user resets the draft',
+    async (_phase, options, expectedAborted, statusText) => {
+      vi.useFakeTimers();
+      const api = mockScoreApi(options);
+      const page = await renderPage();
+      await editFirstGridNote(page);
+      await advanceAutosaveCadence();
+      expect(page.querySelector('.score-edit-status')?.textContent).toContain(
+        statusText
+      );
+      expect(
+        api.requests.filter((request) => request.url.endsWith('/autosaves'))
+      ).toHaveLength(1);
+
+      await clickButton(page, 'Reset draft');
+      await settle();
+      expect(api.autosaveSignals[0]?.aborted).toBe(expectedAborted);
+      expect(page.textContent).toContain('Resolve score version conflict');
+      await advanceAutosaveCadence();
+      expect(
+        api.requests.filter((request) => request.url.endsWith('/autosaves'))
+      ).toHaveLength(1);
+
+      await clickButton(page, 'Rebase my preserved draft onto latest version');
+      await advanceAutosaveCadence();
+      expect(
+        api.requests.filter((request) => request.url.endsWith('/autosaves'))
+      ).toHaveLength(1);
+    }
+  );
+
   it('disposes playback on score edits, reset/replacement, and route unmount', async () => {
     const dispose = vi.spyOn(LazyTonePlaybackEngine.prototype, 'dispose');
     mockScoreApi();
     const page = await renderPage({ navigation: true });
+    const play = vi
+      .spyOn(LazyTonePlaybackEngine.prototype, 'play')
+      .mockResolvedValue(undefined);
+    await clickButton(page, 'Play');
+    await settle();
+    expect(play).toHaveBeenCalledTimes(1);
+    expect(
+      page.querySelector('.playback-controls__status')?.textContent
+    ).toContain('Playing');
+
     await editFirstGridNote(page);
     expect(dispose).toHaveBeenCalledTimes(1);
-    await clickButton(page, 'Reset draft');
+
+    await clickButton(page, 'Save immutable version');
+    await settle();
+    expect(page.textContent).toContain(
+      'A new immutable score version was saved'
+    );
     expect(dispose).toHaveBeenCalledTimes(2);
+
+    await editFirstGridNote(page, 'm');
+    expect(dispose).toHaveBeenCalledTimes(3);
+    await clickButton(page, 'Reset draft');
+    expect(dispose).toHaveBeenCalledTimes(4);
 
     await clickButton(page, 'Replace score route');
     await settle();
     expect(page.textContent).toContain('version-two');
-    expect(dispose).toHaveBeenCalledTimes(3);
+    expect(dispose).toHaveBeenCalledTimes(5);
 
     await act(async () => root!.unmount());
     root = undefined;
-    expect(dispose).toHaveBeenCalledTimes(4);
+    expect(dispose).toHaveBeenCalledTimes(6);
   });
 });

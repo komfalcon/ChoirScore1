@@ -306,6 +306,51 @@ describe('ScoreAutosaveScheduler', () => {
     expect(save).toHaveBeenCalledTimes(1);
   });
 
+  it('invalidates an in-flight save on reset and requires rebase against the refreshed version', async () => {
+    const save = vi.fn<ScoreAutosaveSchedulerDependencies['save']>(
+      (_requestedScoreId, _request, signal) =>
+        new Promise<CreateScoreAutosaveResponse>((_resolve, reject) => {
+          signal.addEventListener(
+            'abort',
+            () => reject(new DOMException('Request aborted.', 'AbortError')),
+            { once: true }
+          );
+        })
+    );
+    const latest = detail('version-remote', changedModel(98));
+    const loadLatest = vi.fn(async () => latest);
+    const onDraftChange = vi.fn();
+    const { scheduler } = makeScheduler({ save, loadLatest, onDraftChange });
+
+    await advance(30_000);
+    expect(save).toHaveBeenCalledTimes(1);
+    const abandonedSignal = save.mock.calls[0]?.[2];
+    expect(scheduler.resetDraft(originalModel)).toBe(true);
+    expect(abandonedSignal?.aborted).toBe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(scheduler.getState().status).toBe('conflict');
+    expect(scheduler.getState().conflict).toEqual({
+      latestModel: changedModel(98),
+      latestVersionId: 'version-remote',
+      localDraft: originalModel,
+    });
+    expect(onDraftChange).toHaveBeenCalledWith(originalModel);
+    await advance(60_000);
+    expect(save).toHaveBeenCalledTimes(1);
+
+    expect(scheduler.resolveConflict(originalModel)).toBe(true);
+    await advance(30_000);
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(save.mock.calls[1]?.[1]).toMatchObject({
+      model: originalModel,
+      baseVersionId: 'version-remote',
+      requestId: 'request-2',
+    });
+    scheduler.dispose();
+  });
+
   it('serializes overlapping edits and starts the latest snapshot after the first save settles', async () => {
     let finishFirst: ((value: CreateScoreAutosaveResponse) => void) | undefined;
     const save = vi

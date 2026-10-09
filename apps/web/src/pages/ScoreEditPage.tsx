@@ -121,7 +121,7 @@ function EditWorkspace({
 
   function resetDraft() {
     if (!canResetDraft) return;
-    setDraft(persistedModel);
+    if (!autosave.resetDraft(persistedModel)) return;
     setDraftRevision((revision) => revision + 1);
     session.reset();
     setSaveError('');

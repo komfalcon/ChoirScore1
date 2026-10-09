@@ -241,6 +241,66 @@ export class ScoreAutosaveScheduler {
     return true;
   }
 
+  /**
+   * Replace the editor draft after an explicit reset. Any pending write is
+   * invalidated so an old draft cannot be retried; because an aborted request
+   * may already have reached the server, refresh and require the caller's
+   * normal explicit rebase decision before writing the reset draft.
+   */
+  resetDraft(model: unknown): boolean {
+    if (
+      !this.active ||
+      this.disposed ||
+      !this.input?.canEditContent ||
+      !this.input.scoreId ||
+      this.contentReadOnlyBlocked ||
+      this.conflict ||
+      this.conflictLoading
+    ) {
+      return false;
+    }
+
+    const chosen = parseModel(model);
+    if (!chosen) {
+      this.setState({ status: 'invalid', error: null });
+      return false;
+    }
+
+    const hadPendingOperation = this.pending !== null;
+    this.generation += 1;
+    this.clearTimer();
+    this.activeController?.abort();
+    this.activeController = null;
+    if (this.pending) this.pending.controller = null;
+    this.pending = null;
+    this.draft = chosen;
+    this.input = { ...this.input, model: chosen.model };
+    this.lastObservedDraftSignature = chosen.signature;
+    this.nextSaveAt = this.now() + this.debounceMs;
+    this.blockedAfterError = false;
+    this.dependencies.onDraftChange?.(chosen.model);
+
+    if (hadPendingOperation) {
+      this.conflictLoading = true;
+      this.conflict = {
+        latestModel: null,
+        latestVersionId: null,
+        localDraft: chosen.model,
+      };
+      this.setState({
+        status: 'conflict',
+        currentVersionId: this.currentVersionId,
+        conflict: this.conflict,
+        error: null,
+      });
+      void this.refreshConflict(this.generation);
+      return true;
+    }
+
+    this.reconcile();
+    return true;
+  }
+
   /** Retry a transient failure now, or refresh a conflict whose detail load failed. */
   retryNow(): void {
     if (!this.active || this.disposed) return;

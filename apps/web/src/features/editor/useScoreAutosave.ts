@@ -23,13 +23,15 @@ export type UseScoreAutosaveOptions = ScoreAutosaveSchedulerInput & {
 export type UseScoreAutosaveResult = ScoreAutosaveSchedulerState & {
   /** Call only after presenting/reconciling the latest model in a conflict. */
   resolveConflict: (rebasedDraft?: unknown) => boolean;
+  /** Explicitly replace the draft and invalidate any pending autosave request. */
+  resetDraft: (model: unknown) => boolean;
   /** Retry a transient failure or reload a conflict whose detail fetch failed. */
   retryNow: () => void;
 };
 
 /**
- * Reusable client autosave hook. It is intentionally not mounted by
- * ScoreEditPage; an editor session can opt in once its shared model is ready.
+ * Reusable client autosave hook mounted by the edit route after a score model
+ * is loaded; the scheduler remains owned by that editor session.
  */
 export function useScoreAutosave(
   options: UseScoreAutosaveOptions
@@ -95,6 +97,7 @@ export function useScoreAutosave(
     ...state,
     resolveConflict: (rebasedDraft?: unknown) =>
       scheduler.resolveConflict(rebasedDraft),
+    resetDraft: (model: unknown) => scheduler.resetDraft(model),
     retryNow: () => scheduler.retryNow(),
   };
 }
