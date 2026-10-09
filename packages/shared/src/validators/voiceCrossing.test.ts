@@ -210,6 +210,33 @@ describe('validateVoiceCrossing', () => {
     });
   });
 
+  it('returns one deterministic sanitized VOICE_MAPPING issue for duplicate raw part IDs', () => {
+    const model = scoreWithNotesByVoice({
+      S: [{ pitch: 'G4', dur: 1 }],
+      A: [{ pitch: 'A4', dur: 1 }],
+    });
+    model.parts[0]!.id = 'P1';
+    model.parts[0]!.name = 'Soprano';
+    model.parts[0]!.measures[0]!.number = 8;
+    model.parts[1]!.id = 'P1';
+    model.parts[1]!.name = 'Alto';
+    model.parts[1]!.measures[0]!.number = 4;
+
+    expect(validateVoiceCrossing(model)).toEqual({
+      errors: [
+        {
+          part: 'P1',
+          measure: 4,
+          beat: 1,
+          code: 'VOICE_MAPPING',
+          message:
+            'Score-part IDs are duplicated; SATB validation was skipped.',
+        },
+      ],
+      warnings: [],
+    });
+  });
+
   it('aligns by resolved onset rather than event-array index', () => {
     const result = validateVoiceCrossing(
       scoreWithNotesByVoice(

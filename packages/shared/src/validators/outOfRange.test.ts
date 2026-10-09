@@ -281,4 +281,46 @@ describe('validateOutOfRange', () => {
       warnings: [],
     });
   });
+
+  it('returns one deterministic sanitized VOICE_MAPPING issue for duplicate raw part IDs', () => {
+    const base = scoreWithNotes('S', ['B5']);
+    const template = base.parts[0]!;
+    const model: ScoreModel = scoreModelSchema.parse({
+      ...base,
+      parts: [
+        {
+          ...template,
+          id: 'P1',
+          name: 'Soprano',
+          measures: [{ ...template.measures[0]!, number: 8 }],
+        },
+        {
+          ...template,
+          id: 'P1',
+          name: 'Alto',
+          measures: [
+            {
+              ...template.measures[0]!,
+              number: 4,
+              notes: [{ pitch: 'E3', dur: 1 }],
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(validateOutOfRange(model)).toEqual({
+      errors: [
+        {
+          part: 'P1',
+          measure: 4,
+          beat: 1,
+          code: 'VOICE_MAPPING',
+          message:
+            'Score-part IDs are duplicated; SATB validation was skipped.',
+        },
+      ],
+      warnings: [],
+    });
+  });
 });
