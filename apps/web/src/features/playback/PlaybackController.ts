@@ -72,27 +72,34 @@ export class PlaybackController {
 
   async play(): Promise<void> {
     if (this.host.getState().status === 'paused') {
-      const playRequestId = ++this.playRequestId;
       try {
         this.engine.resume();
       } catch (error) {
         this.reportPlayError(error);
         return;
       }
+
       const pendingPlay = this.pendingPlay;
       if (!pendingPlay) {
         this.host.onStatusChange('playing');
         return;
       }
 
+      const playRequestId = this.playRequestId;
       this.host.onStatusChange('loading');
       try {
         await pendingPlay;
-        if (playRequestId === this.playRequestId) {
+        if (
+          playRequestId === this.playRequestId &&
+          this.host.getState().status === 'loading'
+        ) {
           this.host.onStatusChange('playing');
         }
       } catch (error) {
-        if (playRequestId === this.playRequestId) {
+        if (
+          playRequestId === this.playRequestId &&
+          ['loading', 'paused'].includes(this.host.getState().status)
+        ) {
           this.reportPlayError(error);
         }
       }
@@ -110,11 +117,19 @@ export class PlaybackController {
       );
       this.pendingPlay = pendingPlay;
       await pendingPlay;
-      if (playRequestId !== this.playRequestId) return;
-      this.host.onStatusChange('playing');
+      if (
+        playRequestId === this.playRequestId &&
+        this.host.getState().status === 'loading'
+      ) {
+        this.host.onStatusChange('playing');
+      }
     } catch (error) {
-      if (playRequestId !== this.playRequestId) return;
-      this.reportPlayError(error);
+      if (
+        playRequestId === this.playRequestId &&
+        ['loading', 'paused'].includes(this.host.getState().status)
+      ) {
+        this.reportPlayError(error);
+      }
     } finally {
       if (pendingPlay && this.pendingPlay === pendingPlay) {
         this.pendingPlay = undefined;
@@ -132,7 +147,6 @@ export class PlaybackController {
   }
 
   pause(): void {
-    this.playRequestId += 1;
     this.engine.pause();
     this.host.onStatusChange('paused');
   }
