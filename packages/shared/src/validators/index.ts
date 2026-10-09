@@ -278,6 +278,76 @@ export function validateVoiceCrossing(model: ScoreModel): ValidationResult {
   return { errors, warnings: [] };
 }
 
+const SPACING_VOICE_PARTS: ReadonlyArray<readonly [VoicePartId, VoicePartId]> =
+  [
+    ['S', 'A'],
+    ['A', 'T'],
+  ];
+
+/**
+ * Checks the PRD §10.4 S–A and A–T spacing warning for intervals greater than
+ * an octave. Where the PRD is silent on temporal alignment, this follows Tom's
+ * prior §10.4 planning recommendation: compare only at shared note onsets,
+ * reusing the canonical voice mapping and event timeline resolver.
+ */
+export function validateSpacing(model: ScoreModel): ValidationResult {
+  let mapping: ReturnType<typeof mapScorePartsToVoiceParts>;
+  try {
+    mapping = mapScorePartsToVoiceParts(model.parts);
+  } catch (error) {
+    if (!(error instanceof VoiceMappingError)) throw error;
+    return { errors: [voiceMappingIssue(model, error)], warnings: [] };
+  }
+
+  const partsById = new Map<string, ScorePart>(
+    model.parts.map((part) => [part.id, part])
+  );
+  const warnings: Issue[] = [];
+
+  for (const [upperVoice, lowerVoice] of SPACING_VOICE_PARTS) {
+    const upperPartId = mapping.byVoicePart[upperVoice];
+    const lowerPartId = mapping.byVoicePart[lowerVoice];
+    if (!upperPartId || !lowerPartId) continue;
+
+    const upperPart = partsById.get(upperPartId)!;
+    const lowerPart = partsById.get(lowerPartId)!;
+    const lowerMeasures = new Map(
+      lowerPart.measures.map((measure) => [measure.number, measure])
+    );
+
+    for (const upperMeasure of upperPart.measures) {
+      const lowerMeasure = lowerMeasures.get(upperMeasure.number);
+      if (!lowerMeasure) continue;
+
+      const lowerOnsets = soundingPitchesByOnset(lowerMeasure);
+      for (const upperOnset of soundingPitchesByOnset(upperMeasure)) {
+        const lowerOnset = lowerOnsets.find(
+          (candidate) =>
+            Math.abs(candidate.onset - upperOnset.onset) <= ONSET_EPSILON
+        );
+        if (!lowerOnset) continue;
+
+        const exceedsOctave = upperOnset.pitches.some((upperPitch) =>
+          lowerOnset.pitches.some(
+            (lowerPitch) => Math.abs(upperPitch.midi - lowerPitch.midi) > 12
+          )
+        );
+        if (!exceedsOctave) continue;
+
+        warnings.push({
+          part: upperPart.id,
+          measure: upperMeasure.number,
+          beat: roundedBeat(upperOnset.onset, model.time.beatType),
+          code: 'SPACING',
+          message: `${upperVoice}–${lowerVoice} spacing exceeds an octave at a shared onset.`,
+        });
+      }
+    }
+  }
+
+  return { errors: [], warnings };
+}
+
 /**
  * Flags notes outside the PRD voice profile. Comfortable and hard endpoints
  * are inclusive; a hard-range error is never duplicated as a warning.
