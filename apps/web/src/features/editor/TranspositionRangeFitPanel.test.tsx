@@ -69,6 +69,17 @@ const voiceRanges: VoiceRanges = {
   },
 };
 
+const rangesWhereOriginalKeyFits: VoiceRanges = {
+  S: {
+    comfortable: { low: 'C5', high: 'E5' },
+    hard: { low: 'C4', high: 'G5' },
+  },
+  A: {
+    comfortable: { low: 'G4', high: 'B4' },
+    hard: { low: 'F4', high: 'D5' },
+  },
+};
+
 function firstRecommendationShift(html: string): number {
   const match = html.match(
     /<label class="transposition-panel__candidate(?: transposition-panel__candidate--selected)?">\s*<input[^>]*value="(-?\d+)"/
@@ -134,6 +145,106 @@ describe('TranspositionRangeFitPanel', () => {
     expect(html).toContain('Apply to a new score/version');
     expect(onApply).not.toHaveBeenCalled();
     expect(sourceModel).toEqual(sourceBeforePreview);
+  });
+
+  it('blocks the implicit default when the top recommendation is zero shift', async () => {
+    const zeroShift = suggestFit(sourceModel, rangesWhereOriginalKeyFits)
+      .suggestions[0]!;
+    expect(zeroShift.semitones).toBe(0);
+    const onApply = vi.fn();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          <TranspositionRangeFitPanel
+            model={sourceModel}
+            voiceRanges={rangesWhereOriginalKeyFits}
+            onApply={onApply}
+          />
+        );
+      });
+      const applyButton = Array.from(
+        container.querySelectorAll<HTMLButtonElement>('button')
+      ).find((button) =>
+        button.textContent?.includes('Apply to a new score/version')
+      );
+      expect(applyButton?.disabled).toBe(true);
+      expect(container.textContent).toContain(
+        'This is already the current key'
+      );
+      await act(async () => applyButton!.click());
+      expect(onApply).not.toHaveBeenCalled();
+
+      applyFitSuggestion(sourceModel, zeroShift, { partId: null }, onApply);
+      expect(onApply).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+    }
+  });
+
+  it('blocks a manual selection of the original key in both the panel and callback', async () => {
+    const sourceBeforeSelection = structuredClone(sourceModel);
+    const onApply = vi.fn();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(
+          <TranspositionRangeFitPanel
+            model={sourceModel}
+            voiceRanges={voiceRanges}
+            onApply={onApply}
+          />
+        );
+      });
+      const targetKeySelect = container.querySelector<HTMLSelectElement>(
+        'select[id$="-target-key"]'
+      );
+      expect(targetKeySelect).not.toBeNull();
+      const originalKeyOption = Array.from(targetKeySelect!.options).find(
+        (option) => option.textContent?.includes('original key')
+      );
+      const differentKeyOption = Array.from(targetKeySelect!.options).find(
+        (option) => option.value !== originalKeyOption?.value
+      );
+      expect(originalKeyOption).toBeDefined();
+      expect(differentKeyOption).toBeDefined();
+
+      await act(async () => {
+        targetKeySelect!.value = differentKeyOption!.value;
+        targetKeySelect!.dispatchEvent(new Event('change', { bubbles: true }));
+        targetKeySelect!.value = originalKeyOption!.value;
+        targetKeySelect!.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      const applyButton = Array.from(
+        container.querySelectorAll<HTMLButtonElement>('button')
+      ).find((button) =>
+        button.textContent?.includes('Apply to a new score/version')
+      );
+      expect(applyButton?.disabled).toBe(true);
+      await act(async () => applyButton!.click());
+      expect(onApply).not.toHaveBeenCalled();
+
+      const fitSuggestion = suggestFit(sourceModel, rangesWhereOriginalKeyFits)
+        .suggestions[0]!;
+      applyFitSuggestion(
+        sourceModel,
+        { ...fitSuggestion, manualTargetKey: sourceModel.key },
+        { partId: null },
+        onApply
+      );
+      expect(onApply).not.toHaveBeenCalled();
+      expect(sourceModel).toEqual(sourceBeforeSelection);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+    }
   });
 
   it('resolves the profile voice part to its score ID and shows every part consequence', () => {
@@ -475,13 +586,14 @@ describe('TranspositionRangeFitPanel', () => {
     );
     const suggestion = suggestFit(importedModel, mappedRanges, {
       partId: 'P3',
-    }).suggestions[0]!;
+    }).suggestions.find((candidate) => candidate.semitones !== 0);
+    expect(suggestion).toBeDefined();
     const onApply =
       vi.fn<
         (model: ScoreModel, candidate: FitSuggestion, scope: FitScope) => void
       >();
 
-    applyFitSuggestion(importedModel, suggestion, { partId: 'P3' }, onApply);
+    applyFitSuggestion(importedModel, suggestion!, { partId: 'P3' }, onApply);
 
     expect(onApply.mock.calls[0]?.[2]).toEqual({ partId: 'P3' });
     expect(onApply.mock.calls[0]?.[1].perPart.P3).toBeDefined();

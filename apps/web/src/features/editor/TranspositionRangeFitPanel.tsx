@@ -41,16 +41,31 @@ type TargetKeyOption = {
 };
 
 /** The exact Apply path used by the panel; previewing never calls this helper. */
+export function isNoOpFitSuggestion(
+  model: ScoreModel,
+  suggestion: FitSuggestion
+): boolean {
+  if (suggestion.manualTargetKey) {
+    return (
+      suggestion.manualTargetKey.fifths === model.key.fifths &&
+      suggestion.manualTargetKey.mode === model.key.mode
+    );
+  }
+  return suggestion.semitones === 0;
+}
+
 export function applyFitSuggestion(
   model: ScoreModel,
   suggestion: FitSuggestion,
   scope: FitScope,
   onApply: TranspositionRangeFitPanelProps['onApply']
-): void {
+): boolean {
+  if (isNoOpFitSuggestion(model, suggestion)) return false;
   const transposedModel = suggestion.manualTargetKey
     ? transpose(model, { toKey: suggestion.manualTargetKey })
     : transpose(model, { semitones: suggestion.semitones });
   onApply(transposedModel, suggestion, scope);
+  return true;
 }
 
 function shiftLabel(semitones: number): string {
@@ -264,6 +279,9 @@ export function TranspositionRangeFitPanel({
   const selectedTargetKeyId = selectedSuggestion
     ? keyId(selectedSuggestion.key)
     : '';
+  const selectedSuggestionIsNoOp =
+    selectedSuggestion !== null &&
+    isNoOpFitSuggestion(model, selectedSuggestion);
 
   return (
     <section
@@ -538,6 +556,12 @@ export function TranspositionRangeFitPanel({
             actual score-part IDs, to your callback so it can create a separate
             score or version. The source model is never mutated.
           </p>
+          {selectedSuggestionIsNoOp ? (
+            <p className="transposition-panel__source-note" role="status">
+              This is already the current key; choose a different shift or
+              target key to create a version.
+            </p>
+          ) : null}
           <footer className="transposition-panel__actions">
             {onCancel ? (
               <button
@@ -552,7 +576,7 @@ export function TranspositionRangeFitPanel({
             <button
               className="button button--primary"
               type="button"
-              disabled={applying}
+              disabled={applying || selectedSuggestionIsNoOp}
               onClick={() =>
                 void applyFitSuggestion(
                   model,
