@@ -122,24 +122,64 @@ describe('SolfaGridEditor', () => {
       click(buttonWithText(view.host, 'Set pitch'));
       let soprano = view.current().parts.find((part) => part.id === 'S')!;
       expect(soprano.measures[0]!.notes[0]!.pitch).toBe('D4');
+      const beforeDurationResize = structuredClone(view.current());
 
       changeSelect(view.host, 'Duration in quarter-note units', '1.5');
       click(buttonWithText(view.host, 'Set duration'));
+      const afterDurationResize = structuredClone(view.current());
       soprano = view.current().parts.find((part) => part.id === 'S')!;
       expect(soprano.measures[0]!.notes.map((note) => note.dur)).toEqual([
         1.5, 0.5, 1, 1,
       ]);
 
       click(view.host.querySelector('button[aria-label="Undo edit"]'));
+      expect(view.current()).toEqual(beforeDurationResize);
       soprano = view.current().parts.find((part) => part.id === 'S')!;
       expect(soprano.measures[0]!.notes[0]!.pitch).toBe('D4');
       expect(soprano.measures[0]!.notes[0]!.dur).toBe(1);
 
       click(view.host.querySelector('button[aria-label="Redo edit"]'));
+      expect(view.current()).toEqual(afterDurationResize);
       soprano = view.current().parts.find((part) => part.id === 'S')!;
       expect(soprano.measures[0]!.notes[0]!.pitch).toBe('D4');
       expect(soprano.measures[0]!.notes[0]!.dur).toBe(1.5);
       expect(view.onChange).toHaveBeenCalledTimes(4);
+    } finally {
+      view.unmount();
+      view.host.remove();
+    }
+  });
+
+  it('keeps the last event selected when resizing moves it to an earlier grid cell', () => {
+    const view = mount();
+    try {
+      const lastEvent = view.host.querySelector<HTMLButtonElement>(
+        '[data-grid-cell="S:0:1:4:0:0"]'
+      );
+      expect(lastEvent?.getAttribute('aria-label')).toContain(
+        'beat 4, first half: f, duration 1 quarter-note units'
+      );
+      click(lastEvent);
+
+      changeSelect(view.host, 'Duration in quarter-note units', '1.5');
+      click(buttonWithText(view.host, 'Set duration'));
+
+      expect(
+        view
+          .current()
+          .parts.find((part) => part.id === 'S')!
+          .measures[0]!.notes.map((note) => note.dur)
+      ).toEqual([1, 1, 0.5, 1.5]);
+      expect(
+        view.host
+          .querySelector<HTMLButtonElement>('[data-grid-cell="S:0:1:3:1:0"]')
+          ?.getAttribute('aria-pressed')
+      ).toBe('true');
+      expect(
+        view.host
+          .querySelector<HTMLButtonElement>('[data-grid-cell="S:0:1:1:0:0"]')
+          ?.getAttribute('aria-pressed')
+      ).toBe('false');
     } finally {
       view.unmount();
       view.host.remove();

@@ -631,8 +631,22 @@ export function SolfaGridEditor({
                 type="button"
                 className="solfa-grid-editor__button"
                 onClick={() =>
-                  commit((current) =>
-                    setNoteDuration(current, selection, Number(durationValue))
+                  commit(
+                    (current) =>
+                      setNoteDuration(
+                        current,
+                        selection,
+                        Number(durationValue)
+                      ),
+                    (next) =>
+                      setSelection(
+                        solfaGridSelectionForNote(
+                          next,
+                          selection.partId,
+                          selection.barIndex,
+                          selectedCell.noteIndex
+                        )
+                      )
                   )
                 }
                 disabled={!canEdit}
