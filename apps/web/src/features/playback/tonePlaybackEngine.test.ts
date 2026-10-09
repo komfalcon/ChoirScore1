@@ -174,6 +174,51 @@ describe('TonePlaybackEngine', () => {
     expect(toneMock.transport.schedule).not.toHaveBeenCalled();
   });
 
+  it('schedules and starts playback when resumed before the initial sample load completes', async () => {
+    let resolveSamples!: () => void;
+    toneMock.loaded.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSamples = resolve;
+        })
+    );
+    const engine = new TonePlaybackEngine();
+    const pendingPlay = engine.play(score, settings);
+
+    await vi.waitFor(() => expect(toneMock.loaded).toHaveBeenCalledOnce());
+    engine.pause();
+    engine.resume();
+    resolveSamples();
+    await pendingPlay;
+
+    expect(toneMock.transport.schedule).toHaveBeenCalled();
+    expect(toneMock.transport.start).toHaveBeenCalledOnce();
+  });
+
+  it('waits for resume when the initial sample load completes while paused', async () => {
+    let resolveSamples!: () => void;
+    toneMock.loaded.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveSamples = resolve;
+        })
+    );
+    const engine = new TonePlaybackEngine();
+    const pendingPlay = engine.play(score, settings);
+
+    await vi.waitFor(() => expect(toneMock.loaded).toHaveBeenCalledOnce());
+    engine.pause();
+    resolveSamples();
+    await pendingPlay;
+
+    expect(toneMock.transport.schedule).toHaveBeenCalled();
+    expect(toneMock.transport.start).not.toHaveBeenCalled();
+
+    engine.resume();
+
+    expect(toneMock.transport.start).toHaveBeenCalledOnce();
+  });
+
   it('stops and releases Tone resources on disposal', async () => {
     const disposeContext = vi.fn();
     toneMock.getContext.mockReturnValue({ dispose: disposeContext });

@@ -16,21 +16,38 @@ export async function respondWithCachedSample(
 ) {
   if (!isVersionedPlaybackSample(request, origin)) return fetchImpl(request);
 
-  const cache = await cacheStorage.open(cacheName);
-  const cached = await cache.match(request);
-  if (cached) return cached;
-
+  let cache;
   try {
-    const response = await fetchImpl(request);
-    if (response.ok && response.type !== 'opaque') {
-      await cache.put(request, response.clone());
-    }
-    return response;
+    cache = await cacheStorage.open(cacheName);
+    const cached = await cache.match(request);
+    if (cached) return cached;
+  } catch {
+    // Cache Storage is an optimization; a failure must not block network playback.
+  }
+
+  let response;
+  try {
+    response = await fetchImpl(request);
   } catch (error) {
-    const cachedAfterFailure = await cache.match(request);
-    if (cachedAfterFailure) return cachedAfterFailure;
+    if (cache) {
+      try {
+        const cachedAfterFailure = await cache.match(request);
+        if (cachedAfterFailure) return cachedAfterFailure;
+      } catch {
+        // Preserve the network error when both the network and cache are unavailable.
+      }
+    }
     throw error;
   }
+
+  if (cache && response.ok && response.type !== 'opaque') {
+    try {
+      await cache.put(request, response.clone());
+    } catch {
+      // A cache write failure must not discard a successful network response.
+    }
+  }
+  return response;
 }
 
 export async function activatePlaybackSampleCache({
@@ -39,16 +56,6 @@ export async function activatePlaybackSampleCache({
   origin,
   cacheName = PLAYBACK_SAMPLE_CACHE_NAME,
 }) {
-  const existingCacheNames = await cacheStorage.keys();
-  await Promise.all(
-    existingCacheNames
-      .filter(
-        (name) =>
-          name.startsWith(PLAYBACK_SAMPLE_CACHE_PREFIX) && name !== cacheName
-      )
-      .map((name) => cacheStorage.delete(name))
-  );
-
   let currentSamplePaths;
   try {
     const manifestResponse = await fetchImpl(
@@ -70,6 +77,16 @@ export async function activatePlaybackSampleCache({
     // Offline activation still preserves valid cache entries; hashed URLs prevent stale content.
     return;
   }
+
+  const existingCacheNames = await cacheStorage.keys();
+  await Promise.all(
+    existingCacheNames
+      .filter(
+        (name) =>
+          name.startsWith(PLAYBACK_SAMPLE_CACHE_PREFIX) && name !== cacheName
+      )
+      .map((name) => cacheStorage.delete(name))
+  );
 
   const currentCache = await cacheStorage.open(cacheName);
   for (const request of await currentCache.keys()) {

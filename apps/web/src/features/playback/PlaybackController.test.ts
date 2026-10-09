@@ -193,6 +193,36 @@ describe('PlaybackController', () => {
     ]);
   });
 
+  it('resumes without invalidating the initial engine load', async () => {
+    const fixture = makeFixture();
+    let resolvePlay!: () => void;
+    vi.mocked(fixture.engine.play).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolvePlay = resolve;
+        })
+    );
+
+    const pendingPlay = fixture.controller.play();
+    expect(fixture.getState().status).toBe('loading');
+    fixture.controller.pause();
+    expect(fixture.getState().status).toBe('paused');
+    await fixture.controller.play();
+    expect(fixture.getState().status).toBe('playing');
+
+    resolvePlay();
+    await pendingPlay;
+
+    expect(fixture.engine.play).toHaveBeenCalledOnce();
+    expect(fixture.engine.pause).toHaveBeenCalledOnce();
+    expect(fixture.engine.resume).toHaveBeenCalledOnce();
+    expect(fixture.statusChanges.map(([status]) => status)).toEqual([
+      'loading',
+      'paused',
+      'playing',
+    ]);
+  });
+
   it('surfaces an audio failure through controlled error status', async () => {
     const fixture = makeFixture();
     vi.mocked(fixture.engine.play).mockRejectedValueOnce(
