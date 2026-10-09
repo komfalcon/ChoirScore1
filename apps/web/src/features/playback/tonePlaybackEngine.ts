@@ -27,6 +27,8 @@ export class TonePlaybackEngine {
   private clickSynth?: Tone.Synth;
   private scheduledIds: number[] = [];
   private playGeneration = 0;
+  private paused = false;
+  private playbackScheduled = false;
 
   async play(
     score: ScoreModel,
@@ -87,20 +89,24 @@ export class TonePlaybackEngine {
       }, plan.totalDurationSeconds + 0.05);
       this.scheduledIds.push(endId);
     }
-    Tone.Transport.start();
+    this.playbackScheduled = true;
+    if (!this.paused) Tone.Transport.start();
   }
 
   pause(): void {
-    this.playGeneration += 1;
+    this.paused = true;
     Tone.Transport.pause();
   }
 
   resume(): void {
-    Tone.Transport.start();
+    this.paused = false;
+    if (this.playbackScheduled) Tone.Transport.start();
   }
 
   stop(): void {
     this.playGeneration += 1;
+    this.paused = false;
+    this.playbackScheduled = false;
     Tone.Transport.stop();
     this.clearScheduledEvents();
   }

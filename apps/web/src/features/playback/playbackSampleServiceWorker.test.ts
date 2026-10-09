@@ -61,6 +61,39 @@ describe('playback sample service worker', () => {
     expect(fetchOffline).not.toHaveBeenCalled();
   });
 
+  it.each(['open', 'match', 'put'] as const)(
+    'returns the network response when Cache Storage %s fails',
+    async (failure) => {
+      const { cacheStorage } = makeCacheStorage();
+      const cache = await cacheStorage.open(PLAYBACK_SAMPLE_CACHE_NAME);
+      if (failure === 'open') {
+        vi.mocked(cacheStorage.open).mockRejectedValueOnce(
+          new Error('Cache Storage unavailable.')
+        );
+      } else if (failure === 'match') {
+        vi.spyOn(cache, 'match').mockRejectedValueOnce(
+          new Error('Cache match failed.')
+        );
+      } else {
+        vi.spyOn(cache, 'put').mockRejectedValueOnce(
+          new Error('Cache write failed.')
+        );
+      }
+
+      const fetchImpl: typeof fetch = vi.fn(
+        async () => new Response('network sample bytes', { status: 200 })
+      );
+      const response = await respondWithCachedSample(new Request(C3_SAMPLE), {
+        cacheStorage,
+        fetchImpl,
+        origin: ORIGIN,
+      });
+
+      expect(await response.text()).toBe('network sample bytes');
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    }
+  );
+
   it('matches only same-origin, versioned public sample paths and bypasses API/private scores', async () => {
     const { cacheStorage, open } = makeCacheStorage();
     const fetchImpl: typeof fetch = vi.fn(
@@ -151,5 +184,32 @@ describe('playback sample service worker', () => {
       ...(entries.get(PLAYBACK_SAMPLE_CACHE_NAME)?.keys() ?? []),
     ];
     expect(remaining).toEqual([C4_SAMPLE]);
+  });
+
+  it('preserves existing playback caches when an offline activation cannot fetch the manifest', async () => {
+    const { cacheStorage, entries } = makeCacheStorage();
+    const previousCacheName = `${PLAYBACK_SAMPLE_CACHE_PREFIX}v0`;
+    const previousCache = await cacheStorage.open(previousCacheName);
+    await previousCache.put(new Request(C3_SAMPLE), new Response('cached c3'));
+    const currentCache = await cacheStorage.open(PLAYBACK_SAMPLE_CACHE_NAME);
+    await currentCache.put(new Request(C4_SAMPLE), new Response('cached c4'));
+    const fetchImpl: typeof fetch = vi.fn(async () => {
+      throw new Error('Network unavailable.');
+    });
+
+    await activatePlaybackSampleCache({
+      cacheStorage,
+      fetchImpl,
+      origin: ORIGIN,
+    });
+
+    expect(entries.has(previousCacheName)).toBe(true);
+    expect(
+      await (await previousCache.match(new Request(C3_SAMPLE)))?.text()
+    ).toBe('cached c3');
+    expect(
+      await (await currentCache.match(new Request(C4_SAMPLE)))?.text()
+    ).toBe('cached c4');
+    expect(fetchImpl).toHaveBeenCalledOnce();
   });
 });
