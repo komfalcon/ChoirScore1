@@ -7,6 +7,9 @@ const toneMock = vi.hoisted(() => ({
   loaded: vi.fn(() => Promise.resolve()),
   sampler: vi.fn(),
   synth: vi.fn(),
+  setContext: vi.fn(),
+  getContext: vi.fn(() => ({ dispose: vi.fn() })),
+  getTransport: vi.fn(),
   transport: {
     start: vi.fn(),
     stop: vi.fn(),
@@ -27,10 +30,15 @@ vi.mock('tone', () => ({
   loaded: toneMock.loaded,
   Sampler: toneMock.sampler,
   Synth: toneMock.synth,
-  Transport: toneMock.transport,
+  setContext: toneMock.setContext,
+  getContext: toneMock.getContext,
+  getTransport: toneMock.getTransport,
 }));
 
-import { TonePlaybackEngine } from './tonePlaybackEngine';
+import {
+  configureToneAudioContext,
+  TonePlaybackEngine,
+} from './tonePlaybackEngine';
 
 const score = scoreModelSchema.parse({
   title: 'Tone engine fixture',
@@ -77,6 +85,8 @@ describe('TonePlaybackEngine', () => {
     toneMock.transport.position = 0;
     toneMock.transport.bpm.value = 120;
     toneMock.transport.loop = false;
+    toneMock.getTransport.mockReturnValue(toneMock.transport);
+    toneMock.getContext.mockReturnValue({ dispose: vi.fn() });
     installRuntimeMocks();
   });
 
@@ -87,6 +97,14 @@ describe('TonePlaybackEngine', () => {
     expect(toneMock.loaded).not.toHaveBeenCalled();
     expect(toneMock.sampler).not.toHaveBeenCalled();
     expect(toneMock.synth).not.toHaveBeenCalled();
+  });
+
+  it('uses the context resumed from the explicit Play gesture', () => {
+    const context = {} as AudioContext;
+
+    configureToneAudioContext(context);
+
+    expect(toneMock.setContext).toHaveBeenCalledWith(context, true);
   });
 
   it('initializes and fetches the local sample bank only after explicit Play', async () => {
@@ -154,5 +172,17 @@ describe('TonePlaybackEngine', () => {
 
     expect(toneMock.transport.start).not.toHaveBeenCalled();
     expect(toneMock.transport.schedule).not.toHaveBeenCalled();
+  });
+
+  it('stops and releases Tone resources on disposal', async () => {
+    const disposeContext = vi.fn();
+    toneMock.getContext.mockReturnValue({ dispose: disposeContext });
+    const engine = new TonePlaybackEngine();
+    await engine.play(score, settings);
+
+    engine.dispose();
+
+    expect(toneMock.transport.stop).toHaveBeenCalled();
+    expect(disposeContext).toHaveBeenCalledOnce();
   });
 });

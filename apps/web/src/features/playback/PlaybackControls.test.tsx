@@ -253,4 +253,15 @@ describe('PlaybackControls', () => {
       findControl(tree, 'button', 'aria-label', 'Retry playback').props.disabled
     ).toBe(false);
   });
+
+  it('keeps Stop enabled while samples are loading so Play can be cancelled', () => {
+    const tree = PlaybackControls(makeProps({ status: 'loading' }));
+
+    expect(
+      findControl(tree, 'button', 'aria-label', 'Stop playback').props.disabled
+    ).toBe(false);
+    expect(
+      findControl(tree, 'button', 'aria-label', 'Play').props.disabled
+    ).toBe(true);
+  });
 });

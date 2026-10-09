@@ -114,7 +114,7 @@ export function PlaybackControls({
         : 'Play';
   const isPlaying = status === 'playing';
   const isLoading = status === 'loading';
-  const canStop = status !== 'idle' && status !== 'loading';
+  const canStop = status !== 'idle';
   const safeMeasureCount = Number.isFinite(measureCount)
     ? Math.max(0, Math.floor(measureCount))
     : 0;

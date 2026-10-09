@@ -215,6 +215,9 @@
     align-items: stretch;
     flex-direction: column;
   }
+  .playback-controls__tempo {
+    flex: initial;
+  }
   .playback-controls__transport {
     width: 100%;
   }

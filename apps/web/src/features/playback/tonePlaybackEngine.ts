@@ -16,6 +16,11 @@ export interface TonePlaybackCallbacks {
   onEnded?: () => void;
 }
 
+/** Use the AudioContext resumed synchronously from the Play gesture. */
+export function configureToneAudioContext(context: AudioContext): void {
+  Tone.setContext(context, true);
+}
+
 /**
  * Tone-backed playback adapter. Construction is silent: the sampler is created
  * and its local samples are fetched only after `play()` is called by an
@@ -44,17 +49,18 @@ export class TonePlaybackEngine {
 
     const plan = createPlaybackPlan(score, settings);
     this.clearScheduledEvents();
-    Tone.Transport.stop();
-    Tone.Transport.position = 0;
-    Tone.Transport.bpm.value = plan.tempoBpm;
-    Tone.Transport.loop = plan.loop !== null;
+    const transport = Tone.getTransport();
+    transport.stop();
+    transport.position = 0;
+    transport.bpm.value = plan.tempoBpm;
+    transport.loop = plan.loop !== null;
     if (plan.loop) {
-      Tone.Transport.loopStart = plan.loop.startSeconds;
-      Tone.Transport.loopEnd = plan.loop.endSeconds;
+      transport.loopStart = plan.loop.startSeconds;
+      transport.loopEnd = plan.loop.endSeconds;
     }
 
     for (const click of plan.countInClicks) {
-      const id = Tone.Transport.schedule((time) => {
+      const id = transport.schedule((time) => {
         this.clickSynth?.triggerAttackRelease(
           'C6',
           '32n',
@@ -69,7 +75,7 @@ export class TonePlaybackEngine {
     for (const note of plan.notes) {
       const gain = getEffectivePartGain(note.partId, mix);
       if (gain <= 0) continue;
-      const id = Tone.Transport.schedule((time) => {
+      const id = transport.schedule((time) => {
         this.sampler?.triggerAttackRelease(
           note.pitch,
           note.durationSeconds,
@@ -81,28 +87,38 @@ export class TonePlaybackEngine {
     }
 
     if (!plan.loop) {
-      const endId = Tone.Transport.scheduleOnce(() => {
+      const endId = transport.scheduleOnce(() => {
         this.stop();
         callbacks.onEnded?.();
       }, plan.totalDurationSeconds + 0.05);
       this.scheduledIds.push(endId);
     }
-    Tone.Transport.start();
+    transport.start();
   }
 
   pause(): void {
     this.playGeneration += 1;
-    Tone.Transport.pause();
+    Tone.getTransport().pause();
   }
 
   resume(): void {
-    Tone.Transport.start();
+    Tone.getTransport().start();
   }
 
   stop(): void {
     this.playGeneration += 1;
-    Tone.Transport.stop();
+    Tone.getTransport().stop();
     this.clearScheduledEvents();
+  }
+
+  dispose(): void {
+    this.stop();
+    this.sampler?.dispose();
+    this.clickSynth?.dispose();
+    this.sampler = undefined;
+    this.clickSynth = undefined;
+    this.samplerLoad = undefined;
+    Tone.getContext().dispose();
   }
 
   private async ensureSamplesLoaded(): Promise<void> {
@@ -135,7 +151,8 @@ export class TonePlaybackEngine {
   }
 
   private clearScheduledEvents(): void {
-    for (const id of this.scheduledIds) Tone.Transport.clear(id);
+    const transport = Tone.getTransport();
+    for (const id of this.scheduledIds) transport.clear(id);
     this.scheduledIds = [];
   }
 }

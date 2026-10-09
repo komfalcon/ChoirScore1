@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { OpenSheetMusicDisplay } from 'opensheetmusicdisplay';
 import { Link, useParams } from 'react-router-dom';
 import { AppHeader } from '../components/AppHeader';
+import { ScorePlaybackPanel } from '../features/playback/ScorePlaybackPanel';
 import {
   ScoreViewerStatePanel,
   type ScoreViewerState,
@@ -13,6 +14,7 @@ import {
   patchScoreMetadata,
   toScoreUiError,
 } from '../lib/scoreApi';
+import { useAuth } from '../lib/auth';
 
 function ScoreNotation({
   musicXml,
@@ -188,6 +190,7 @@ type WorkspaceProps = {
   metadataNotice: string;
   onSaveMetadata: (metadata: ScoreMetadataDraft) => Promise<boolean>;
   onClearMetadataMessage: () => void;
+  profileVoicePart?: string | null;
 };
 
 export function StaffViewerWorkspace({
@@ -201,6 +204,7 @@ export function StaffViewerWorkspace({
   metadataNotice,
   onSaveMetadata,
   onClearMetadataMessage,
+  profileVoicePart = null,
 }: WorkspaceProps) {
   const [metadataEditorOpen, setMetadataEditorOpen] = useState(false);
   const score = state.status === 'ready' ? state.response.score : null;
@@ -273,6 +277,11 @@ export function StaffViewerWorkspace({
               onCancel={() => setMetadataEditorOpen(false)}
             />
           ) : null}
+          <ScorePlaybackPanel
+            key={`${score.id}:${score.currentVersionId}`}
+            score={score.model}
+            profileVoicePart={profileVoicePart}
+          />
           <section
             className="staff-viewport"
             aria-labelledby="staff-viewport-title"
@@ -307,7 +316,7 @@ export function StaffViewerWorkspace({
             </p>
           ) : null}
           <p className="viewer-contract-note">
-            Sol-fa, playback, editing, and AI remain outside this M2 UI pass.
+            Sol-fa, score editing, and AI features are not available here yet.
           </p>
         </>
       ) : null}
@@ -317,6 +326,7 @@ export function StaffViewerWorkspace({
 
 export function ScoreViewPage() {
   const { id } = useParams();
+  const { user } = useAuth();
   const [state, setState] = useState<ScoreViewerState>({ status: 'loading' });
   const [revision, setRevision] = useState(0);
   const [downloading, setDownloading] = useState(false);
@@ -424,6 +434,7 @@ export function ScoreViewPage() {
           setMetadataError('');
           setMetadataNotice('');
         }}
+        profileVoicePart={user?.voicePart ?? null}
       />
     </div>
   );
