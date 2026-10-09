@@ -26,6 +26,7 @@ export class TonePlaybackEngine {
   private samplerLoad?: Promise<void>;
   private clickSynth?: Tone.Synth;
   private scheduledIds: number[] = [];
+  private playGeneration = 0;
 
   async play(
     score: ScoreModel,
@@ -35,8 +36,11 @@ export class TonePlaybackEngine {
     // Invoke Tone.start before the first await so it remains tied to the Play gesture.
     const audioStarted = Tone.start();
     this.stop();
+    const playGeneration = this.playGeneration;
     await audioStarted;
+    if (playGeneration !== this.playGeneration) return;
     await this.ensureSamplesLoaded();
+    if (playGeneration !== this.playGeneration) return;
 
     const plan = createPlaybackPlan(score, settings);
     this.clearScheduledEvents();
@@ -87,6 +91,7 @@ export class TonePlaybackEngine {
   }
 
   pause(): void {
+    this.playGeneration += 1;
     Tone.Transport.pause();
   }
 
@@ -95,6 +100,7 @@ export class TonePlaybackEngine {
   }
 
   stop(): void {
+    this.playGeneration += 1;
     Tone.Transport.stop();
     this.clearScheduledEvents();
   }

@@ -1,9 +1,7 @@
 import type { ScoreModel } from '@choirscore/shared';
 import {
-  COUNT_IN_CHOICES,
   clampPartVolume,
   clampTempoPercent,
-  type CountInBeats,
   type PlaybackSettings,
 } from './playbackCore';
 import {
@@ -34,7 +32,7 @@ export interface PlaybackControllerHost {
     error?: string
   ) => void;
   onTempoChange: (tempoPercent: number) => void;
-  onCountInChange: (countInBeats: CountInBeats) => void;
+  onCountInChange: PlaybackControlsCallbacks['onCountInChange'];
   onLoopChange: PlaybackControlsCallbacks['onLoopChange'];
   onPartSettingsPatch: PlaybackControlsCallbacks['onPartSettingsPatch'];
 }
@@ -46,6 +44,7 @@ export interface PlaybackControllerHost {
  */
 export class PlaybackController {
   readonly callbacks: PlaybackControlsCallbacks;
+  private playRequestId = 0;
 
   constructor(
     private readonly host: PlaybackControllerHost,
@@ -57,8 +56,7 @@ export class PlaybackController {
       onStop: () => this.stop(),
       onTempoChange: (tempoPercent) =>
         this.host.onTempoChange(clampTempoPercent(tempoPercent)),
-      onCountInChange: (countInBeats) =>
-        this.host.onCountInChange(this.normalizeCountIn(countInBeats)),
+      onCountInChange: (countIn) => this.host.onCountInChange(countIn === true),
       onLoopChange: (range) => this.host.onLoopChange(range),
       onPartSettingsPatch: (partId, patch) =>
         this.patchPartSettings(partId, patch),
@@ -73,11 +71,13 @@ export class PlaybackController {
 
   async play(): Promise<void> {
     if (this.host.getState().status === 'paused') {
+      this.playRequestId += 1;
       this.engine.resume();
       this.host.onStatusChange('playing');
       return;
     }
 
+    const playRequestId = ++this.playRequestId;
     this.host.onStatusChange('loading');
     try {
       const currentState = this.host.getState();
@@ -86,8 +86,10 @@ export class PlaybackController {
         playbackSettingsFromControls(currentState),
         { onEnded: () => this.host.onStatusChange('idle') }
       );
+      if (playRequestId !== this.playRequestId) return;
       this.host.onStatusChange('playing');
     } catch (error) {
+      if (playRequestId !== this.playRequestId) return;
       this.host.onStatusChange(
         'error',
         error instanceof Error
@@ -98,17 +100,15 @@ export class PlaybackController {
   }
 
   pause(): void {
+    this.playRequestId += 1;
     this.engine.pause();
     this.host.onStatusChange('paused');
   }
 
   stop(): void {
+    this.playRequestId += 1;
     this.engine.stop();
     this.host.onStatusChange('idle');
-  }
-
-  private normalizeCountIn(value: CountInBeats): CountInBeats {
-    return COUNT_IN_CHOICES.includes(value) ? value : 0;
   }
 
   private patchPartSettings(partId: string, patch: PartSettingsPatch): void {

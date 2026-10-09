@@ -1,0 +1,23 @@
+name: Playback sample budget
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  playback-sample-budget:
+    name: Enforce total playback audio budget
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build shared package
+        run: npm run build --workspace @choirscore/shared
+      - name: Build web app and versioned sample assets
+        run: npm run build --workspace @choirscore/web
+      - name: Check total shipped playback sample bytes
+        run: npm run check:playback-sample-budget -- --built
