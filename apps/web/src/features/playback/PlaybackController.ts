@@ -71,7 +71,6 @@ export class PlaybackController {
 
   async play(): Promise<void> {
     if (this.host.getState().status === 'paused') {
-      this.playRequestId += 1;
       this.engine.resume();
       this.host.onStatusChange('playing');
       return;
@@ -86,10 +85,20 @@ export class PlaybackController {
         playbackSettingsFromControls(currentState),
         { onEnded: () => this.host.onStatusChange('idle') }
       );
-      if (playRequestId !== this.playRequestId) return;
+      if (
+        playRequestId !== this.playRequestId ||
+        this.host.getState().status !== 'loading'
+      ) {
+        return;
+      }
       this.host.onStatusChange('playing');
     } catch (error) {
-      if (playRequestId !== this.playRequestId) return;
+      if (
+        playRequestId !== this.playRequestId ||
+        this.host.getState().status === 'idle'
+      ) {
+        return;
+      }
       this.host.onStatusChange(
         'error',
         error instanceof Error
@@ -100,7 +109,6 @@ export class PlaybackController {
   }
 
   pause(): void {
-    this.playRequestId += 1;
     this.engine.pause();
     this.host.onStatusChange('paused');
   }
