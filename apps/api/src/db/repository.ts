@@ -101,7 +101,11 @@ export type ScoreMutationResult =
 export type ScoreCreationResult =
   { status: 'created' } | { status: 'forbidden' };
 export type ScoreVersionCreationResult =
-  { status: 'created' } | { status: 'not_found' } | { status: 'forbidden' };
+  | { status: 'created' }
+  | { status: 'not_found' }
+  | { status: 'forbidden' }
+  | { status: 'no_changes' }
+  | { status: 'stale_version' };
 
 export type ScorePatch = Partial<
   Pick<ScoreRecord, 'title' | 'composer' | 'visibility' | 'updatedAt'>
@@ -162,7 +166,8 @@ export interface ApiRepository extends RepositoryTransaction {
     version: ScoreVersionRecord,
     updatedAt: string,
     actorId: string,
-    audit?: AuditInput
+    audit?: AuditInput,
+    noOpGuard?: { currentVersionId: string }
   ): Promise<ScoreVersionCreationResult>;
   close(): void;
 }
@@ -814,7 +819,8 @@ class DrizzleApiRepository implements ApiRepository {
     version: ScoreVersionRecord,
     updatedAt: string,
     actorId: string,
-    audit?: AuditInput
+    audit?: AuditInput,
+    noOpGuard?: { currentVersionId: string }
   ): Promise<ScoreVersionCreationResult> {
     return this.db.transaction(async (tx) => {
       const authorization = await scoreWriteAuthorization(
@@ -824,6 +830,14 @@ class DrizzleApiRepository implements ApiRepository {
       );
       if (!authorization) return { status: 'not_found' };
       if (!authorization.canEdit) return { status: 'forbidden' };
+      if (noOpGuard) {
+        if (
+          authorization.score.currentVersionId !== noOpGuard.currentVersionId
+        ) {
+          return { status: 'stale_version' };
+        }
+        return { status: 'no_changes' };
+      }
 
       await tx.insert(scoreVersions).values(version).run();
       await tx

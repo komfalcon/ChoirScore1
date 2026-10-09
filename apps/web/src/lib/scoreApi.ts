@@ -1,12 +1,16 @@
 import {
+  createScoreVersionRequestSchema,
+  createScoreVersionResponseSchema,
   patchScoreRequestSchema,
   patchScoreResponseSchema,
   scoreListFiltersSchema,
   type ApiErrorResponse,
+  type CreateScoreVersionResponse,
   type PatchScoreRequest,
   type PatchScoreResponse,
   type ScoreImportResult,
   type ScoreLibraryResponse,
+  type ScoreModel,
   type ScoreVisibility,
 } from '@choirscore/shared';
 import { ApiError, apiFetch } from './apiClient';
@@ -110,6 +114,28 @@ export async function patchScoreMetadata(
   });
   return parseResponse(
     patchScoreResponseSchema.parse,
+    await readJson(response)
+  );
+}
+
+export async function createScoreVersion(
+  id: string,
+  model: ScoreModel,
+  note: string,
+  signal?: AbortSignal
+): Promise<CreateScoreVersionResponse> {
+  const request = createScoreVersionRequestSchema.parse({ model, note });
+  const response = await apiFetch(
+    `/scores/${encodeURIComponent(id)}/versions`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+      signal,
+    }
+  );
+  return parseResponse(
+    createScoreVersionResponseSchema.parse,
     await readJson(response)
   );
 }

@@ -1,7 +1,24 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FormEvent,
+} from 'react';
 import type { OpenSheetMusicDisplay } from 'opensheetmusicdisplay';
 import { Link, useParams } from 'react-router-dom';
+import {
+  scoreKeyTonicName,
+  type FitSuggestion,
+  type ScoreModel,
+  type VoicePart,
+  type VoicePartRanges,
+} from '@choirscore/shared';
 import { AppHeader } from '../components/AppHeader';
+import {
+  TranspositionRangeFitPanel,
+  type FitScope,
+} from '../features/editor/TranspositionRangeFitPanel';
 import { ScorePlaybackPanel } from '../features/playback/ScorePlaybackPanel';
 import { useAuth } from '../lib/auth';
 import {
@@ -15,12 +32,14 @@ import {
 } from '../features/viewer/ScoreViewerState';
 import { SolfaScore } from '../features/solfa/SolfaScore';
 import {
+  createScoreVersion,
   exportScoreMusicXml,
   getScoreDetail,
   isScoreRequestAborted,
   patchScoreMetadata,
   toScoreUiError,
 } from '../lib/scoreApi';
+import { getVoiceRanges } from '../lib/settingsApi';
 
 function ScoreNotation({
   musicXml,
@@ -101,6 +120,11 @@ function ScoreNotation({
 }
 
 type ScoreMetadataDraft = { title: string; composer: string | null };
+
+type VoiceRangesState =
+  | { status: 'loading' }
+  | { status: 'error'; message: string }
+  | { status: 'ready'; ranges: VoicePartRanges };
 
 function ScoreMetadataEditor({
   title: initialTitle,
@@ -197,7 +221,20 @@ type WorkspaceProps = {
   metadataNotice: string;
   onSaveMetadata: (metadata: ScoreMetadataDraft) => Promise<boolean>;
   onClearMetadataMessage: () => void;
-  profileVoicePart?: string | null;
+  profileVoicePart?: VoicePart | null;
+  voiceRangesState?: VoiceRangesState;
+  onRetryVoiceRanges?: () => void;
+  rangeFitPanelOpen?: boolean;
+  onOpenRangeFit?: () => void;
+  onCancelRangeFit?: () => void;
+  applyingVersion?: boolean;
+  applyVersionError?: string;
+  versionNotice?: string;
+  onApplyTransposition?: (
+    model: ScoreModel,
+    suggestion: FitSuggestion,
+    scope: FitScope
+  ) => void | Promise<void>;
 };
 
 export function StaffViewerWorkspace({
@@ -213,7 +250,21 @@ export function StaffViewerWorkspace({
   onSaveMetadata,
   onClearMetadataMessage,
   profileVoicePart = null,
+  voiceRangesState = { status: 'loading' },
+  onRetryVoiceRanges = () => undefined,
+  rangeFitPanelOpen = false,
+  onOpenRangeFit = () => undefined,
+  onCancelRangeFit = () => undefined,
+  applyingVersion = false,
+  applyVersionError = '',
+  versionNotice = '',
+  onApplyTransposition = () => undefined,
 }: WorkspaceProps) {
+  const rangeFitWorkflowRef = useRef<HTMLElement>(null);
+  const rangeFitOpenerRef = useRef<HTMLButtonElement>(null);
+  const versionNoticeRef = useRef<HTMLParagraphElement>(null);
+  const previousRangeFitPanelOpen = useRef(rangeFitPanelOpen);
+  const previousApplyingVersion = useRef(applyingVersion);
   const [metadataEditorOpen, setMetadataEditorOpen] = useState(false);
   const [notationModeState, setNotationModeState] = useState<{
     userId: string | null;
@@ -223,6 +274,23 @@ export function StaffViewerWorkspace({
     notationModeState.userId === userId
       ? notationModeState.mode
       : loadNotationMode(userId);
+  useLayoutEffect(() => {
+    const wasOpen = previousRangeFitPanelOpen.current;
+    const wasApplying = previousApplyingVersion.current;
+    if (rangeFitPanelOpen && !wasOpen) {
+      rangeFitWorkflowRef.current?.focus();
+    } else if (!rangeFitPanelOpen && wasOpen) {
+      if (versionNotice) {
+        versionNoticeRef.current?.focus();
+      } else {
+        rangeFitOpenerRef.current?.focus();
+      }
+    } else if (rangeFitPanelOpen && applyingVersion && !wasApplying) {
+      rangeFitWorkflowRef.current?.focus();
+    }
+    previousRangeFitPanelOpen.current = rangeFitPanelOpen;
+    previousApplyingVersion.current = applyingVersion;
+  }, [applyingVersion, rangeFitPanelOpen, versionNotice]);
   function changeNotationMode(mode: NotationMode) {
     saveNotationMode(userId, mode);
     setNotationModeState({ userId, mode });
@@ -323,6 +391,67 @@ export function StaffViewerWorkspace({
             score={score.model}
             profileVoicePart={profileVoicePart}
           />
+          {score.canEdit && score.canEditContent ? (
+            <section
+              ref={rangeFitWorkflowRef}
+              className="score-range-fit-workflow"
+              aria-label="Transpose and fit score to voice ranges"
+              tabIndex={rangeFitPanelOpen ? -1 : undefined}
+            >
+              {versionNotice ? (
+                <p
+                  ref={versionNoticeRef}
+                  className="score-metadata-notice"
+                  role="status"
+                  tabIndex={-1}
+                >
+                  {versionNotice}
+                </p>
+              ) : null}
+              {!rangeFitPanelOpen ? (
+                <button
+                  ref={rangeFitOpenerRef}
+                  className="button button--quiet"
+                  type="button"
+                  onClick={onOpenRangeFit}
+                >
+                  Find a comfortable key
+                </button>
+              ) : voiceRangesState.status === 'loading' ? (
+                <p className="score-data-state" role="status" aria-busy="true">
+                  Loading your saved voice ranges…
+                </p>
+              ) : voiceRangesState.status === 'error' ? (
+                <div className="score-data-state score-data-state--error">
+                  <p role="alert">{voiceRangesState.message}</p>
+                  <button
+                    className="button button--quiet"
+                    type="button"
+                    onClick={onRetryVoiceRanges}
+                  >
+                    Retry voice-range loading
+                  </button>
+                  <button
+                    className="button button--quiet"
+                    type="button"
+                    onClick={onCancelRangeFit}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <TranspositionRangeFitPanel
+                  model={score.model}
+                  voiceRanges={voiceRangesState.ranges}
+                  profileVoicePart={profileVoicePart}
+                  applying={applyingVersion}
+                  applyError={applyVersionError}
+                  onApply={onApplyTransposition}
+                  onCancel={onCancelRangeFit}
+                />
+              )}
+            </section>
+          ) : null}
           {notationMode === 'solfa' ? (
             <SolfaScore
               model={score.model}
@@ -367,7 +496,8 @@ export function StaffViewerWorkspace({
             </p>
           ) : null}
           <p className="viewer-contract-note">
-            Score editing and AI features are not available here yet.
+            Content changes are saved as separate score versions. AI features
+            are not available here yet.
           </p>
         </>
       ) : null}
@@ -380,6 +510,15 @@ export function ScoreViewPage() {
   const { user } = useAuth();
   const [state, setState] = useState<ScoreViewerState>({ status: 'loading' });
   const [revision, setRevision] = useState(0);
+  const [voiceRangesRevision, setVoiceRangesRevision] = useState(0);
+  const [voiceRangesState, setVoiceRangesState] = useState<VoiceRangesState>({
+    status: 'loading',
+  });
+  const [rangeFitPanelOpen, setRangeFitPanelOpen] = useState(false);
+  const [applyingVersion, setApplyingVersion] = useState(false);
+  const [applyVersionError, setApplyVersionError] = useState('');
+  const [versionNotice, setVersionNotice] = useState('');
+  const applyingVersionRef = useRef(false);
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState('');
   const [metadataSaving, setMetadataSaving] = useState(false);
@@ -391,6 +530,9 @@ export function ScoreViewPage() {
     setState({ status: 'loading' });
     setMetadataError('');
     setMetadataNotice('');
+    setRangeFitPanelOpen(false);
+    setApplyVersionError('');
+    setVersionNotice('');
     if (!id) {
       setState({
         status: 'error',
@@ -407,6 +549,27 @@ export function ScoreViewPage() {
       });
     return () => controller.abort();
   }, [id, revision]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setVoiceRangesState({ status: 'loading' });
+    void getVoiceRanges(controller.signal)
+      .then((ranges) => {
+        if (!controller.signal.aborted) {
+          setVoiceRangesState({ status: 'ready', ranges });
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setVoiceRangesState({
+            status: 'error',
+            message:
+              'Your saved voice ranges could not be loaded. Please retry.',
+          });
+        }
+      });
+    return () => controller.abort();
+  }, [user?.id, voiceRangesRevision]);
 
   async function downloadMusicXml() {
     if (!id || downloading) return;
@@ -468,6 +631,41 @@ export function ScoreViewPage() {
     }
   }
 
+  async function applyTransposition(
+    model: ScoreModel,
+    suggestion: FitSuggestion,
+    scope: FitScope
+  ) {
+    if (!id || state.status !== 'ready' || applyingVersionRef.current) return;
+    applyingVersionRef.current = true;
+    setApplyingVersion(true);
+    setApplyVersionError('');
+    setVersionNotice('');
+    const scopeNote = scope.partId ? ` for part ${scope.partId}` : '';
+    try {
+      const created = await createScoreVersion(
+        id,
+        model,
+        `Range-fit transposition to ${scoreKeyTonicName(suggestion.key)}${scopeNote}`
+      );
+      setRangeFitPanelOpen(false);
+      setVersionNotice('A new transposed score version was saved.');
+      try {
+        const refreshed = await getScoreDetail(id);
+        setState({ status: 'ready', response: refreshed });
+      } catch {
+        setVersionNotice(
+          `New version ${created.versionId} was saved, but the updated score could not be reloaded. Refresh the page to view it.`
+        );
+      }
+    } catch (error) {
+      setApplyVersionError(toScoreUiError(error).message);
+    } finally {
+      applyingVersionRef.current = false;
+      setApplyingVersion(false);
+    }
+  }
+
   return (
     <div className="app-page">
       <AppHeader />
@@ -487,6 +685,21 @@ export function ScoreViewPage() {
           setMetadataNotice('');
         }}
         profileVoicePart={user?.voicePart ?? null}
+        voiceRangesState={voiceRangesState}
+        onRetryVoiceRanges={() =>
+          setVoiceRangesRevision((current) => current + 1)
+        }
+        rangeFitPanelOpen={rangeFitPanelOpen}
+        onOpenRangeFit={() => {
+          setApplyVersionError('');
+          setVersionNotice('');
+          setRangeFitPanelOpen(true);
+        }}
+        onCancelRangeFit={() => setRangeFitPanelOpen(false)}
+        applyingVersion={applyingVersion}
+        applyVersionError={applyVersionError}
+        versionNotice={versionNotice}
+        onApplyTransposition={applyTransposition}
       />
     </div>
   );

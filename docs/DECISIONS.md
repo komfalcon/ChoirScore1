@@ -38,3 +38,11 @@
 ## M2b test environment
 
 - **jsdom dev dependency:** Add `jsdom` only to the web workspace’s devDependencies because the integrated M2b MusicXML-to-viewer acceptance test is marked `@vitest-environment jsdom` and requires browser DOM APIs; it is not a production dependency or shipped runtime code.
+
+## M4: transposition and range-fit clarifications
+
+- Transposed pitches prefer a spelling matching the resulting global or explicit measure key. When the conventional interval spelling exceeds the model's double-accidental limit, use an equivalent bounded spelling; reject only if no supported spelling exists.
+- A note outside the comfortable range but inside the hard range costs 1 point. A note outside the hard range costs 5 points total: since it is already counted outside comfortable, add only 4 extra points rather than adding a separate 5-point surcharge.
+- `perPart` results use a null-prototype record so every valid part ID, including `__proto__`, is stored as an ordinary own key.
+- Persisted range profiles always use canonical S/A/T/B keys. The M4 boundary maps actual model part IDs only through an exact canonical ID or exact case-insensitive canonical name (so MusicXML P1–P4 use their names); missing, conflicting, duplicate, or unrecognized identities make fit unavailable. Member `voicePart` is resolved to an actual score-part ID, and that ID remains the scope key through Apply.
+- Manual target-key selection and note-level preview are local and source-immutable. Out-of-range preview notes are red and carry text/accessible range-status labels; Apply is the only path that sends a fresh transposed model to its caller.

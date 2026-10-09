@@ -292,11 +292,13 @@ describe('M2 score API routes', () => {
     );
     expect(editableDetail.body.score.canEdit).toBe(true);
     expect(editableDetail.body.score.canEditContent).toBe(true);
+    const editedModel = structuredClone(editableDetail.body.score.model);
+    editedModel.parts[0].measures[0].notes[0].pitch = 'D4';
     const recipientVersion = await asActor(
       request(app).post(`/scores/${id}/versions`),
       actors.recipient,
       true
-    ).send({ model: editableDetail.body.score.model, note: 'Recipient edit' });
+    ).send({ model: editedModel, note: 'Recipient edit' });
     expect(recipientVersion.status).toBe(201);
 
     const privateAgain = await asActor(
@@ -842,8 +844,138 @@ describe('M2 score API routes', () => {
       actors.owner,
       true
     ).send({ model: detail.body.score.model, note: 'Unchanged source' });
-    expect(unchanged.status).toBe(201);
-    expect(unchanged.body.score.canEditContent).toBe(false);
+    expect(unchanged.status).toBe(409);
+    expect(unchanged.body.error.code).toBe('NO_CHANGES');
+    const unchangedDetail = await asActor(
+      request(app).get(`/scores/${id}`),
+      actors.owner
+    );
+    expect(unchangedDetail.body.score.currentVersionId).toBe(
+      detail.body.score.currentVersionId
+    );
+  });
+
+  it('rejects a same-key, unchanged version request without posting a stored version', async () => {
+    const created = await asActor(
+      request(app).post('/scores'),
+      actors.owner,
+      true
+    ).send({ model: MODEL });
+    expect(created.status).toBe(201);
+    const id = created.body.score.id as string;
+    const detail = await asActor(
+      request(app).get(`/scores/${id}`),
+      actors.owner
+    );
+    expect(detail.status).toBe(200);
+    const initialVersionId = detail.body.score.currentVersionId as string;
+    const createVersion = vi.spyOn(repository, 'createScoreVersion');
+
+    const noOp = await asActor(
+      request(app).post(`/scores/${id}/versions`),
+      actors.owner,
+      true
+    ).send({
+      model: detail.body.score.model,
+      note: 'Range-fit transposition to C major',
+    });
+
+    expect(noOp.status).toBe(409);
+    expect(noOp.body.error).toEqual({
+      code: 'NO_CHANGES',
+      message: 'The submitted score has no musical changes to save.',
+    });
+    expect(createVersion).toHaveBeenCalledTimes(1);
+    expect(createVersion.mock.calls[0]?.[4]).toEqual({
+      currentVersionId: initialVersionId,
+    });
+    const after = await asActor(
+      request(app).get(`/scores/${id}`),
+      actors.owner
+    );
+    expect(after.body.score.currentVersionId).toBe(initialVersionId);
+    expect(after.body.score.version.id).toBe(initialVersionId);
+  });
+
+  it('rejects a no-op candidate as stale when a different version commits before its transaction', async () => {
+    const created = await asActor(
+      request(app).post('/scores'),
+      actors.owner,
+      true
+    ).send({ model: MODEL });
+    expect(created.status).toBe(201);
+    const id = created.body.score.id as string;
+    const detail = await asActor(
+      request(app).get(`/scores/${id}`),
+      actors.owner
+    );
+    expect(detail.status).toBe(200);
+    const initialVersionId = detail.body.score.currentVersionId as string;
+    const originalCreateVersion =
+      repository.createScoreVersion.bind(repository);
+    let concurrentVersionId = '';
+    const versionSpy = vi
+      .spyOn(repository, 'createScoreVersion')
+      .mockImplementation(
+        async (version, updatedAt, actorId, audit, noOpGuard) => {
+          if (noOpGuard && !concurrentVersionId) {
+            const concurrentModel = structuredClone(MODEL);
+            concurrentModel.parts[0]!.measures[0]!.notes[0]!.pitch = 'D4';
+            concurrentVersionId = newId();
+            const committedAt = new Date().toISOString();
+            const concurrent = await originalCreateVersion(
+              {
+                id: concurrentVersionId,
+                scoreId: id,
+                musicxml: modelToMusicXml(concurrentModel, {
+                  mode: 'new-score',
+                }),
+                note: 'Concurrent edit',
+                createdBy: actors.owner.id,
+                createdAt: committedAt,
+              },
+              committedAt,
+              actors.owner.id
+            );
+            expect(concurrent).toEqual({ status: 'created' });
+          }
+          return await originalCreateVersion(
+            version,
+            updatedAt,
+            actorId,
+            audit,
+            noOpGuard
+          );
+        }
+      );
+
+    const staleNoOp = await asActor(
+      request(app).post(`/scores/${id}/versions`),
+      actors.owner,
+      true
+    ).send({
+      model: detail.body.score.model,
+      note: 'Stale no-op transposition',
+    });
+    versionSpy.mockRestore();
+
+    expect(concurrentVersionId).not.toBe('');
+    expect(concurrentVersionId).not.toBe(initialVersionId);
+    expect(staleNoOp.status).toBe(409);
+    expect(staleNoOp.body.error).toEqual({
+      code: 'VERSION_CONFLICT',
+      message:
+        'The score changed before this version could be saved. Reload and retry.',
+    });
+    const afterRace = await asActor(
+      request(app).get(`/scores/${id}`),
+      actors.owner
+    );
+    expect(afterRace.body.score.currentVersionId).toBe(concurrentVersionId);
+    expect(afterRace.body.score.version.note).toBe('Concurrent edit');
+    expect(afterRace.body.score.model.parts[0].measures[0].notes[0].pitch).toBe(
+      'D4'
+    );
   });
 
   it('creates immutable edited versions for clean imports and applies safe export filenames', async () => {
