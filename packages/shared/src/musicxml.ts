@@ -13,7 +13,7 @@ import {
   scoreModelWireSchema,
   scoreSyllabicSchema,
   type ScoreClef,
-  type ScoreKeyMode,
+  type ScoreKey,
   type ScoreModel,
   type ScoreModelInput,
   type ScoreNoteInput,
@@ -174,6 +174,7 @@ const supportedAttributesByElement: Record<string, Set<string>> = {
   tied: new Set(['type']),
   creator: new Set(['type']),
   sound: new Set(['tempo']),
+  lyric: new Set(['number']),
 };
 
 function tagName(node: OrderedNode | undefined): string | undefined {
@@ -476,22 +477,25 @@ function parseNote(
   );
 
   const lyricNodes = children(node, 'lyric');
-  if (lyricNodes.length > 1) {
-    issue(
-      warnings,
-      'MULTIPLE_LYRICS_PRESERVED',
-      'Only the first lyric verse is represented; all verses remain in the original XML.',
-      { partId, measure: measureNumber, noteIndex }
-    );
-  }
-  let lyric: ScoreNoteInput['lyric'];
-  if (lyricNodes[0]) {
-    const text = childText(lyricNodes[0], 'text') ?? '';
+  const parsedLyrics = lyricNodes.map((lyricNode, index) => {
+    const text = childText(lyricNode, 'text') ?? '';
     const syllabic = scoreSyllabicSchema.safeParse(
-      childText(lyricNodes[0], 'syllabic')?.trim()
+      childText(lyricNode, 'syllabic')?.trim()
     );
-    lyric = { text, ...(syllabic.success ? { syllabic: syllabic.data } : {}) };
-  }
+    const verseNumber = parseInteger(attribute(lyricNode, 'number'));
+    const verse =
+      verseNumber !== undefined && verseNumber > 0 && verseNumber <= 64
+        ? verseNumber
+        : lyricNodes.length > 1
+          ? index + 1
+          : undefined;
+    return {
+      text,
+      ...(syllabic.success ? { syllabic: syllabic.data } : {}),
+      ...(verse ? { verse } : {}),
+    };
+  });
+  const lyric = parsedLyrics[0];
 
   const timeModification = firstChild(node, 'time-modification');
   const actualNotes = parseInteger(childText(timeModification, 'actual-notes'));
@@ -518,6 +522,7 @@ function parseNote(
     onset,
     chord,
     ...(lyric ? { lyric } : {}),
+    ...(parsedLyrics.length > 1 ? { lyrics: parsedLyrics } : {}),
     ...(tuplet ? { tuplet } : {}),
   };
   return {
@@ -527,41 +532,59 @@ function parseNote(
   };
 }
 
+function parseMusicXmlKey(
+  node: OrderedNode | undefined,
+  warnings?: ScoreImportWarning[],
+  partId?: string
+): ScoreKey {
+  const fifthsValue = numericText(node, 'fifths');
+  const modeValue = childText(node, 'mode')?.trim().toLowerCase() || 'major';
+  const parsedMode = scoreKeyModeSchema.safeParse(modeValue);
+  const fifths =
+    fifthsValue !== undefined &&
+    Number.isInteger(fifthsValue) &&
+    fifthsValue >= -7 &&
+    fifthsValue <= 7
+      ? fifthsValue
+      : 0;
+  if (node && warnings && !parsedMode.success) {
+    issue(
+      warnings,
+      'UNSUPPORTED_KEY_MODE_PRESERVED',
+      `Key mode ${modeValue} is not represented; original XML is preserved and major is used in the model.`,
+      { partId }
+    );
+  }
+  return { fifths, mode: parsedMode.success ? parsedMode.data : 'major' };
+}
+
+function sameScoreKey(left: ScoreKey, right: ScoreKey): boolean {
+  return left.fifths === right.fifths && left.mode === right.mode;
+}
+
+type GlobalScoreSettings = {
+  key: ScoreKey;
+  beats: number;
+  beatType: number;
+};
+
 function readKeyAndTime(
   root: OrderedNode,
   warnings: ScoreImportWarning[]
-): { fifths: number; mode: ScoreKeyMode; beats: number; beatType: number } {
-  let result:
-    | { fifths: number; mode: ScoreKeyMode; beats: number; beatType: number }
-    | undefined;
+): GlobalScoreSettings {
+  let result: GlobalScoreSettings | undefined;
+  const initialKeyByPart = new Set<string>();
   for (const part of children(root, 'part')) {
     const partId = attribute(part, 'id');
-    for (const measure of children(part, 'measure')) {
+    const partKeyId = partId ?? `part-${initialKeyByPart.size}`;
+    for (const [measureIndex, measure] of children(part, 'measure').entries()) {
       const attributes = firstChild(measure, 'attributes');
       if (!attributes) continue;
-      const key = firstChild(attributes, 'key');
+      const keyNode = firstChild(attributes, 'key');
       const time = firstChild(attributes, 'time');
-      if (!key && !time) continue;
+      if (!keyNode && !time) continue;
 
-      const fifthsValue = numericText(key, 'fifths');
-      const modeValue = childText(key, 'mode')?.trim().toLowerCase() || 'major';
-      const parsedMode = scoreKeyModeSchema.safeParse(modeValue);
-      const fifths =
-        fifthsValue !== undefined &&
-        Number.isInteger(fifthsValue) &&
-        fifthsValue >= -7 &&
-        fifthsValue <= 7
-          ? fifthsValue
-          : 0;
-      if (key && !parsedMode.success) {
-        issue(
-          warnings,
-          'UNSUPPORTED_KEY_MODE_PRESERVED',
-          `Key mode ${modeValue} is not represented; original XML is preserved and major is used in the model.`,
-          { partId }
-        );
-      }
-
+      const key = parseMusicXmlKey(keyNode, warnings, partId);
       const beatsValue = childText(time, 'beats')?.trim();
       const beats = parseInteger(beatsValue);
       const beatType = parseInteger(childText(time, 'beat-type'));
@@ -574,28 +597,80 @@ function readKeyAndTime(
         );
       }
       const candidate = {
-        fifths,
-        mode: parsedMode.success ? parsedMode.data : 'major',
+        key,
         beats: beats && beats > 0 ? beats : 4,
         beatType: beatType && beatType > 0 ? beatType : 4,
       };
-      if (!result) result = candidate;
-      else if (
-        result.fifths !== candidate.fifths ||
-        result.mode !== candidate.mode ||
-        result.beats !== candidate.beats ||
-        result.beatType !== candidate.beatType
-      ) {
-        issue(
-          warnings,
-          'MID_SCORE_ATTRIBUTES_PRESERVED',
-          'Part or mid-score key/time changes are not represented globally; original XML is preserved.',
-          { partId }
-        );
+      const isFirstKeyForPart =
+        Boolean(keyNode) && !initialKeyByPart.has(partKeyId);
+      if (keyNode) initialKeyByPart.add(partKeyId);
+      if (!result) {
+        result = candidate;
+      } else {
+        const initialPartKeyMismatch =
+          isFirstKeyForPart &&
+          measureIndex === 0 &&
+          !sameScoreKey(result.key, candidate.key);
+        const timeMismatch =
+          Boolean(time) &&
+          (result.beats !== candidate.beats ||
+            result.beatType !== candidate.beatType);
+        if (initialPartKeyMismatch || timeMismatch) {
+          issue(
+            warnings,
+            'MID_SCORE_ATTRIBUTES_PRESERVED',
+            initialPartKeyMismatch
+              ? 'Parts begin with different key signatures; the original XML is preserved.'
+              : 'Mid-score time-signature changes are not represented globally; original XML is preserved.',
+            { partId }
+          );
+        }
       }
     }
   }
-  return result ?? { fifths: 0, mode: 'major', beats: 4, beatType: 4 };
+  return (
+    result ?? {
+      key: { fifths: 0, mode: 'major' },
+      beats: 4,
+      beatType: 4,
+    }
+  );
+}
+
+function readKeyChanges(
+  root: OrderedNode,
+  initialKey: ScoreKey,
+  warnings: ScoreImportWarning[]
+): Map<number, ScoreKey> {
+  const parts = children(root, 'part');
+  const measureCount = Math.max(
+    0,
+    ...parts.map((part) => children(part, 'measure').length)
+  );
+  const changes = new Map<number, ScoreKey>();
+  let activeKey = initialKey;
+  for (let measureIndex = 0; measureIndex < measureCount; measureIndex += 1) {
+    const candidates = parts.flatMap((part) => {
+      const measure = children(part, 'measure')[measureIndex];
+      const keyNode = firstChild(firstChild(measure, 'attributes'), 'key');
+      return keyNode ? [parseMusicXmlKey(keyNode)] : [];
+    });
+    if (!candidates.length) continue;
+    const nextKey = candidates[0]!;
+    if (candidates.some((candidate) => !sameScoreKey(candidate, nextKey))) {
+      issue(
+        warnings,
+        'MID_SCORE_ATTRIBUTES_PRESERVED',
+        'Parts declare different key signatures in the same measure; the original XML is preserved.',
+        { measure: measureIndex + 1 }
+      );
+    }
+    if (!sameScoreKey(activeKey, nextKey)) {
+      activeKey = nextKey;
+      if (measureIndex > 0) changes.set(measureIndex, nextKey);
+    }
+  }
+  return changes;
 }
 
 function parseMetronomeTempo(
@@ -730,6 +805,7 @@ function buildPart(
   part: OrderedNode,
   partNames: Map<string, string>,
   partIndex: number,
+  keyChanges: Map<number, ScoreKey>,
   warnings: ScoreImportWarning[]
 ): ScoreModelInput['parts'][number] {
   const partId = attribute(part, 'id') || `P${partIndex + 1}`;
@@ -814,7 +890,8 @@ function buildPart(
         cursor = parsed.nextCursor;
       }
     }
-    return { number: measureNumber, notes };
+    const key = keyChanges.get(measureIndex);
+    return { number: measureNumber, notes, ...(key ? { key } : {}) };
   });
 
   if (!measures.length) {
@@ -1020,14 +1097,15 @@ export function musicXmlToModel(xml: string): MusicXmlConversionResult {
     );
   }
   const settings = readKeyAndTime(root, warnings);
+  const keyChanges = readKeyChanges(root, settings.key, warnings);
   const modelWithoutPreservation = scoreModelSchema.safeParse({
     title,
     composer,
-    key: { fifths: settings.fifths, mode: settings.mode },
+    key: settings.key,
     time: { beats: settings.beats, beatType: settings.beatType },
     tempo: parseTempo(root, warnings),
     parts: parts.map((part, index) =>
-      buildPart(part, partNames, index, warnings)
+      buildPart(part, partNames, index, keyChanges, warnings)
     ),
   });
   if (!modelWithoutPreservation.success) {
@@ -1199,18 +1277,25 @@ function clefLines(clef: ScoreClef, indent: string): string[] {
   return lines;
 }
 
+function keyLines(key: ScoreKey, indent: string): string[] {
+  return [
+    `${indent}<key>`,
+    `${indent}  ${textTag('fifths', key.fifths)}`,
+    `${indent}  ${textTag('mode', key.mode)}`,
+    `${indent}</key>`,
+  ];
+}
+
 function attributesLines(
   model: ScoreModel,
   clef: ScoreClef,
-  divisions: number
+  divisions: number,
+  key: ScoreKey = model.key
 ): string[] {
   return [
     '      <attributes>',
     `        ${textTag('divisions', divisions)}`,
-    '        <key>',
-    `          ${textTag('fifths', model.key.fifths)}`,
-    `          ${textTag('mode', model.key.mode)}`,
-    '        </key>',
+    ...keyLines(key, '        '),
     '        <time>',
     `          ${textTag('beats', model.time.beats)}`,
     `          ${textTag('beat-type', model.time.beatType)}`,
@@ -1267,16 +1352,23 @@ function noteLines(
       `${indent}  </time-modification>`
     );
   }
-  if (note.lyric) {
-    lines.push(`${indent}  <lyric>`);
-    if (note.lyric.syllabic) {
-      lines.push(`${indent}    ${textTag('syllabic', note.lyric.syllabic)}`);
+  const lyricVerses = note.lyrics?.length
+    ? note.lyrics
+    : note.lyric
+      ? [note.lyric]
+      : [];
+  lyricVerses.forEach((lyric, index) => {
+    const verse =
+      lyric.verse ?? (lyricVerses.length > 1 ? index + 1 : undefined);
+    lines.push(`${indent}  <lyric${verse ? ` number="${verse}"` : ''}>`);
+    if (lyric.syllabic) {
+      lines.push(`${indent}    ${textTag('syllabic', lyric.syllabic)}`);
     }
     lines.push(
-      `${indent}    ${textTag('text', note.lyric.text)}`,
+      `${indent}    ${textTag('text', lyric.text)}`,
       `${indent}  </lyric>`
     );
-  }
+  });
   if (note.tie) {
     lines.push(
       `${indent}  <notations>`,
@@ -1360,8 +1452,22 @@ function canonicalMusicXml(model: ScoreModel): string {
     lines.push(`  <part id="${escapeXml(part.id)}">`);
     for (const [measureIndex, measure] of part.measures.entries()) {
       lines.push(`    <measure number="${measure.number}">`);
-      if (measureIndex === 0)
-        lines.push(...attributesLines(model, part.clef, divisions));
+      if (measureIndex === 0) {
+        lines.push(
+          ...attributesLines(
+            model,
+            part.clef,
+            divisions,
+            measure.key ?? model.key
+          )
+        );
+      } else if (measure.key) {
+        lines.push(
+          '      <attributes>',
+          ...keyLines(measure.key, '        '),
+          '      </attributes>'
+        );
+      }
       if (partIndex === 0 && measureIndex === 0) {
         lines.push(
           '      <direction>',

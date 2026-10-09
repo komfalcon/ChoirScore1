@@ -231,7 +231,7 @@ Add indexes on `scores(created_by)`, `scores(visibility)`, `ai_jobs(user_id, cre
 - `modelToSolfa(model)` in `packages/shared` returns a layout structure; the web app renders it as **HTML/CSS** (not OSMD): one block per system, voice rows (S, A, T, B) stacked and **aligned by beat**, lyrics under each row that carries them.
 - Header shows `Doh is {key}` (movable doh, e.g. "Doh is Bb"), time signature and tempo. Minor-key pieces are written in the relative major's doh with lah as the home note (standard practice); a score may carry an optional "Lah is {key}" label.
 - Syllables `d r m f s l t`. Octave marks: **plain** = the octave whose doh is nearest to middle C (ties go to the lower doh; configurable), **superscript 1** for the octave above, **subscript 1** for the octave below (use `'` and `,` as the plain-text forms).
-- Chromatic notes use the standard Curwen chromatic syllables. **Put the lookup table in one file and have the owner/director confirm it before implementation; do not guess.**
+- Chromatic notes use the approved modern spelled-degree movable-Do table: raised `di/ri/fi/si/li`, lowered `ra/me/se/le/te`. Choose by written spelling/function relative to the active key signature, not melodic direction; enharmonic spellings may therefore receive different syllables. Minor-key scores retain relative-major Do with La as the home note. Accidentals without a table entry remain visibly unsupported.
 - Rhythm layout: bars separated by `|`, beats by `:`, half-beats by `.`, held notes continue with `-`, rests are an empty beat. v1 supports whole beats and half-beats only (quarter-beats are a later addition and must be flagged to the user if encountered in an imported score).
 - A mid-score key change shows a new `Doh is X` marker. Bridge-note conventions are out of scope for v1.
 - Interaction: the playback cursor highlights the current cell; tapping a row label toggles mute/solo for that part; tapping a bar starts playback from there; print stylesheet produces a clean sol-fa PDF.
@@ -469,7 +469,7 @@ DB schema + migrations, bootstrap admin, login/logout/me/change-password, forced
 Upload/validate MusicXML (+ .mxl), score list/search, visibility rules, OSMD viewer, export MusicXML. Also build the **score model and converters** (`musicXmlToModel`, `modelToMusicXml`, Section 10.3) here, since later milestones depend on them. *Done when:* a MuseScore-exported 4-part hymn displays correctly on desktop and a phone, round-trip converter tests pass, and visibility rules are enforced server-side with tests.
 
 **M2b: Sol-fa view**
-`modelToSolfa`, the HTML/CSS sol-fa renderer, view toggle with per-user default (sol-fa for members), print stylesheet, chromatic lookup table confirmed with the director. *Done when:* a test hymn matches a hand-checked sol-fa sheet (key header, octave marks, beat alignment, lyrics) on desktop and a phone.
+`modelToSolfa`, the HTML/CSS sol-fa renderer, view toggle with per-user default (sol-fa for members), print stylesheet, and the approved modern spelled-degree chromatic table. *Done when:* a test hymn matches a hand-checked sol-fa sheet (key header, octave marks, beat alignment, lyrics, and spelled chromatic notes) on desktop and a phone.
 
 **M3: Playback**
 Tone.js playback, per-part mute/solo/volume, tempo, loop, count-in, My part preset, lazy-loaded samples. *Done when:* a member hears only their part with others quieter; no auto-play; samples under budget.
