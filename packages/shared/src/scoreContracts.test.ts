@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  createScoreAutosaveRequestSchema,
+  createScoreAutosaveResponseSchema,
   createScoreFromModelRequestSchema,
   musicXmlExportBodySchema,
   musicXmlExportHeadersSchema,
@@ -86,6 +88,31 @@ const model = {
 };
 
 describe('shared score API contracts', () => {
+  it('validates autosave identity fields and saved, unchanged, and replayed responses', () => {
+    const request = {
+      model,
+      baseVersionId: 'version_1',
+      requestId: 'draft:attempt-1',
+    };
+    expect(createScoreAutosaveRequestSchema.parse(request)).toEqual(request);
+    expect(
+      createScoreAutosaveRequestSchema.safeParse({
+        ...request,
+        requestId: 'contains spaces',
+      }).success
+    ).toBe(false);
+    for (const outcome of ['saved', 'unchanged', 'replayed'] as const) {
+      expect(
+        createScoreAutosaveResponseSchema.parse({
+          score: summary,
+          versionId: 'version_2',
+          currentVersionId: 'version_2',
+          outcome,
+        }).outcome
+      ).toBe(outcome);
+    }
+  });
+
   it('uses source part names and deterministic Part N fallbacks, never inferring from IDs', () => {
     const parts = scorePartSummariesFromModel({
       parts: [
