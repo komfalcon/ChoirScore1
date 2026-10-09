@@ -42,9 +42,12 @@ function roundedBeat(positionInQuarterNotes: number, beatType: number): number {
 }
 
 /**
- * Checks each part/measure against the time-signature length, expressed in
- * quarter-note units. A mismatch is located at the first missing or excess
- * duration boundary; the issue's beat is one-based.
+ * Checks each part/measure's timeline extent against the time-signature
+ * length, expressed in quarter-note units. Timeline positions follow
+ * notePositions: each staff/voice advances independently, chord members share
+ * an onset, and the measure extent is the furthest event end, not a sum.
+ * A mismatch is located at the first missing or excess duration boundary; the
+ * issue's beat is one-based.
  */
 export function validateMeasureDuration(model: ScoreModel): ValidationResult {
   const expectedDuration = (model.time.beats * 4) / model.time.beatType;
@@ -52,8 +55,9 @@ export function validateMeasureDuration(model: ScoreModel): ValidationResult {
 
   for (const part of model.parts) {
     for (const measure of part.measures) {
-      const actualDuration = measure.notes.reduce(
-        (sum, note) => sum + note.dur,
+      const actualDuration = notePositions(measure).reduce(
+        (furthestEnd, { note, onset }) =>
+          Math.max(furthestEnd, onset + note.dur),
         0
       );
       if (Math.abs(actualDuration - expectedDuration) <= DURATION_EPSILON) {

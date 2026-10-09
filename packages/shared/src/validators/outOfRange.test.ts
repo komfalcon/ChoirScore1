@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { scoreModelSchema } from '../scoreModel.js';
 import type { VoiceRanges } from '../voiceRanges.js';
-import { validateOutOfRange } from './index.js';
+import { validateOutOfRange, type Issue } from './index.js';
 
 interface RangeFixture {
   part: 'S' | 'A' | 'T' | 'B';
@@ -83,6 +83,16 @@ function scoreWithNotes(part: RangeFixture['part'], pitches: string[]) {
   });
 }
 
+function expectLocatedIssue(
+  issue: Issue | undefined,
+  expected: Omit<Issue, 'message'>
+) {
+  expect(issue).toEqual({
+    ...expected,
+    message: expect.stringMatching(/\S/),
+  });
+}
+
 describe('validateOutOfRange', () => {
   it.each(
     fixtures.flatMap((fixture) => [
@@ -124,13 +134,12 @@ describe('validateOutOfRange', () => {
 
       expect(result.errors).toEqual([]);
       expect(result.warnings).toHaveLength(1);
-      expect(result.warnings[0]).toMatchObject({
+      expectLocatedIssue(result.warnings[0], {
         part,
         measure: 2,
         beat: 1,
         code: 'OUT_OF_RANGE',
       });
-      expect(result.warnings[0]!.message.trim()).not.toBe('');
     }
   );
 
@@ -143,13 +152,12 @@ describe('validateOutOfRange', () => {
     const result = validateOutOfRange(scoreWithNotes(part, [pitch]));
 
     expect(result.errors).toHaveLength(1);
-    expect(result.errors[0]).toMatchObject({
+    expectLocatedIssue(result.errors[0], {
       part,
       measure: 2,
       beat: 1,
       code: 'OUT_OF_RANGE',
     });
-    expect(result.errors[0]!.message.trim()).not.toBe('');
     expect(result.warnings).toEqual([]);
   });
 
@@ -165,7 +173,12 @@ describe('validateOutOfRange', () => {
 
       expect(result.errors).toEqual([]);
       expect(result.warnings).toHaveLength(1);
-      expect(result.warnings[0]!.code).toBe('OUT_OF_RANGE');
+      expectLocatedIssue(result.warnings[0], {
+        part,
+        measure: 2,
+        beat: 1,
+        code: 'OUT_OF_RANGE',
+      });
     }
   );
 
@@ -183,6 +196,12 @@ describe('validateOutOfRange', () => {
     );
     expect(result.errors).toEqual([]);
     expect(result.warnings).toHaveLength(1);
+    expectLocatedIssue(result.warnings[0], {
+      part: 'S',
+      measure: 2,
+      beat: 1,
+      code: 'OUT_OF_RANGE',
+    });
     expect(result.warnings[0]!.message).toContain('comfortable range');
   });
 });
