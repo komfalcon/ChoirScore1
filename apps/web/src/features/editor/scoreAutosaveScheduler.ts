@@ -105,7 +105,7 @@ export class ScoreAutosaveScheduler {
   private baseline: ValidModel | null = null;
   private draft: ValidModel | null = null;
   private lastObservedDraftSignature: string | null = null;
-  private lastChangedAt = 0;
+  private nextSaveAt = 0;
   private pending: PendingOperation | null = null;
   private activeController: AbortController | null = null;
   private conflict: ScoreAutosaveConflict | null = null;
@@ -180,12 +180,15 @@ export class ScoreAutosaveScheduler {
         this.baseline &&
         this.draft.signature !== this.baseline.signature
       );
-      if (
-        wasBlockedAfterError ||
-        !isDirty ||
-        (!wasDirty && !this.pending && !this.activeController)
+      if (wasBlockedAfterError || !isDirty) {
+        this.nextSaveAt = this.now() + this.debounceMs;
+      } else if (
+        !wasDirty &&
+        !this.pending &&
+        !this.activeController &&
+        this.now() >= this.nextSaveAt
       ) {
-        this.lastChangedAt = this.now();
+        this.nextSaveAt = this.now() + this.debounceMs;
       }
       this.blockedAfterError = false;
     }
@@ -224,7 +227,7 @@ export class ScoreAutosaveScheduler {
     this.baseline = parseModel(conflict.latestModel);
     this.draft = chosen;
     this.lastObservedDraftSignature = chosen.signature;
-    this.lastChangedAt = this.now();
+    this.nextSaveAt = this.now() + this.debounceMs;
     this.conflict = null;
     this.conflictLoading = false;
     this.blockedAfterError = false;
@@ -260,7 +263,7 @@ export class ScoreAutosaveScheduler {
       void this.send(this.pending, this.generation);
       return;
     }
-    this.lastChangedAt = this.now() - this.debounceMs;
+    this.nextSaveAt = this.now();
     this.reconcile();
   }
 
@@ -287,7 +290,7 @@ export class ScoreAutosaveScheduler {
     this.baseline = parseModel(input.persistedModel);
     this.draft = parseModel(input.model);
     this.lastObservedDraftSignature = this.draft?.signature ?? null;
-    this.lastChangedAt = this.now();
+    this.nextSaveAt = this.now() + this.debounceMs;
     this.conflict = null;
     this.conflictLoading = false;
     this.blockedAfterError = false;
@@ -311,7 +314,7 @@ export class ScoreAutosaveScheduler {
     this.currentVersionId = input.currentVersionId;
     this.lastExternalVersionId = input.currentVersionId;
     this.baseline = parseModel(input.persistedModel);
-    this.lastChangedAt = this.now();
+    this.nextSaveAt = this.now() + this.debounceMs;
     this.conflict = null;
     this.conflictLoading = false;
     this.blockedAfterError = false;
@@ -377,10 +380,7 @@ export class ScoreAutosaveScheduler {
       return;
     }
 
-    const remaining = Math.max(
-      0,
-      this.debounceMs - (this.now() - this.lastChangedAt)
-    );
+    const remaining = Math.max(0, this.nextSaveAt - this.now());
     this.clearTimer();
     if (remaining === 0) {
       void this.startSave();
@@ -418,7 +418,7 @@ export class ScoreAutosaveScheduler {
       this.setState({ status: 'invalid' });
       return;
     }
-    this.lastChangedAt = this.now();
+    this.nextSaveAt = this.now() + this.debounceMs;
     const operation: PendingOperation = {
       scoreId: this.input.scoreId,
       request: request.data,

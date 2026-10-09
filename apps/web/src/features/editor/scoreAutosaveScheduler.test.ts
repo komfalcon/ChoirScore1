@@ -55,7 +55,8 @@ function input(overrides: Partial<ScoreAutosaveSchedulerInput> = {}) {
 }
 
 function makeScheduler(
-  overrides: Partial<ScoreAutosaveSchedulerDependencies> = {}
+  overrides: Partial<ScoreAutosaveSchedulerDependencies> = {},
+  initialInput: ScoreAutosaveSchedulerInput = input()
 ) {
   let nextId = 0;
   const dependencies: ScoreAutosaveSchedulerDependencies = {
@@ -68,7 +69,7 @@ function makeScheduler(
   };
   const scheduler = new ScoreAutosaveScheduler(dependencies);
   scheduler.activate();
-  scheduler.update(input());
+  scheduler.update(initialInput);
   return { scheduler, dependencies };
 }
 
@@ -102,6 +103,24 @@ describe('ScoreAutosaveScheduler', () => {
       requestId: 'request-1',
     });
     expect(scheduler.getState().currentVersionId).toBe('version-2');
+    scheduler.dispose();
+  });
+
+  it('saves an edit at 29 seconds on the first cadence tick after a clean start', async () => {
+    const cleanInput = input({ model: originalModel });
+    const { scheduler, dependencies } = makeScheduler({}, cleanInput);
+
+    await advance(29_000);
+    expect(dependencies.save).not.toHaveBeenCalled();
+    scheduler.update(input({ model: changedModel(101) }));
+    await advance(999);
+    expect(dependencies.save).not.toHaveBeenCalled();
+    await advance(1);
+
+    expect(dependencies.save).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(dependencies.save).mock.calls[0]?.[1].model).toEqual(
+      changedModel(101)
+    );
     scheduler.dispose();
   });
 
