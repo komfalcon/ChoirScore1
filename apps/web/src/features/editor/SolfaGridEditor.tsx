@@ -73,6 +73,11 @@ type GridCell = SolfaGridSelection & {
   globalIndex: number;
 };
 
+type GridHistoryEntry = {
+  model: ScoreModel;
+  selection: SolfaGridSelection | null;
+};
+
 function selectionKey(selection: SolfaGridSelection): string {
   return `${selection.partId}:${selection.barIndex}:${selection.barNumber}:${selection.beat}:${selection.subdivision}:${selection.cellOrdinal}`;
 }
@@ -100,6 +105,38 @@ function allGridCells(model: ScoreModel): GridCell[] {
       }))
     );
   });
+}
+
+function selectionForModel(
+  model: ScoreModel,
+  preferred: SolfaGridSelection | null
+): SolfaGridSelection | null {
+  const cells = allGridCells(model);
+  if (!preferred) return cells[0] ?? null;
+  const exact = cells.find(
+    (cell) => selectionKey(cell) === selectionKey(preferred)
+  );
+  if (exact) return exact;
+
+  const preferredSlot = (preferred.beat - 1) * 2 + preferred.subdivision;
+  return (
+    cells.sort((left, right) => {
+      const distance = (cell: GridCell) => [
+        cell.partId === preferred.partId ? 0 : 1,
+        Math.abs(cell.barIndex - preferred.barIndex),
+        Math.abs((cell.beat - 1) * 2 + cell.subdivision - preferredSlot),
+        Math.abs(cell.cellOrdinal - preferred.cellOrdinal),
+      ];
+      const leftDistance = distance(left);
+      const rightDistance = distance(right);
+      for (let index = 0; index < leftDistance.length; index += 1) {
+        if (leftDistance[index] !== rightDistance[index]) {
+          return leftDistance[index]! - rightDistance[index]!;
+        }
+      }
+      return 0;
+    })[0] ?? null
+  );
 }
 
 function labelForSegment(segment: SolfaSegment | undefined): string {
@@ -194,8 +231,8 @@ export function SolfaGridEditor({
   const [lyricVerse, setLyricVerse] = useState(1);
   const [durationOverride, setDurationOverride] = useState('');
   const [actionError, setActionError] = useState('');
-  const [undoStack, setUndoStack] = useState<ScoreModel[]>([]);
-  const [redoStack, setRedoStack] = useState<ScoreModel[]>([]);
+  const [undoStack, setUndoStack] = useState<GridHistoryEntry[]>([]);
+  const [redoStack, setRedoStack] = useState<GridHistoryEntry[]>([]);
   const cellRefs = useRef(new Map<string, HTMLButtonElement>());
 
   useEffect(() => {
@@ -253,7 +290,7 @@ export function SolfaGridEditor({
         setActionError('');
         return;
       }
-      setUndoStack((stack) => [...stack, model]);
+      setUndoStack((stack) => [...stack, { model, selection }]);
       setRedoStack([]);
       setActionError('');
       after?.(next);
@@ -268,9 +305,10 @@ export function SolfaGridEditor({
     const previous = undoStack.at(-1);
     if (!previous) return;
     setUndoStack((stack) => stack.slice(0, -1));
-    setRedoStack((stack) => [...stack, model]);
+    setRedoStack((stack) => [...stack, { model, selection }]);
     setActionError('');
-    onChange(previous);
+    setSelection(selectionForModel(previous.model, previous.selection));
+    onChange(previous.model);
   }
 
   function redo() {
@@ -278,9 +316,10 @@ export function SolfaGridEditor({
     const next = redoStack.at(-1);
     if (!next) return;
     setRedoStack((stack) => stack.slice(0, -1));
-    setUndoStack((stack) => [...stack, model]);
+    setUndoStack((stack) => [...stack, { model, selection }]);
     setActionError('');
-    onChange(next);
+    setSelection(selectionForModel(next.model, next.selection));
+    onChange(next.model);
   }
 
   function moveSelection(current: SolfaGridSelection, direction: -1 | 1) {

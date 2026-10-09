@@ -186,6 +186,45 @@ describe('SolfaGridEditor', () => {
     }
   });
 
+  it('restores the resized event selection through undo and redo', () => {
+    const view = mount();
+    try {
+      const originalModel = structuredClone(view.current());
+      click(
+        view.host.querySelector<HTMLButtonElement>(
+          '[data-grid-cell="S:0:1:4:0:0"]'
+        )
+      );
+      changeSelect(view.host, 'Duration in quarter-note units', '1.5');
+      click(buttonWithText(view.host, 'Set duration'));
+
+      const resizedModel = structuredClone(view.current());
+      const resizedCell = view.host.querySelector<HTMLButtonElement>(
+        '[data-grid-cell="S:0:1:3:1:0"]'
+      );
+      expect(resizedCell?.getAttribute('aria-pressed')).toBe('true');
+
+      click(view.host.querySelector('button[aria-label="Undo edit"]'));
+      expect(view.current()).toEqual(originalModel);
+      expect(
+        view.host
+          .querySelector<HTMLButtonElement>('[data-grid-cell="S:0:1:4:0:0"]')
+          ?.getAttribute('aria-pressed')
+      ).toBe('true');
+
+      click(view.host.querySelector('button[aria-label="Redo edit"]'));
+      expect(view.current()).toEqual(resizedModel);
+      expect(
+        view.host
+          .querySelector<HTMLButtonElement>('[data-grid-cell="S:0:1:3:1:0"]')
+          ?.getAttribute('aria-pressed')
+      ).toBe('true');
+    } finally {
+      view.unmount();
+      view.host.remove();
+    }
+  });
+
   it('rejects a codec-invalid accidental without calling the controlled change callback', () => {
     const view = mount();
     try {
