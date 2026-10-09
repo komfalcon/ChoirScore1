@@ -75,7 +75,7 @@ describe('M2 library and staff viewer integration shell', () => {
     expect(html).toContain('Loading scores…');
   });
 
-  it('renders the Sol-fa primary view, staff toggle and title/composer editing', () => {
+  it('renders Sol-fa by default with playback controls, a staff toggle, and title/composer editing', () => {
     const html = renderToStaticMarkup(
       <MemoryRouter>
         <StaffViewerWorkspace
@@ -93,7 +93,9 @@ describe('M2 library and staff viewer integration shell', () => {
     expect(html).toContain('Edit title &amp; composer');
     expect(html).not.toContain('Staff notation for Morning Light');
     expect(html).not.toContain('Download MusicXML');
-    expect(html).not.toContain('Playback');
+    expect(html).toContain('<h2 id="score-playback-title">Playback</h2>');
+    expect(html).toContain('1-measure count-in');
+    expect(html).toContain('Off by default');
     expect(html).not.toContain('Edit score');
     expect(html).not.toContain('AI tools');
   });

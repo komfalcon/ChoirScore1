@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { OpenSheetMusicDisplay } from 'opensheetmusicdisplay';
 import { Link, useParams } from 'react-router-dom';
 import { AppHeader } from '../components/AppHeader';
+import { ScorePlaybackPanel } from '../features/playback/ScorePlaybackPanel';
 import { useAuth } from '../lib/auth';
 import {
   loadNotationMode,
@@ -196,6 +197,7 @@ type WorkspaceProps = {
   metadataNotice: string;
   onSaveMetadata: (metadata: ScoreMetadataDraft) => Promise<boolean>;
   onClearMetadataMessage: () => void;
+  profileVoicePart?: string | null;
 };
 
 export function StaffViewerWorkspace({
@@ -210,6 +212,7 @@ export function StaffViewerWorkspace({
   metadataNotice,
   onSaveMetadata,
   onClearMetadataMessage,
+  profileVoicePart = null,
 }: WorkspaceProps) {
   const [metadataEditorOpen, setMetadataEditorOpen] = useState(false);
   const [notationModeState, setNotationModeState] = useState<{
@@ -315,6 +318,11 @@ export function StaffViewerWorkspace({
               onCancel={() => setMetadataEditorOpen(false)}
             />
           ) : null}
+          <ScorePlaybackPanel
+            key={`${score.id}:${score.currentVersionId}`}
+            score={score.model}
+            profileVoicePart={profileVoicePart}
+          />
           {notationMode === 'solfa' ? (
             <SolfaScore
               model={score.model}
@@ -358,6 +366,9 @@ export function StaffViewerWorkspace({
               {downloadError}
             </p>
           ) : null}
+          <p className="viewer-contract-note">
+            Score editing and AI features are not available here yet.
+          </p>
         </>
       ) : null}
     </main>
@@ -475,6 +486,7 @@ export function ScoreViewPage() {
           setMetadataError('');
           setMetadataNotice('');
         }}
+        profileVoicePart={user?.voicePart ?? null}
       />
     </div>
   );
