@@ -1,3 +1,6 @@
+// @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { isValidElement, type ReactElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
@@ -5,6 +8,11 @@ import {
   PlaybackControls,
   type PlaybackControlsProps,
 } from './PlaybackControls';
+
+const playbackControlsStyles = readFileSync(
+  resolve(process.cwd(), 'src/features/playback/PlaybackControls.css'),
+  'utf8'
+);
 
 type ElementProps = {
   children?: ReactNode;
@@ -253,6 +261,37 @@ describe('PlaybackControls', () => {
       findControl(tree, 'button', 'aria-label', 'Retry playback').props.disabled
     ).toBe(false);
   });
+
+  it.each([320, 390])(
+    'renders the wrapping accessible error alert at a %i px viewport',
+    (viewportWidth) => {
+      Object.defineProperty(window, 'innerWidth', {
+        configurable: true,
+        value: viewportWidth,
+      });
+      document.head.innerHTML = `<style>${playbackControlsStyles}</style>`;
+      const errorMessage =
+        'Playback could not start: https://choir.example/assets/tonePlaybackEngine-verylonghash0123456789abcdef0123456789abcdef.js';
+      const host = document.createElement('div');
+      host.style.width = `${viewportWidth}px`;
+      host.innerHTML = renderToStaticMarkup(
+        <PlaybackControls {...makeProps({ status: 'error', errorMessage })} />
+      );
+      document.body.replaceChildren(host);
+
+      const alert = host.querySelector<HTMLElement>('[role="alert"]');
+      expect(alert).not.toBeNull();
+      expect(alert?.textContent).toBe(errorMessage);
+      expect(alert?.classList.contains('playback-controls__error')).toBe(true);
+      expect(window.innerWidth).toBe(viewportWidth);
+      expect(alert?.getAttribute('role')).toBe('alert');
+      expect(getComputedStyle(alert!).maxWidth).toBe('100%');
+      expect(getComputedStyle(alert!).overflowWrap).toBe('anywhere');
+      expect(playbackControlsStyles).toMatch(
+        /\.playback-controls__error\s*\{[^}]*min-width:\s*0;[^}]*max-width:\s*100%;[^}]*overflow-wrap:\s*anywhere;/
+      );
+    }
+  );
 
   it('keeps Stop enabled while samples are loading so Play can be cancelled', () => {
     const tree = PlaybackControls(makeProps({ status: 'loading' }));
