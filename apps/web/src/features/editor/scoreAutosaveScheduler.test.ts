@@ -25,7 +25,9 @@ function response(
 ): CreateScoreAutosaveResponse {
   return {
     score: scoreDetailResponse.score,
-    versionId: `request-version-${currentVersionId}`,
+    // Ordinary saved/unchanged responses point at the current version; only
+    // an older replay receipt may have a different versionId.
+    versionId: currentVersionId,
     currentVersionId,
     outcome,
   };
