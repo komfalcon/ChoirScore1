@@ -6,3 +6,5 @@ export * from './scoreModel.js';
 export * from './scoreContracts.js';
 export * from './musicxml.js';
 export * from './solfa.js';
+export * from './transpose.js';
+export * from './suggestFit.js';
