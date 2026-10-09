@@ -208,24 +208,33 @@ function scoreModelIssueLocation(
   ) {
     onset = suppliedOnset;
   } else {
+    let cursor = 0;
+    let previousOnset = 0;
     onset = 0;
-    for (let index = 0; index < noteIndex; index += 1) {
+    for (let index = 0; index <= noteIndex; index += 1) {
       const prior = asRecord(notes[index]);
       const priorOnset = prior?.onset;
       const priorDuration = prior?.dur;
+      const chord = prior?.chord === true;
       const start =
         typeof priorOnset === 'number' &&
         Number.isFinite(priorOnset) &&
         priorOnset >= 0
           ? priorOnset
-          : onset;
-      onset =
-        start +
-        (typeof priorDuration === 'number' &&
-        Number.isFinite(priorDuration) &&
-        priorDuration > 0
-          ? priorDuration
-          : 0);
+          : chord
+            ? previousOnset
+            : cursor;
+      if (!chord) {
+        previousOnset = start;
+        cursor =
+          start +
+          (typeof priorDuration === 'number' &&
+          Number.isFinite(priorDuration) &&
+          priorDuration > 0
+            ? priorDuration
+            : 0);
+      }
+      if (index === noteIndex) onset = start;
     }
   }
 

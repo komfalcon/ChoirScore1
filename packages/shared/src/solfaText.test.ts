@@ -406,4 +406,97 @@ S: | d : r : m : f |`);
       expect((error as Error).message).toContain('Part S, Bar 1, Beat 3:');
     }
   });
+
+  it('reports an invalid chord-member duration at the shared onset when onset is omitted', () => {
+    const model = parseSolfaText(`Doh is C
+Time 4/4
+Tempo 90
+
+S: | d : r : m : f |`);
+    const notes = model.parts[0]!.measures[0]!.notes;
+    delete notes[0]!.onset;
+    delete notes[1]!.onset;
+
+    const chordMember = { ...notes[1]!, dur: 0, chord: true };
+    delete chordMember.onset;
+    notes.splice(2);
+    notes.push(chordMember);
+
+    try {
+      modelToSolfaText(model);
+      throw new Error('expected serialization to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(SolfaTextError);
+      expect(error).toMatchObject({
+        code: 'INVALID_SCORE_MODEL',
+        part: 'S',
+        bar: 1,
+        beat: 2,
+      });
+      expect((error as Error).message).toContain('Part S, Bar 1, Beat 2:');
+    }
+  });
+
+  it('does not advance the implicit onset cursor for an omitted-onset chord member', () => {
+    const model = parseSolfaText(`Doh is C
+Time 4/4
+Tempo 90
+
+S: | d : r : m : f |`);
+    const notes = model.parts[0]!.measures[0]!.notes;
+    const anchor = notes[0]!;
+    const chordMember = notes[1]!;
+    const invalidFollowingNote = notes[2]!;
+    delete anchor.onset;
+    delete chordMember.onset;
+    delete invalidFollowingNote.onset;
+    chordMember.chord = true;
+    invalidFollowingNote.dur = 0;
+    notes.splice(0, notes.length, anchor, chordMember, invalidFollowingNote);
+
+    try {
+      modelToSolfaText(model);
+      throw new Error('expected serialization to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(SolfaTextError);
+      expect(error).toMatchObject({
+        code: 'INVALID_SCORE_MODEL',
+        part: 'S',
+        bar: 1,
+        beat: 2,
+      });
+    }
+  });
+
+  it('keeps a valid explicit onset authoritative for a chord-member diagnostic', () => {
+    const model = parseSolfaText(`Doh is C
+Time 4/4
+Tempo 90
+
+S: | d : r : m : f |`);
+    const notes = model.parts[0]!.measures[0]!.notes;
+    delete notes[0]!.onset;
+    delete notes[1]!.onset;
+    const chordMember = {
+      ...notes[1]!,
+      dur: 0,
+      chord: true,
+      onset: 2,
+    };
+    notes.splice(2);
+    notes.push(chordMember);
+
+    try {
+      modelToSolfaText(model);
+      throw new Error('expected serialization to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(SolfaTextError);
+      expect(error).toMatchObject({
+        code: 'INVALID_SCORE_MODEL',
+        part: 'S',
+        bar: 1,
+        beat: 3,
+      });
+    }
+  });
 });
