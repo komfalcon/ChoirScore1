@@ -378,12 +378,14 @@ Hard-limit violations are errors; notes outside "comfortable" but inside "hard l
 
 ### 10.6 Job execution (important for hosting)
 AI calls can be slow and hosting platforms may have request timeouts. So AI work is **asynchronous**:
-1. `POST /api/ai/jobs` validates input, checks quota, inserts `ai_jobs` row with `status = queued`, returns `{ jobId }` immediately.
-2. An in-process worker (concurrency limit 2) runs the job and updates the row.
+1. `POST /api/ai/jobs` validates input, checks quota, inserts `ai_jobs` row with `status = queued`, and returns `202 { jobId, status: "queued" }` immediately. An idempotent replay returns the same ID and the current persisted status.
+2. An in-process worker (concurrency limit 2) runs the job and updates the row. Worker instances sharing a database coordinate claims and leases through that database.
 3. Client polls `GET /api/ai/jobs/:id` every 2 s (stop on `succeeded` or `failed`).
-4. On server restart, any job left `running` is marked `failed` with a retry message.
+4. On startup, only `running` jobs with a recorded worker owner and an expired lease are marked `failed` with a retry message. Leases use database time and are renewed while work is active. Ownerless running rows (including rows created before lease metadata existed) are left untouched for operator reconciliation; replicas must share the same database to coordinate claims and recovery.
 
-Limits: max `AI_MAX_MEASURES_PER_CALL` measures per call (longer scores are processed in chunks of that size with a one-measure overlap for continuity); max 1 running job per user; per-user daily quota (default 20) and global kill switch. Return `429` with a clear message when exceeded.
+Limits: max `AI_MAX_MEASURES_PER_CALL` measures per call (longer scores are processed in chunks of that size with a one-measure overlap for continuity); max 1 running job per user; per-user daily quota (default 20) and global kill switch. Return `429` with a clear message when the daily quota is exceeded.
+
+**M6 lifecycle-slice implementation note:** the API intentionally wires `UnavailableAiProvider` and makes no live provider calls. Accepted jobs therefore fail closed with a generic processing error and still consume quota; `MockAiProvider` is used only in deterministic tests. This is not live-provider support; a separate provider integration is required.
 
 ### 10.7 Feature A: Harmonize
 **Input:** `scoreId` (or inline model), `melodyPartId` (which part is the tune; default the top staff), `partsToGenerate` (subset of A/T/B, default all), `style` (`hymn` | `gospel` | `simple`; default `hymn`), optional `measureRange`.

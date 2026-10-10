@@ -5,9 +5,12 @@ import {
   count,
   desc,
   eq,
+  gt,
   gte,
   inArray,
+  isNotNull,
   like,
+  lte,
   lt,
   ne,
   or,
@@ -244,9 +247,19 @@ export interface ApiRepository extends RepositoryTransaction {
     nextDayStart: string
   ): Promise<AiQuotaState | null>;
   findAiJobById(id: string): Promise<AiJobRecord | null>;
-  claimNextAiJob(): Promise<AiJobRecord | null>;
+  claimNextAiJob(
+    workerId: string,
+    leaseDurationMs: number
+  ): Promise<AiJobRecord | null>;
+  renewAiJobLease(
+    id: string,
+    workerId: string,
+    leaseDurationMs: number
+  ): Promise<boolean>;
+  releaseAiJobClaim(id: string, workerId: string): Promise<boolean>;
   completeAiJob(
     id: string,
+    workerId: string,
     update: {
       resultJson: string;
       warningsJson: string;
@@ -255,8 +268,13 @@ export interface ApiRepository extends RepositoryTransaction {
       finishedAt: string;
     }
   ): Promise<boolean>;
-  failAiJob(id: string, error: string, finishedAt: string): Promise<boolean>;
-  recoverRunningAiJobs(finishedAt: string, error: string): Promise<number>;
+  failAiJob(
+    id: string,
+    workerId: string,
+    error: string,
+    finishedAt: string
+  ): Promise<boolean>;
+  recoverExpiredAiJobs(finishedAt: string, error: string): Promise<number>;
   close(): void;
 }
 
@@ -270,6 +288,16 @@ const LOGIN_THROTTLE_BUSY_RETRIES = 12;
 const TRANSACTION_BUSY_RETRIES = 12;
 const MAX_SCORE_AUTOSAVES = 20;
 const MAX_SCORE_AUTOSAVE_NOOP_RECEIPTS = 20;
+
+function aiLeaseExpiry(leaseDurationMs: number) {
+  return sql<string>`strftime(
+    '%Y-%m-%dT%H:%M:%fZ',
+    'now',
+    ${`+${leaseDurationMs / 1000} seconds`}
+  )`;
+}
+
+const AI_DATABASE_NOW = sql<string>`strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`;
 
 function isDatabaseBusy(error: unknown): boolean {
   return (
@@ -1191,6 +1219,8 @@ class DrizzleApiRepository implements ApiRepository {
           tokensIn: null,
           tokensOut: null,
           finishedAt: null,
+          workerId: null,
+          leaseExpiresAt: null,
         };
         await tx.insert(aiJobs).values(row).run();
         return { status: 'created', job: row };
@@ -1259,7 +1289,10 @@ class DrizzleApiRepository implements ApiRepository {
     return rows[0] ?? null;
   }
 
-  async claimNextAiJob(): Promise<AiJobRecord | null> {
+  async claimNextAiJob(
+    workerId: string,
+    leaseDurationMs: number
+  ): Promise<AiJobRecord | null> {
     return serializeRepositoryTransaction(() =>
       this.db.transaction(async (tx) => {
         const runningRows = await tx
@@ -1271,33 +1304,45 @@ class DrizzleApiRepository implements ApiRepository {
         const queuedJobs = await tx
           .select()
           .from(aiJobs)
-          .where(eq(aiJobs.status, 'queued'))
+          .where(
+            and(
+              eq(aiJobs.status, 'queued'),
+              sql`NOT EXISTS (
+                SELECT 1 FROM ai_jobs AS running_jobs
+                WHERE running_jobs.user_id = ${aiJobs.userId}
+                  AND running_jobs.status = 'running'
+              )`
+            )
+          )
           .orderBy(asc(aiJobs.createdAt), asc(aiJobs.id))
-          .limit(2);
-        for (const job of queuedJobs) {
-          const userRunningRows = await tx
-            .select({ value: count() })
-            .from(aiJobs)
-            .where(
-              and(eq(aiJobs.userId, job.userId), eq(aiJobs.status, 'running'))
-            );
-          if ((userRunningRows[0]?.value ?? 0) > 0) continue;
-          const update = await tx
-            .update(aiJobs)
-            .set({ status: 'running' })
-            .where(and(eq(aiJobs.id, job.id), eq(aiJobs.status, 'queued')))
-            .run();
-          if (Number(update.rowsAffected) > 0) {
-            return { ...job, status: 'running' };
-          }
-        }
-        return null;
+          .limit(1);
+        const job = queuedJobs[0];
+        if (!job) return null;
+
+        const update = await tx
+          .update(aiJobs)
+          .set({
+            status: 'running',
+            workerId,
+            leaseExpiresAt: aiLeaseExpiry(leaseDurationMs),
+          })
+          .where(and(eq(aiJobs.id, job.id), eq(aiJobs.status, 'queued')))
+          .run();
+        if (Number(update.rowsAffected) === 0) return null;
+
+        const claimedRows = await tx
+          .select()
+          .from(aiJobs)
+          .where(eq(aiJobs.id, job.id))
+          .limit(1);
+        return claimedRows[0] ?? null;
       })
     );
   }
 
   async completeAiJob(
     id: string,
+    workerId: string,
     update: {
       resultJson: string;
       warningsJson: string;
@@ -1306,45 +1351,140 @@ class DrizzleApiRepository implements ApiRepository {
       finishedAt: string;
     }
   ): Promise<boolean> {
-    const result = await this.db
-      .update(aiJobs)
-      .set({ status: 'succeeded', ...update, error: null })
-      .where(and(eq(aiJobs.id, id), eq(aiJobs.status, 'running')))
-      .run();
-    return Number(result.rowsAffected) > 0;
+    return serializeRepositoryTransaction(() =>
+      this.db.transaction(async (tx) => {
+        const result = await tx
+          .update(aiJobs)
+          .set({
+            status: 'succeeded',
+            ...update,
+            error: null,
+            workerId: null,
+            leaseExpiresAt: null,
+          })
+          .where(
+            and(
+              eq(aiJobs.id, id),
+              eq(aiJobs.status, 'running'),
+              eq(aiJobs.workerId, workerId),
+              gt(aiJobs.leaseExpiresAt, AI_DATABASE_NOW)
+            )
+          )
+          .run();
+        return Number(result.rowsAffected) > 0;
+      })
+    );
+  }
+
+  async renewAiJobLease(
+    id: string,
+    workerId: string,
+    leaseDurationMs: number
+  ): Promise<boolean> {
+    return serializeRepositoryTransaction(() =>
+      this.db.transaction(async (tx) => {
+        const result = await tx
+          .update(aiJobs)
+          .set({ leaseExpiresAt: aiLeaseExpiry(leaseDurationMs) })
+          .where(
+            and(
+              eq(aiJobs.id, id),
+              eq(aiJobs.status, 'running'),
+              eq(aiJobs.workerId, workerId),
+              gt(aiJobs.leaseExpiresAt, AI_DATABASE_NOW)
+            )
+          )
+          .run();
+        return Number(result.rowsAffected) > 0;
+      })
+    );
+  }
+
+  async releaseAiJobClaim(id: string, workerId: string): Promise<boolean> {
+    return serializeRepositoryTransaction(() =>
+      this.db.transaction(async (tx) => {
+        const result = await tx
+          .update(aiJobs)
+          .set({ status: 'queued', workerId: null, leaseExpiresAt: null })
+          .where(
+            and(
+              eq(aiJobs.id, id),
+              eq(aiJobs.status, 'running'),
+              eq(aiJobs.workerId, workerId),
+              gt(aiJobs.leaseExpiresAt, AI_DATABASE_NOW)
+            )
+          )
+          .run();
+        return Number(result.rowsAffected) > 0;
+      })
+    );
   }
 
   async failAiJob(
     id: string,
+    workerId: string,
     error: string,
     finishedAt: string
   ): Promise<boolean> {
-    const result = await this.db
-      .update(aiJobs)
-      .set({
-        status: 'failed',
-        resultJson: null,
-        warningsJson: null,
-        error,
-        tokensIn: null,
-        tokensOut: null,
-        finishedAt,
+    return serializeRepositoryTransaction(() =>
+      this.db.transaction(async (tx) => {
+        const result = await tx
+          .update(aiJobs)
+          .set({
+            status: 'failed',
+            resultJson: null,
+            warningsJson: null,
+            error,
+            tokensIn: null,
+            tokensOut: null,
+            finishedAt,
+            workerId: null,
+            leaseExpiresAt: null,
+          })
+          .where(
+            and(
+              eq(aiJobs.id, id),
+              eq(aiJobs.status, 'running'),
+              eq(aiJobs.workerId, workerId),
+              gt(aiJobs.leaseExpiresAt, AI_DATABASE_NOW)
+            )
+          )
+          .run();
+        return Number(result.rowsAffected) > 0;
       })
-      .where(and(eq(aiJobs.id, id), eq(aiJobs.status, 'running')))
-      .run();
-    return Number(result.rowsAffected) > 0;
+    );
   }
 
-  async recoverRunningAiJobs(
+  async recoverExpiredAiJobs(
     finishedAt: string,
     error: string
   ): Promise<number> {
-    const result = await this.db
-      .update(aiJobs)
-      .set({ status: 'failed', error, finishedAt })
-      .where(eq(aiJobs.status, 'running'))
-      .run();
-    return Number(result.rowsAffected);
+    return serializeRepositoryTransaction(() =>
+      this.db.transaction(async (tx) => {
+        const result = await tx
+          .update(aiJobs)
+          .set({
+            status: 'failed',
+            resultJson: null,
+            warningsJson: null,
+            error,
+            tokensIn: null,
+            tokensOut: null,
+            finishedAt,
+            workerId: null,
+            leaseExpiresAt: null,
+          })
+          .where(
+            and(
+              eq(aiJobs.status, 'running'),
+              isNotNull(aiJobs.workerId),
+              lte(aiJobs.leaseExpiresAt, AI_DATABASE_NOW)
+            )
+          )
+          .run();
+        return Number(result.rowsAffected);
+      })
+    );
   }
 
   close() {
