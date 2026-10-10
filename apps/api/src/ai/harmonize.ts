@@ -108,7 +108,7 @@ function hasSameRhythmSkeleton(
   });
 }
 
-function hasSelectedRangeBoundaryTie(
+export function hasSelectedRangeBoundaryTie(
   sourceMeasures: ScorePart['measures'],
   selectedMeasureNumbers: ReadonlySet<number>
 ): boolean {

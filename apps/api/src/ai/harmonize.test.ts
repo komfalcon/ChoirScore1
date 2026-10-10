@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { ScoreModel } from '@choirscore/shared';
+import type { ScoreModel, ScorePart } from '@choirscore/shared';
 import type { AiWorkItem } from './jobs';
 import {
   generateHarmonizeProposal,
+  hasSelectedRangeBoundaryTie,
   HARMONIZE_MAX_REPAIRS,
   validateHarmonizeSubmission,
 } from './harmonize';
@@ -68,29 +69,6 @@ function work(value: Record<string, unknown>): AiWorkItem {
     input: value,
     signal: new AbortController().signal,
   };
-}
-
-type TieMeasureFixture = {
-  number: number;
-  notes: Array<{ tie?: boolean }>;
-};
-
-function fixtureHasSelectedRangeBoundaryTie(
-  measures: TieMeasureFixture[],
-  selectedMeasureNumbers: ReadonlySet<number>
-): boolean {
-  const events = measures.flatMap((measure) =>
-    measure.notes.map((note) => ({ measureNumber: measure.number, note }))
-  );
-  return events.some((event, index) => {
-    if (!event.note.tie) return false;
-    const continuation = events[index + 1];
-    return (
-      continuation !== undefined &&
-      selectedMeasureNumbers.has(event.measureNumber) !==
-        selectedMeasureNumbers.has(continuation.measureNumber)
-    );
-  });
 }
 
 describe('Harmonize inline pipeline', () => {
@@ -317,34 +295,38 @@ describe('Harmonize inline pipeline', () => {
     expect(calls).toHaveLength(0);
   });
 
-  it('identifies an outgoing target boundary tie independently of the melody tie', () => {
-    const measure = (
-      number: number,
-      tieLastNote = false
-    ): TieMeasureFixture => ({
-      number,
-      notes: [0, 1, 2, 3].map((index) => ({
-        ...(tieLastNote && index === 3 ? { tie: true } : {}),
-      })),
-    });
-    const melodyMeasures = [measure(1), measure(2)];
-    const targetMeasures = [measure(1, true), measure(2)];
+  it('uses the production predicate to detect an outgoing target tie when the melody tie is false', () => {
+    const measures = (tieLastNote: boolean): ScorePart['measures'] =>
+      [1, 2].map((number) => ({
+        number,
+        notes: [0, 1, 2, 3].map((index) => ({
+          pitch: 'C5',
+          dur: 1,
+          tie: tieLastNote && index === 3,
+          voice: '1',
+          staff: 1,
+          chord: false,
+        })),
+      }));
+    const melodyMeasures = measures(false);
+    const targetMeasures = measures(true);
     const selectedMeasureNumbers = new Set([1]);
 
-    // The outgoing target tie is a real boundary edge; the melody has none.
-    // Its selected-slot tie metadata differs, so this case cannot by itself
-    // distinguish the integration rejection from the skeleton check.
+    expect(melodyMeasures[0]!.notes[3]!.tie).toBe(false);
+    expect(targetMeasures[0]!.notes[3]!.tie).toBe(true);
     expect(
-      fixtureHasSelectedRangeBoundaryTie(melodyMeasures, selectedMeasureNumbers)
+      hasSelectedRangeBoundaryTie(melodyMeasures, selectedMeasureNumbers)
     ).toBe(false);
     expect(
-      fixtureHasSelectedRangeBoundaryTie(targetMeasures, selectedMeasureNumbers)
+      hasSelectedRangeBoundaryTie(targetMeasures, selectedMeasureNumbers)
     ).toBe(true);
-    expect(melodyMeasures[0]!.notes[3]!.tie).toBeUndefined();
-    expect(targetMeasures[0]!.notes[3]!.tie).toBe(true);
   });
 
-  it('rejects requested target-part ties crossing either partial-range boundary before provider work', async () => {
+  // The outgoing integration case is intentionally retained but is
+  // skeleton-confounded: its selected target tie bit also differs from the
+  // selected melody slot. The production-predicate test above proves the
+  // outgoing guard causality directly; the incoming case checks admission.
+  it('retains zero-call coverage for incoming and skeleton-confounded outgoing target ties', async () => {
     const measure = (
       number: number,
       pitches: string[],
@@ -364,7 +346,8 @@ describe('Harmonize inline pipeline', () => {
         melodyFirstMeasureHasBoundaryTie: false,
       },
       {
-        description: 'outgoing target tie to an unselected measure',
+        description:
+          'outgoing target tie to an unselected measure (skeleton-confounded by selected-slot tie metadata)',
         measureRange: { start: 1, end: 1 },
         melodyFirstMeasureHasBoundaryTie: false,
       },
