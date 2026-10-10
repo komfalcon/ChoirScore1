@@ -63,6 +63,27 @@ describe('LazyTonePlaybackEngine', () => {
     expect(engine.play).toHaveBeenCalledWith(score, settings, undefined);
   });
 
+  it('forwards audio-clock progress callbacks to the lazily loaded engine', async () => {
+    const engine = fakeEngine();
+    const lazy = new LazyTonePlaybackEngine(vi.fn().mockResolvedValue(engine));
+    const onProgress = vi.fn();
+    const position = {
+      measureIndex: 0,
+      measureNumber: 1,
+      beatIndex: 0,
+      subdivisionIndex: 0 as const,
+      scoreBeat: 0,
+      activePartIds: ['P1'],
+    };
+
+    await lazy.play(score, settings, { onProgress });
+
+    const callbacks = vi.mocked(engine.play).mock.calls[0]?.[2];
+    expect(callbacks?.onProgress).toBe(onProgress);
+    callbacks?.onProgress?.(position);
+    expect(onProgress).toHaveBeenCalledWith(position);
+  });
+
   it('creates and resumes the AudioContext synchronously only when Play is invoked', async () => {
     const engine = fakeEngine();
     const context = {

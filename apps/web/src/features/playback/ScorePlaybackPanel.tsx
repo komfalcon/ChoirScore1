@@ -1,6 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import type { ScoreModel } from '@choirscore/shared';
 import { PlaybackController } from './PlaybackController';
+import type { PlaybackPosition } from './playbackCore';
 import {
   type PlaybackControlsState,
   type PartSettingsPatch,
@@ -9,6 +17,17 @@ import { PlaybackControlsAdapter } from './PlaybackControlsAdapter';
 import { LazyTonePlaybackEngine } from './LazyTonePlaybackEngine';
 import { resolvePlaybackVoicePart } from './resolvePlaybackVoicePart';
 import './ScorePlaybackPanel.css';
+
+export interface ScorePlaybackPanelHandle {
+  /** Start immediately at a one-based measure, as called from a user gesture. */
+  playFromMeasure: (measure: number) => void;
+}
+
+type ScorePlaybackPanelProps = {
+  score: ScoreModel;
+  profileVoicePart: string | null;
+  onProgressChange?: (position: PlaybackPosition | null) => void;
+};
 
 function initialState(
   score: ScoreModel,
@@ -30,21 +49,23 @@ function initialState(
   };
 }
 
-export function ScorePlaybackPanel({
-  score,
-  profileVoicePart,
-}: {
-  score: ScoreModel;
-  profileVoicePart: string | null;
-}) {
+export const ScorePlaybackPanel = forwardRef<
+  ScorePlaybackPanelHandle,
+  ScorePlaybackPanelProps
+>(function ScorePlaybackPanel(
+  { score, profileVoicePart, onProgressChange },
+  ref
+) {
   const [state, setState] = useState(() =>
     initialState(score, profileVoicePart)
   );
   const stateRef = useRef(state);
   const scoreRef = useRef(score);
   const mountedRef = useRef(false);
+  const progressCallbackRef = useRef(onProgressChange);
   stateRef.current = state;
   scoreRef.current = score;
+  progressCallbackRef.current = onProgressChange;
 
   const engine = useMemo(() => new LazyTonePlaybackEngine(), []);
   const host = useMemo(
@@ -61,6 +82,10 @@ export function ScorePlaybackPanel({
           status,
           error: status === 'error' ? error : undefined,
         }));
+      },
+      onProgressChange: (position: PlaybackPosition | null) => {
+        if (!mountedRef.current) return;
+        progressCallbackRef.current?.(position);
       },
       onTempoChange: (tempoPercent: number) => {
         setState((current) => ({ ...current, tempoPercent }));
@@ -89,6 +114,16 @@ export function ScorePlaybackPanel({
   const resolvedVoicePart = resolvePlaybackVoicePart(
     score.parts,
     profileVoicePart
+  );
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      playFromMeasure: (measure) => {
+        void controller.playFromMeasure(measure);
+      },
+    }),
+    [controller]
   );
 
   useEffect(() => {
@@ -122,4 +157,4 @@ export function ScorePlaybackPanel({
       />
     </section>
   );
-}
+});

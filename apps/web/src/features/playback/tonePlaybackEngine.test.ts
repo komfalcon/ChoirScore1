@@ -7,13 +7,16 @@ const toneMock = vi.hoisted(() => ({
   loaded: vi.fn(() => Promise.resolve()),
   sampler: vi.fn(),
   synth: vi.fn(),
+  draw: { schedule: vi.fn() },
   setContext: vi.fn(),
   getTransport: vi.fn(),
   transport: {
     start: vi.fn(),
     stop: vi.fn(),
     pause: vi.fn(),
-    schedule: vi.fn(() => 1),
+    schedule: vi.fn(
+      (_callback: (time: number) => void, _time?: string | number) => 1
+    ),
     scheduleOnce: vi.fn(() => 2),
     clear: vi.fn(),
     position: 0,
@@ -25,6 +28,7 @@ const toneMock = vi.hoisted(() => ({
 }));
 
 vi.mock('tone', () => ({
+  Draw: toneMock.draw,
   start: toneMock.start,
   loaded: toneMock.loaded,
   Sampler: toneMock.sampler,
@@ -88,6 +92,7 @@ describe('TonePlaybackEngine', () => {
     vi.clearAllMocks();
     toneMock.start.mockResolvedValue(undefined);
     toneMock.loaded.mockResolvedValue(undefined);
+    toneMock.draw.schedule.mockReset();
     toneMock.transport.position = 0;
     toneMock.transport.bpm.value = 120;
     toneMock.transport.loop = false;
@@ -181,6 +186,81 @@ describe('TonePlaybackEngine', () => {
 
     expect(toneMock.transport.start).not.toHaveBeenCalled();
     expect(toneMock.transport.schedule).not.toHaveBeenCalled();
+  });
+
+  it('delivers score-position cues on the audio draw clock and ignores stale cues after Stop', async () => {
+    const onProgress = vi.fn();
+    const engine = new TonePlaybackEngine();
+    await engine.play(score, settings, { onProgress });
+
+    const scheduledProgress = toneMock.transport.schedule.mock.calls[0]?.[0];
+    expect(scheduledProgress).toBeTypeOf('function');
+    scheduledProgress?.(0.125);
+    expect(toneMock.draw.schedule).toHaveBeenCalledOnce();
+    expect(toneMock.draw.schedule).toHaveBeenCalledWith(
+      expect.any(Function),
+      0.125
+    );
+    const drawCallback = toneMock.draw.schedule.mock.calls[0]?.[0];
+    drawCallback?.();
+    expect(onProgress).toHaveBeenCalledWith({
+      measureIndex: 0,
+      measureNumber: 1,
+      beatIndex: 0,
+      subdivisionIndex: 0,
+      scoreBeat: 0,
+      activePartIds: ['P1'],
+    });
+
+    engine.stop();
+    toneMock.draw.schedule.mockClear();
+    scheduledProgress?.(0.25);
+    expect(toneMock.draw.schedule).not.toHaveBeenCalled();
+    expect(onProgress).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores a queued draw frame after Pause and resumes progress on later cues', async () => {
+    const onProgress = vi.fn();
+    const engine = new TonePlaybackEngine();
+    await engine.play(score, settings, { onProgress });
+
+    const scheduledProgress = toneMock.transport.schedule.mock.calls[0]?.[0];
+    expect(scheduledProgress).toBeTypeOf('function');
+    scheduledProgress?.(0.125);
+    const staleDraw = toneMock.draw.schedule.mock.calls[0]?.[0];
+    expect(staleDraw).toBeTypeOf('function');
+
+    engine.pause();
+    staleDraw?.();
+    expect(onProgress).not.toHaveBeenCalled();
+
+    engine.resume();
+    scheduledProgress?.(0.25);
+    const resumedDraw = toneMock.draw.schedule.mock.calls[1]?.[0];
+    resumedDraw?.();
+    expect(onProgress).toHaveBeenCalledOnce();
+  });
+
+  it('reports no active part when the requested mix makes every voice silent', async () => {
+    const onProgress = vi.fn();
+    const engine = new TonePlaybackEngine();
+    await engine.play(
+      score,
+      {
+        ...settings,
+        parts: { P1: { muted: true, solo: false, volume: 1 } },
+      },
+      { onProgress }
+    );
+
+    const scheduledProgress = toneMock.transport.schedule.mock.calls[0]?.[0];
+    scheduledProgress?.(0.125);
+    const drawCallback = toneMock.draw.schedule.mock.calls[0]?.[0];
+    drawCallback?.();
+
+    expect(onProgress).toHaveBeenCalledWith(
+      expect.objectContaining({ activePartIds: [] })
+    );
   });
 
   it('schedules and starts playback when resumed before the initial sample load completes', async () => {
