@@ -130,8 +130,7 @@ function BeatStrip({
                 playbackPosition.beatIndex === beatIndex &&
                 (beat.segments.length === 1 ||
                   playbackPosition.subdivisionIndex === segmentIndex) &&
-                (playbackPosition.activePartIds.length === 0 ||
-                  playbackPosition.activePartIds.includes(partId));
+                playbackPosition.activePartIds.includes(partId);
               const lyric =
                 verse === undefined
                   ? undefined

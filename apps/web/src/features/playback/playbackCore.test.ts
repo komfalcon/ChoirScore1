@@ -319,6 +319,40 @@ describe('playback core', () => {
     });
   });
 
+  it('limits progress activePartIds to the audible mix, with empty meaning none', () => {
+    const mutedBass = createPlaybackPlan(score, {
+      tempoPercent: 100,
+      countIn: false,
+      loop: null,
+      parts: {
+        S: { muted: false, solo: false, volume: 1 },
+        B: { muted: true, solo: false, volume: 1 },
+      },
+    });
+    const soloSoprano = createPlaybackPlan(score, {
+      tempoPercent: 100,
+      countIn: false,
+      loop: null,
+      parts: {
+        S: { muted: false, solo: true, volume: 1 },
+        B: { muted: false, solo: false, volume: 1 },
+      },
+    });
+    const noAudibleParts = createPlaybackPlan(score, {
+      tempoPercent: 100,
+      countIn: false,
+      loop: null,
+      parts: {
+        S: { muted: true, solo: false, volume: 1 },
+        B: { muted: true, solo: false, volume: 1 },
+      },
+    });
+
+    expect(mutedBass.progress[0]?.position.activePartIds).toEqual(['S']);
+    expect(soloSoprano.progress[0]?.position.activePartIds).toEqual(['S']);
+    expect(noAudibleParts.progress[0]?.position.activePartIds).toEqual([]);
+  });
+
   it('models per-part mute, solo, volume, and My Part focus', () => {
     const initial = createDefaultPartMix(['S', 'B']);
     const quietSoprano = updatePartPlaybackSettings(initial, 'S', {

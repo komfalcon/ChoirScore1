@@ -56,7 +56,7 @@ export interface PlaybackPosition {
   subdivisionIndex: 0 | 1;
   /** Absolute quarter-note position in the source score. */
   scoreBeat: number;
-  /** Audible parts with a note sounding at this score position. */
+  /** Audible parts with a note sounding here; empty means no part cell is active. */
   activePartIds: string[];
 }
 

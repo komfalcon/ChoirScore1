@@ -241,6 +241,28 @@ describe('TonePlaybackEngine', () => {
     expect(onProgress).toHaveBeenCalledOnce();
   });
 
+  it('reports no active part when the requested mix makes every voice silent', async () => {
+    const onProgress = vi.fn();
+    const engine = new TonePlaybackEngine();
+    await engine.play(
+      score,
+      {
+        ...settings,
+        parts: { P1: { muted: true, solo: false, volume: 1 } },
+      },
+      { onProgress }
+    );
+
+    const scheduledProgress = toneMock.transport.schedule.mock.calls[0]?.[0];
+    scheduledProgress?.(0.125);
+    const drawCallback = toneMock.draw.schedule.mock.calls[0]?.[0];
+    drawCallback?.();
+
+    expect(onProgress).toHaveBeenCalledWith(
+      expect.objectContaining({ activePartIds: [] })
+    );
+  });
+
   it('schedules and starts playback when resumed before the initial sample load completes', async () => {
     let resolveSamples: (() => void) | undefined;
     toneMock.sampler.mockImplementationOnce((options: SamplerCallbacks) => ({

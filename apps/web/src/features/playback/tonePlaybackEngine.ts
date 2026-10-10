@@ -52,7 +52,10 @@ export class TonePlaybackEngine {
     await this.ensureSamplesLoaded();
     if (playGeneration !== this.playGeneration) return;
 
-    const plan = createPlaybackPlan(score, settings);
+    const plan = createPlaybackPlan(score, {
+      ...settings,
+      parts: settings.parts,
+    });
     this.clearScheduledEvents();
     const transport = Tone.getTransport();
     transport.stop();

@@ -175,4 +175,19 @@ describe('responsive Tonic Sol-fa renderer', () => {
     expect(html).toContain('Playback at bar 1, beat 1.');
     expect(html).toContain('aria-label="Play from bar 1"');
   });
+
+  it('does not highlight Sol-fa cells when no part is audible', () => {
+    const position: PlaybackPosition = {
+      measureIndex: 0,
+      measureNumber: 1,
+      beatIndex: 0,
+      subdivisionIndex: 0,
+      scoreBeat: 0,
+      activePartIds: [],
+    };
+    const html = render(baseModel, [], position, () => undefined);
+
+    expect(html).toContain('Playback at bar 1, beat 1.');
+    expect(html).not.toContain('data-playback-current="true"');
+  });
 });
