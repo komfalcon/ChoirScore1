@@ -245,6 +245,9 @@ export function AdminUsagePage() {
   const [savedMessage, setSavedMessage] = useState('');
   const [confirmingDisable, setConfirmingDisable] = useState(false);
   const confirmationHeadingRef = useRef<HTMLHeadingElement>(null);
+  const globalControlHeadingRef = useRef<HTMLHeadingElement>(null);
+  const globalSwitchRef = useRef<HTMLButtonElement>(null);
+  const restoreSwitchFocusRef = useRef(false);
 
   const loadDashboard = useCallback(async () => {
     setLoading(true);
@@ -268,11 +271,22 @@ export function AdminUsagePage() {
   }, [loadDashboard]);
 
   useEffect(() => {
-    if (confirmingDisable) confirmationHeadingRef.current?.focus();
-  }, [confirmingDisable]);
+    if (confirmingDisable) {
+      confirmationHeadingRef.current?.focus();
+      return;
+    }
+    if (!restoreSwitchFocusRef.current) return;
+    if (saving) {
+      globalControlHeadingRef.current?.focus();
+    } else {
+      globalSwitchRef.current?.focus();
+      restoreSwitchFocusRef.current = false;
+    }
+  }, [confirmingDisable, saving]);
 
   async function saveGlobalEnabled(aiGlobalEnabled: boolean) {
     if (saving || !settings) return;
+    if (confirmingDisable) restoreSwitchFocusRef.current = true;
     setSaving(true);
     setSaveError('');
     setSavedMessage('');
@@ -348,7 +362,13 @@ export function AdminUsagePage() {
             >
               <div className="admin-usage-kill__copy">
                 <p className="eyebrow">GLOBAL CONTROL</p>
-                <h2 id="global-ai-heading">Global AI submission switch</h2>
+                <h2
+                  id="global-ai-heading"
+                  ref={globalControlHeadingRef}
+                  tabIndex={-1}
+                >
+                  Global AI submission switch
+                </h2>
                 <p>
                   {settings.aiGlobalEnabled
                     ? 'New AI submissions are allowed by this global switch. Each user still follows their access and daily quota.'
@@ -359,6 +379,7 @@ export function AdminUsagePage() {
                 className="admin-usage-switch"
                 type="button"
                 role="switch"
+                ref={globalSwitchRef}
                 aria-checked={settings.aiGlobalEnabled}
                 aria-label="Allow new AI submissions globally"
                 aria-expanded={confirmingDisable}
@@ -422,7 +443,10 @@ export function AdminUsagePage() {
                       className="button button--quiet"
                       type="button"
                       disabled={saving}
-                      onClick={() => setConfirmingDisable(false)}
+                      onClick={() => {
+                        restoreSwitchFocusRef.current = true;
+                        setConfirmingDisable(false);
+                      }}
                     >
                       Cancel
                     </button>

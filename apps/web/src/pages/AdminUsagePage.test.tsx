@@ -131,7 +131,7 @@ describe('AdminUsagePage', () => {
     expect(dailyRows?.[29]?.querySelector('td')?.textContent).toBe('3');
   });
 
-  it('renders the empty state and requires confirmation before disabling AI', async () => {
+  it('renders the empty state, requires disable confirmation, and restores switch focus after cancel and save', async () => {
     let aiGlobalEnabled = true;
     const patchValues: boolean[] = [];
     const fetchMock = vi.fn(
@@ -207,6 +207,9 @@ describe('AdminUsagePage', () => {
     expect(container.textContent).not.toContain(
       'Block new AI submissions for everyone?'
     );
+    expect(document.activeElement).toBe(
+      container.querySelector('[role="switch"]')
+    );
     expect(patchValues).toEqual([]);
 
     await act(async () => click(container!.querySelector('[role="switch"]')!));
@@ -217,6 +220,9 @@ describe('AdminUsagePage', () => {
     await act(async () => click(confirm!));
     await flushReact();
     expect(patchValues).toEqual([false]);
+    expect(document.activeElement).toBe(
+      container.querySelector('[role="switch"]')
+    );
     expect(
       container.querySelector('[role="switch"]')?.getAttribute('aria-checked')
     ).toBe('false');
