@@ -10,6 +10,7 @@ import { Link, useParams } from 'react-router-dom';
 import {
   scoreKeyTonicName,
   type FitSuggestion,
+  type ScoreSummary,
   type ScoreModel,
   type VoicePart,
   type VoicePartRanges,
@@ -20,6 +21,7 @@ import {
   type FitScope,
 } from '../features/editor/TranspositionRangeFitPanel';
 import { ScorePlaybackPanel } from '../features/playback/ScorePlaybackPanel';
+import { ScoreSharingPanel } from '../features/sharing/ScoreSharingPanel';
 import { useAuth } from '../lib/auth';
 import {
   loadNotationMode,
@@ -220,6 +222,7 @@ type WorkspaceProps = {
   metadataError: string;
   metadataNotice: string;
   onSaveMetadata: (metadata: ScoreMetadataDraft) => Promise<boolean>;
+  onScoreUpdated?: (score: ScoreSummary) => void;
   onClearMetadataMessage: () => void;
   profileVoicePart?: VoicePart | null;
   voiceRangesState?: VoiceRangesState;
@@ -248,6 +251,7 @@ export function StaffViewerWorkspace({
   metadataError,
   metadataNotice,
   onSaveMetadata,
+  onScoreUpdated = () => undefined,
   onClearMetadataMessage,
   profileVoicePart = null,
   voiceRangesState = { status: 'loading' },
@@ -370,6 +374,7 @@ export function StaffViewerWorkspace({
       {score ? (
         <>
           <ScoreViewerStatePanel state={state} />
+          <ScoreSharingPanel score={score} onScoreUpdated={onScoreUpdated} />
           {metadataNotice ? (
             <p className="score-metadata-notice" role="status">
               {metadataNotice}
@@ -631,6 +636,23 @@ export function ScoreViewPage() {
     }
   }
 
+  function updateScoreSummary(updatedScore: ScoreSummary) {
+    setState((current) => {
+      if (
+        current.status !== 'ready' ||
+        current.response.score.id !== updatedScore.id
+      ) {
+        return current;
+      }
+      return {
+        status: 'ready',
+        response: {
+          score: { ...current.response.score, ...updatedScore },
+        },
+      };
+    });
+  }
+
   async function applyTransposition(
     model: ScoreModel,
     suggestion: FitSuggestion,
@@ -682,6 +704,7 @@ export function ScoreViewPage() {
         metadataError={metadataError}
         metadataNotice={metadataNotice}
         onSaveMetadata={saveMetadata}
+        onScoreUpdated={updateScoreSummary}
         onClearMetadataMessage={() => {
           setMetadataError('');
           setMetadataNotice('');

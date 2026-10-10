@@ -5,6 +5,8 @@ import {
   createScoreVersionResponseSchema,
   patchScoreRequestSchema,
   patchScoreResponseSchema,
+  putScoreAccessRequestSchema,
+  scoreAccessResponseSchema,
   scoreListFiltersSchema,
   type ApiErrorResponse,
   type CreateScoreAutosaveRequest,
@@ -12,6 +14,7 @@ import {
   type CreateScoreVersionResponse,
   type PatchScoreRequest,
   type PatchScoreResponse,
+  type ScoreAccessResponse,
   type ScoreImportResult,
   type ScoreLibraryResponse,
   type ScoreModel,
@@ -120,6 +123,50 @@ export async function patchScoreMetadata(
     patchScoreResponseSchema.parse,
     await readJson(response)
   );
+}
+
+export async function patchScoreVisibility(
+  id: string,
+  visibility: ScoreVisibility,
+  signal?: AbortSignal
+): Promise<PatchScoreResponse> {
+  const request = patchScoreRequestSchema.parse({ visibility });
+  const response = await apiFetch(`/scores/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+    signal,
+  });
+  const result = parseResponse(
+    patchScoreResponseSchema.parse,
+    await readJson(response)
+  );
+  if (result.score.id !== id || result.score.visibility !== visibility) {
+    throw new ScoreApiResponseError();
+  }
+  return result;
+}
+
+/** Removes all explicit grants; it does not change score visibility or role access. */
+export async function clearScoreAccess(
+  id: string,
+  signal?: AbortSignal
+): Promise<ScoreAccessResponse> {
+  const request = putScoreAccessRequestSchema.parse({ users: [] });
+  const response = await apiFetch(`/scores/${encodeURIComponent(id)}/access`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+    signal,
+  });
+  const result = parseResponse(
+    scoreAccessResponseSchema.parse,
+    await readJson(response)
+  );
+  if (result.scoreId !== id || result.users.length !== 0) {
+    throw new ScoreApiResponseError();
+  }
+  return result;
 }
 
 export async function createScoreVersion(
