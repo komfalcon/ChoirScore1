@@ -81,12 +81,15 @@ export function createAdminRouter(
     const windowEndExclusiveMs = todayStartMs + MILLISECONDS_PER_DAY;
     const windowStart = new Date(windowStartMs).toISOString();
     const windowEndExclusive = new Date(windowEndExclusiveMs).toISOString();
-    const { users, daily: aggregateDays } =
-      await repository.getAiUsageDashboard(
-        windowStart,
-        windowEndExclusive,
-        new Date(todayStartMs).toISOString()
-      );
+    const {
+      users,
+      daily: aggregateDays,
+      userDaily: aggregateUserDays,
+    } = await repository.getAiUsageDashboard(
+      windowStart,
+      windowEndExclusive,
+      new Date(todayStartMs).toISOString()
+    );
     const dayByDate = new Map(aggregateDays.map((day) => [day.date, day]));
     const daily = Array.from({ length: USAGE_WINDOW_DAYS }, (_, index) => {
       const date = new Date(windowStartMs + index * MILLISECONDS_PER_DAY)
@@ -94,12 +97,28 @@ export function createAdminRouter(
         .slice(0, 10);
       return dayByDate.get(date) ?? emptyUsageDay(date);
     });
+    const userDaysByUser = new Map<string, Map<string, number>>();
+    for (const { userId, date, requests } of aggregateUserDays) {
+      let userDays = userDaysByUser.get(userId);
+      if (!userDays) {
+        userDays = new Map();
+        userDaysByUser.set(userId, userDays);
+      }
+      userDays.set(date, requests);
+    }
+    const dates = daily.map((day) => day.date);
     const response = getAdminAiUsageResponseSchema.parse({
       asOf: asOf.toISOString(),
       windowStart,
       windowEndExclusive,
       days: USAGE_WINDOW_DAYS,
-      users,
+      users: users.map((user) => ({
+        ...user,
+        daily: dates.map((date) => ({
+          date,
+          requests: userDaysByUser.get(user.userId)?.get(date) ?? 0,
+        })),
+      })),
       daily,
     });
     await runAdminAction(

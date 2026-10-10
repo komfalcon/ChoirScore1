@@ -4,22 +4,13 @@ import { isoUtcTimestampSchema } from './timestamps.js';
 const usageCountSchema = z.number().int().nonnegative().safe();
 const utcDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
-export const adminAiUsageUserSchema = z
+export const adminAiUsageUserDaySchema = z
   .object({
-    userId: z.string().min(1),
-    username: z.string().min(1),
-    displayName: z.string().min(1),
-    requestsToday: usageCountSchema,
-    requestsInWindow: usageCountSchema,
-    succeededRequests: usageCountSchema,
-    failedRequests: usageCountSchema,
-    pendingRequests: usageCountSchema,
-    tokensIn: usageCountSchema,
-    tokensOut: usageCountSchema,
-    totalTokens: usageCountSchema,
+    date: utcDateSchema,
+    requests: usageCountSchema,
   })
   .strict();
-export type AdminAiUsageUser = z.infer<typeof adminAiUsageUserSchema>;
+export type AdminAiUsageUserDay = z.infer<typeof adminAiUsageUserDaySchema>;
 
 export const adminAiUsageDaySchema = z
   .object({
@@ -34,6 +25,24 @@ export const adminAiUsageDaySchema = z
   })
   .strict();
 export type AdminAiUsageDay = z.infer<typeof adminAiUsageDaySchema>;
+
+export const adminAiUsageUserSchema = z
+  .object({
+    userId: z.string().min(1),
+    username: z.string().min(1),
+    displayName: z.string().min(1),
+    requestsToday: usageCountSchema,
+    requestsInWindow: usageCountSchema,
+    succeededRequests: usageCountSchema,
+    failedRequests: usageCountSchema,
+    pendingRequests: usageCountSchema,
+    tokensIn: usageCountSchema,
+    tokensOut: usageCountSchema,
+    totalTokens: usageCountSchema,
+    daily: z.array(adminAiUsageUserDaySchema).length(30),
+  })
+  .strict();
+export type AdminAiUsageUser = z.infer<typeof adminAiUsageUserSchema>;
 
 export const getAdminAiUsageResponseSchema = z
   .object({

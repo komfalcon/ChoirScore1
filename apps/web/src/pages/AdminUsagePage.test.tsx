@@ -44,6 +44,7 @@ function makeUsageResponse() {
         tokensIn: 0,
         tokensOut: 0,
         totalTokens: 0,
+        daily: daily.map((day) => ({ date: day.date, requests: 0 })),
       },
     ],
     daily,
@@ -92,6 +93,44 @@ describe('AdminUsagePage', () => {
     expect(markup).toContain('2026-10-10');
   });
 
+  it('renders a 30-day daily request breakdown for each user', async () => {
+    const usage = makeUsageResponse();
+    usage.users[0]!.daily[29]!.requests = 3;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/admin/usage')) {
+        return new Response(JSON.stringify(usage), { status: 200 });
+      }
+      return new Response(
+        JSON.stringify({
+          requirePasswordChangeAtFirstLogin: true,
+          voiceRanges: DEFAULT_VOICE_RANGES,
+          aiGlobalEnabled: true,
+          aiDefaultDailyLimit: 20,
+        }),
+        { status: 200 }
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    container = document.createElement('div');
+    document.body.append(container);
+    root = createRoot(container);
+
+    await act(async () => root?.render(<AdminUsagePage />));
+    await flushReact();
+
+    const dailyTable = container.querySelector('.admin-usage-daily__table');
+    expect(dailyTable?.querySelector('caption')?.textContent).toBe(
+      'Daily AI requests for @admin'
+    );
+    const dailyRows = dailyTable?.querySelectorAll('tbody > tr');
+    expect(dailyRows).toHaveLength(30);
+    expect(dailyRows?.[0]?.querySelector('th')?.textContent).toBe('2026-09-11');
+    expect(dailyRows?.[29]?.querySelector('th')?.textContent).toBe(
+      '2026-10-10'
+    );
+    expect(dailyRows?.[29]?.querySelector('td')?.textContent).toBe('3');
+  });
+
   it('renders the empty state and requires confirmation before disabling AI', async () => {
     let aiGlobalEnabled = true;
     const patchValues: boolean[] = [];
@@ -130,24 +169,50 @@ describe('AdminUsagePage', () => {
     expect(container.textContent).toContain(
       'No accepted AI requests in the last 30 days'
     );
+    expect(container.textContent).toContain(
+      'Provider readiness: unavailable in this slice.'
+    );
+    expect(container.textContent).toContain(
+      'Accepted jobs fail with a generic processing error and still consume the user’s daily quota.'
+    );
+    expect(container.textContent).toContain(
+      'at most 2 queued + running jobs globally and 1 queued + running job per user'
+    );
+    expect(container.textContent).toContain(
+      'This is separate from worker concurrency'
+    );
+    expect(container.textContent).not.toContain('AI is enabled');
     expect(
       container.querySelector('[role="switch"]')?.getAttribute('aria-checked')
     ).toBe('true');
 
     await act(async () => click(container!.querySelector('[role="switch"]')!));
-    expect(container.textContent).toContain('Disable AI for everyone?');
+    expect(container.textContent).toContain(
+      'Block new AI submissions for everyone?'
+    );
+    expect(
+      container
+        .querySelector('#confirm-disable-actions')
+        ?.getAttribute('aria-live')
+    ).toBe('polite');
+    expect(document.activeElement).toBe(
+      container.querySelector('#confirm-disable-title')
+    );
     expect(patchValues).toEqual([]);
 
     const cancel = Array.from(container.querySelectorAll('button')).find(
       (button) => button.textContent?.trim() === 'Cancel'
     );
     await act(async () => click(cancel!));
-    expect(container.textContent).not.toContain('Disable AI for everyone?');
+    expect(container.textContent).not.toContain(
+      'Block new AI submissions for everyone?'
+    );
     expect(patchValues).toEqual([]);
 
     await act(async () => click(container!.querySelector('[role="switch"]')!));
     const confirm = Array.from(container.querySelectorAll('button')).find(
-      (button) => button.textContent?.trim() === 'Disable AI globally'
+      (button) =>
+        button.textContent?.trim() === 'Block new submissions globally'
     );
     await act(async () => click(confirm!));
     await flushReact();
@@ -155,7 +220,9 @@ describe('AdminUsagePage', () => {
     expect(
       container.querySelector('[role="switch"]')?.getAttribute('aria-checked')
     ).toBe('false');
-    expect(container.textContent).toContain('AI has been disabled globally');
+    expect(container.textContent).toContain(
+      'The global submission switch is off.'
+    );
 
     await act(async () => click(container!.querySelector('[role="switch"]')!));
     await flushReact();

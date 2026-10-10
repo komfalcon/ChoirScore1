@@ -137,6 +137,15 @@ describe('GET /admin/usage', () => {
       pendingRequests: 0,
       totalTokens: 0,
     });
+    expect(response.body.users[0].daily).toHaveLength(30);
+    expect(response.body.users[0].daily[0]).toEqual({
+      date: '2026-09-11',
+      requests: 0,
+    });
+    expect(response.body.users[0].daily[29]).toEqual({
+      date: '2026-10-10',
+      requests: 0,
+    });
     expect(
       (await repository.listAuditEntries()).some(
         (entry) => entry.action === 'admin.ai_usage.read'
@@ -200,6 +209,18 @@ describe('GET /admin/usage', () => {
       tokensOut: 4,
       totalTokens: 21,
     });
+    expect(member.daily).toHaveLength(30);
+    expect(member.daily[0]).toEqual({
+      date: '2026-09-11',
+      requests: 1,
+    });
+    expect(member.daily[29]).toEqual({
+      date: '2026-10-10',
+      requests: 2,
+    });
+    expect(
+      member.daily.find((day: { date: string }) => day.date === '2026-09-12')
+    ).toEqual({ date: '2026-09-12', requests: 0 });
     expect(response.body.daily[0]).toMatchObject({
       date: '2026-09-11',
       requests: 1,

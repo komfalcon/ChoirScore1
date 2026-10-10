@@ -138,6 +138,12 @@ export interface AiUsageDayAggregate {
   totalTokens: number;
 }
 
+export interface AiUsageUserDayAggregate {
+  userId: string;
+  date: string;
+  requests: number;
+}
+
 export interface ScoreRowWithVersion {
   score: ScoreRecord;
   version: ScoreVersionRecord;
@@ -229,6 +235,7 @@ export interface ApiRepository extends RepositoryTransaction {
   ): Promise<{
     users: AiUsageUserAggregate[];
     daily: AiUsageDayAggregate[];
+    userDaily: AiUsageUserDayAggregate[];
   }>;
   listAuditEntries(): Promise<AuditRecord[]>;
   listScoreRows(criteria: ScoreListCriteria): Promise<ScoreRowWithVersion[]>;
@@ -815,6 +822,21 @@ class DrizzleApiRepository implements ApiRepository {
         )
         .groupBy(date)
         .orderBy(asc(date));
+      const userDailyRows = await tx
+        .select({
+          userId: aiJobs.userId,
+          date,
+          requests: sql<number>`count(${aiJobs.id})`,
+        })
+        .from(aiJobs)
+        .where(
+          and(
+            gte(aiJobs.createdAt, windowStart),
+            lt(aiJobs.createdAt, windowEndExclusive)
+          )
+        )
+        .groupBy(aiJobs.userId, date)
+        .orderBy(asc(aiJobs.userId), asc(date));
 
       const userAggregates = userRows.map((row) => {
         const requestsToday = Number(row.requestsToday);
@@ -860,7 +882,12 @@ class DrizzleApiRepository implements ApiRepository {
           totalTokens: tokensIn + tokensOut,
         };
       });
-      return { users: userAggregates, daily };
+      const userDaily = userDailyRows.map((row) => ({
+        userId: row.userId,
+        date: row.date,
+        requests: Number(row.requests),
+      }));
+      return { users: userAggregates, daily, userDaily };
     });
   }
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   GetAdminAiUsageResponse,
   GetAdminSettingsResponse,
@@ -244,6 +244,7 @@ export function AdminUsagePage() {
   const [saveError, setSaveError] = useState('');
   const [savedMessage, setSavedMessage] = useState('');
   const [confirmingDisable, setConfirmingDisable] = useState(false);
+  const confirmationHeadingRef = useRef<HTMLHeadingElement>(null);
 
   const loadDashboard = useCallback(async () => {
     setLoading(true);
@@ -266,6 +267,10 @@ export function AdminUsagePage() {
     void loadDashboard();
   }, [loadDashboard]);
 
+  useEffect(() => {
+    if (confirmingDisable) confirmationHeadingRef.current?.focus();
+  }, [confirmingDisable]);
+
   async function saveGlobalEnabled(aiGlobalEnabled: boolean) {
     if (saving || !settings) return;
     setSaving(true);
@@ -277,8 +282,8 @@ export function AdminUsagePage() {
       setSettings(updated);
       setSavedMessage(
         aiGlobalEnabled
-          ? 'AI has been enabled globally.'
-          : 'AI has been disabled globally. New requests are blocked; accepted jobs will continue.'
+          ? 'The global submission switch is on.'
+          : 'The global submission switch is off. New requests are blocked; accepted jobs are not cancelled.'
       );
     } catch (error) {
       setSaveError(errorMessage(error));
@@ -343,11 +348,11 @@ export function AdminUsagePage() {
             >
               <div className="admin-usage-kill__copy">
                 <p className="eyebrow">GLOBAL CONTROL</p>
-                <h2 id="global-ai-heading">AI availability</h2>
+                <h2 id="global-ai-heading">Global AI submission switch</h2>
                 <p>
                   {settings.aiGlobalEnabled
-                    ? 'AI is enabled. New requests still follow each user’s access and daily quota.'
-                    : 'AI is disabled globally. New requests are blocked; already accepted jobs continue.'}
+                    ? 'New AI submissions are allowed by this global switch. Each user still follows their access and daily quota.'
+                    : 'New AI submissions are blocked globally; already accepted jobs are not cancelled.'}
                 </p>
               </div>
               <button
@@ -355,7 +360,7 @@ export function AdminUsagePage() {
                 type="button"
                 role="switch"
                 aria-checked={settings.aiGlobalEnabled}
-                aria-label="Enable AI globally"
+                aria-label="Allow new AI submissions globally"
                 aria-expanded={confirmingDisable}
                 aria-controls={
                   confirmingDisable ? 'confirm-disable-actions' : undefined
@@ -377,7 +382,9 @@ export function AdminUsagePage() {
                 <span className="admin-usage-switch__track" aria-hidden="true">
                   <span />
                 </span>
-                <span>{settings.aiGlobalEnabled ? 'Enabled' : 'Disabled'}</span>
+                <span>
+                  {settings.aiGlobalEnabled ? 'Submissions allowed' : 'Blocked'}
+                </span>
               </button>
               {confirmingDisable ? (
                 <div
@@ -385,12 +392,19 @@ export function AdminUsagePage() {
                   id="confirm-disable-actions"
                   role="group"
                   aria-labelledby="confirm-disable-title"
+                  aria-live="polite"
                 >
                   <div>
-                    <h3 id="confirm-disable-title">Disable AI for everyone?</h3>
+                    <h3
+                      id="confirm-disable-title"
+                      ref={confirmationHeadingRef}
+                      tabIndex={-1}
+                    >
+                      Block new AI submissions for everyone?
+                    </h3>
                     <p>
-                      This blocks new AI requests across the choir. Queued and
-                      running jobs are not cancelled.
+                      This blocks new AI submissions across the choir. Queued
+                      and running jobs are not cancelled.
                     </p>
                   </div>
                   <div className="admin-usage-confirm__actions">
@@ -400,7 +414,9 @@ export function AdminUsagePage() {
                       disabled={saving}
                       onClick={() => void saveGlobalEnabled(false)}
                     >
-                      {saving ? 'Disabling…' : 'Disable AI globally'}
+                      {saving
+                        ? 'Blocking submissions…'
+                        : 'Block new submissions globally'}
                     </button>
                     <button
                       className="button button--quiet"
@@ -427,6 +443,23 @@ export function AdminUsagePage() {
                 </p>
               ) : null}
             </section>
+
+            <aside
+              className="admin-usage-readiness"
+              aria-label="AI provider readiness and admission limits"
+            >
+              <p className="admin-usage-readiness__provider" role="note">
+                <strong>Provider readiness: unavailable in this slice.</strong>{' '}
+                No provider calls are made. Accepted jobs fail with a generic
+                processing error and still consume the user’s daily quota.
+              </p>
+              <p className="admin-usage-readiness__limits">
+                <strong>Admission cap:</strong> at most 2 queued + running jobs
+                globally and 1 queued + running job per user. This is separate
+                from worker concurrency: at most 2 running jobs globally and 1
+                per user.
+              </p>
+            </aside>
 
             <UsageSummary usage={usage} />
 
@@ -466,7 +499,8 @@ export function AdminUsagePage() {
                   <h2 id="usage-users-heading">Usage by user</h2>
                   <p>
                     Requests today use the current UTC day. Outcomes and tokens
-                    cover the last 30 UTC days.
+                    cover the last 30 UTC days; daily request counts are
+                    available for each user.
                   </p>
                 </div>
                 <span className="result-count">
@@ -486,6 +520,7 @@ export function AdminUsagePage() {
                       <th scope="col">Succeeded · 30d</th>
                       <th scope="col">Failed · 30d</th>
                       <th scope="col">Tokens · 30d</th>
+                      <th scope="col">Daily requests</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -502,11 +537,37 @@ export function AdminUsagePage() {
                         <td>{formatNumber(user.succeededRequests)}</td>
                         <td>{formatNumber(user.failedRequests)}</td>
                         <td>{formatNumber(user.totalTokens)}</td>
+                        <td>
+                          <details className="admin-usage-daily">
+                            <summary>View 30-day breakdown</summary>
+                            <div className="admin-usage-daily__table-wrap">
+                              <table className="admin-usage-daily__table">
+                                <caption>
+                                  Daily AI requests for @{user.username}
+                                </caption>
+                                <thead>
+                                  <tr>
+                                    <th scope="col">UTC date</th>
+                                    <th scope="col">Accepted requests</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {user.daily.map((day) => (
+                                    <tr key={day.date}>
+                                      <th scope="row">{day.date}</th>
+                                      <td>{formatNumber(day.requests)}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </details>
+                        </td>
                       </tr>
                     ))}
                     {usage.users.length === 0 ? (
                       <tr>
-                        <td colSpan={6}>No users to report yet.</td>
+                        <td colSpan={7}>No users to report yet.</td>
                       </tr>
                     ) : null}
                   </tbody>
