@@ -113,6 +113,37 @@ export interface AiQuotaState {
   userEnabled: boolean;
 }
 
+export interface AiUsageUserAggregate {
+  userId: string;
+  username: string;
+  displayName: string;
+  requestsToday: number;
+  requestsInWindow: number;
+  succeededRequests: number;
+  failedRequests: number;
+  pendingRequests: number;
+  tokensIn: number;
+  tokensOut: number;
+  totalTokens: number;
+}
+
+export interface AiUsageDayAggregate {
+  date: string;
+  requests: number;
+  succeededRequests: number;
+  failedRequests: number;
+  pendingRequests: number;
+  tokensIn: number;
+  tokensOut: number;
+  totalTokens: number;
+}
+
+export interface AiUsageUserDayAggregate {
+  userId: string;
+  date: string;
+  requests: number;
+}
+
 export interface ScoreRowWithVersion {
   score: ScoreRecord;
   version: ScoreVersionRecord;
@@ -197,6 +228,15 @@ export interface ApiRepository extends RepositoryTransaction {
   ): Promise<boolean>;
   transaction<T>(work: (tx: RepositoryTransaction) => Promise<T>): Promise<T>;
   listUsers(query?: string): Promise<UserRecord[]>;
+  getAiUsageDashboard(
+    windowStart: string,
+    windowEndExclusive: string,
+    todayStart: string
+  ): Promise<{
+    users: AiUsageUserAggregate[];
+    daily: AiUsageDayAggregate[];
+    userDaily: AiUsageUserDayAggregate[];
+  }>;
   listAuditEntries(): Promise<AuditRecord[]>;
   listScoreRows(criteria: ScoreListCriteria): Promise<ScoreRowWithVersion[]>;
   findScoreRow(id: string, userId: string): Promise<ScoreRowWithVersion | null>;
@@ -732,6 +772,123 @@ class DrizzleApiRepository implements ApiRepository {
       ? await builder.where(filter).orderBy(asc(users.displayName)).all()
       : await builder.orderBy(asc(users.displayName)).all();
     return rows;
+  }
+
+  async getAiUsageDashboard(
+    windowStart: string,
+    windowEndExclusive: string,
+    todayStart: string
+  ) {
+    return this.db.transaction(async (tx) => {
+      const userRows = await tx
+        .select({
+          userId: users.id,
+          username: users.username,
+          displayName: users.displayName,
+          requestsToday: sql<number>`coalesce(sum(case when ${aiJobs.createdAt} >= ${todayStart} then 1 else 0 end), 0)`,
+          requestsInWindow: sql<number>`count(${aiJobs.id})`,
+          succeededRequests: sql<number>`coalesce(sum(case when ${aiJobs.status} = 'succeeded' then 1 else 0 end), 0)`,
+          failedRequests: sql<number>`coalesce(sum(case when ${aiJobs.status} = 'failed' then 1 else 0 end), 0)`,
+          tokensIn: sql<number>`coalesce(sum(coalesce(${aiJobs.tokensIn}, 0)), 0)`,
+          tokensOut: sql<number>`coalesce(sum(coalesce(${aiJobs.tokensOut}, 0)), 0)`,
+        })
+        .from(users)
+        .leftJoin(
+          aiJobs,
+          and(
+            eq(users.id, aiJobs.userId),
+            gte(aiJobs.createdAt, windowStart),
+            lt(aiJobs.createdAt, windowEndExclusive)
+          )
+        )
+        .groupBy(users.id)
+        .orderBy(asc(users.displayName), asc(users.username), asc(users.id));
+      const date = sql<string>`date(${aiJobs.createdAt})`;
+      const dailyRows = await tx
+        .select({
+          date,
+          requests: sql<number>`count(${aiJobs.id})`,
+          succeededRequests: sql<number>`coalesce(sum(case when ${aiJobs.status} = 'succeeded' then 1 else 0 end), 0)`,
+          failedRequests: sql<number>`coalesce(sum(case when ${aiJobs.status} = 'failed' then 1 else 0 end), 0)`,
+          tokensIn: sql<number>`coalesce(sum(coalesce(${aiJobs.tokensIn}, 0)), 0)`,
+          tokensOut: sql<number>`coalesce(sum(coalesce(${aiJobs.tokensOut}, 0)), 0)`,
+        })
+        .from(aiJobs)
+        .where(
+          and(
+            gte(aiJobs.createdAt, windowStart),
+            lt(aiJobs.createdAt, windowEndExclusive)
+          )
+        )
+        .groupBy(date)
+        .orderBy(asc(date));
+      const userDailyRows = await tx
+        .select({
+          userId: aiJobs.userId,
+          date,
+          requests: sql<number>`count(${aiJobs.id})`,
+        })
+        .from(aiJobs)
+        .where(
+          and(
+            gte(aiJobs.createdAt, windowStart),
+            lt(aiJobs.createdAt, windowEndExclusive)
+          )
+        )
+        .groupBy(aiJobs.userId, date)
+        .orderBy(asc(aiJobs.userId), asc(date));
+
+      const userAggregates = userRows.map((row) => {
+        const requestsToday = Number(row.requestsToday);
+        const requestsInWindow = Number(row.requestsInWindow);
+        const succeededRequests = Number(row.succeededRequests);
+        const failedRequests = Number(row.failedRequests);
+        const tokensIn = Number(row.tokensIn);
+        const tokensOut = Number(row.tokensOut);
+        return {
+          userId: row.userId,
+          username: row.username,
+          displayName: row.displayName,
+          requestsToday,
+          requestsInWindow,
+          succeededRequests,
+          failedRequests,
+          pendingRequests: Math.max(
+            0,
+            requestsInWindow - succeededRequests - failedRequests
+          ),
+          tokensIn,
+          tokensOut,
+          totalTokens: tokensIn + tokensOut,
+        };
+      });
+      const daily = dailyRows.map((row) => {
+        const requests = Number(row.requests);
+        const succeededRequests = Number(row.succeededRequests);
+        const failedRequests = Number(row.failedRequests);
+        const tokensIn = Number(row.tokensIn);
+        const tokensOut = Number(row.tokensOut);
+        return {
+          date: row.date,
+          requests,
+          succeededRequests,
+          failedRequests,
+          pendingRequests: Math.max(
+            0,
+            requests - succeededRequests - failedRequests
+          ),
+          tokensIn,
+          tokensOut,
+          totalTokens: tokensIn + tokensOut,
+        };
+      });
+      const userDaily = userDailyRows.map((row) => ({
+        userId: row.userId,
+        date: row.date,
+        requests: Number(row.requests),
+      }));
+      return { users: userAggregates, daily, userDaily };
+    });
   }
 
   async listAuditEntries() {

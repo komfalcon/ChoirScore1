@@ -180,7 +180,7 @@ Add indexes on `scores(created_by)`, `scores(visibility)`, `ai_jobs(user_id, cre
 
 ### 6.3 Admin pages (`/admin/*`, role `admin` only)
 1. **Users:** table with search; create one or **bulk create with credentials sheet**, edit (name, username, role, voice part), reset password, deactivate/reactivate, toggle AI access, set per-user AI limit.
-2. **AI usage:** requests per user per day, success/failure counts, total tokens, last 30 days chart; button to disable AI globally (kill switch).
+2. **AI usage:** show each user's accepted request count for each of the last 30 UTC calendar days, plus per-user success/failure counts and total tokens and a global 30-day daily chart. Label the global switch as a submission control, not provider availability; in the M6 lifecycle slice clearly state that no provider is configured, accepted jobs fail with a generic processing error, and those jobs still consume quota. Show the admission caps (at most two queued + running globally and one per user) separately from worker concurrency (at most two running globally and one per user).
 3. **Settings:** edit voice ranges (defaults in Section 10.5), default AI daily limit.
 4. **Scores:** list all scores with owner and visibility; change visibility; delete (soft delete recommended).
 5. **Audit log:** read-only list, filterable.
