@@ -50,7 +50,8 @@ function identifyAttempt(req: Request): AdminMutationAuditAttempt | null {
   if (path === '/scores' && method === 'POST') {
     return { action: 'scores.create', targetType: 'score', targetId: null };
   }
-  const scoreRoute = /^\/scores\/([^/]+)(?:\/(versions|access))?$/.exec(path);
+  const scoreRoute =
+    /^\/scores\/([^/]+)(?:\/(versions|autosaves|access))?$/.exec(path);
   if (scoreRoute) {
     const [, scoreId, operation] = scoreRoute;
     if (method === 'PATCH' && !operation) {
@@ -63,6 +64,13 @@ function identifyAttempt(req: Request): AdminMutationAuditAttempt | null {
     if (method === 'POST' && operation === 'versions') {
       return {
         action: 'scores.version.create',
+        targetType: 'score',
+        targetId: scoreId!,
+      };
+    }
+    if (method === 'POST' && operation === 'autosaves') {
+      return {
+        action: 'scores.autosave.create',
         targetType: 'score',
         targetId: scoreId!,
       };

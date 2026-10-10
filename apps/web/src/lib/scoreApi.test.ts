@@ -104,7 +104,12 @@ describe('score API client', () => {
     const model = structuredClone(scoreDetailResponse.score.model);
 
     await expect(
-      createScoreVersion('score / 1', model, 'Range-fit transpose')
+      createScoreVersion(
+        'score / 1',
+        model,
+        'Range-fit transpose',
+        'loaded-version-7'
+      )
     ).resolves.toEqual(result);
 
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -113,6 +118,7 @@ describe('score API client', () => {
     expect(JSON.parse(String(init.body))).toEqual({
       model,
       note: 'Range-fit transpose',
+      baseVersionId: 'loaded-version-7',
     });
     expect(new Headers(init.headers).get('X-Requested-With')).toBe(
       'choirscore'

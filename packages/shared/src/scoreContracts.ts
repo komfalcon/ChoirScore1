@@ -546,6 +546,7 @@ export type ParsedCreateScoreFromModelRequest = z.output<
 export const createScoreVersionRequestSchema = z
   .object({
     model: scoreModelSchema,
+    baseVersionId: z.string().min(1).max(128),
     note: z.string().trim().max(256).optional(),
   })
   .strict();
@@ -564,4 +565,32 @@ export const createScoreVersionResponseSchema = z
   .strict();
 export type CreateScoreVersionResponse = z.infer<
   typeof createScoreVersionResponseSchema
+>;
+
+/** POST /scores/:id/autosaves performs an idempotent optimistic draft save. */
+export const createScoreAutosaveRequestSchema = z
+  .object({
+    model: scoreModelSchema,
+    baseVersionId: z.string().min(1).max(128),
+    requestId: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^[A-Za-z0-9._:-]+$/),
+  })
+  .strict();
+export type CreateScoreAutosaveRequest = z.infer<
+  typeof createScoreAutosaveRequestSchema
+>;
+
+export const createScoreAutosaveResponseSchema = z
+  .object({
+    score: scoreSummarySchema,
+    versionId: z.string().min(1),
+    currentVersionId: z.string().min(1),
+    outcome: z.enum(['saved', 'unchanged', 'replayed']),
+  })
+  .strict();
+export type CreateScoreAutosaveResponse = z.infer<
+  typeof createScoreAutosaveResponseSchema
 >;

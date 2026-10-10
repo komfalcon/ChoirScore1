@@ -637,6 +637,7 @@ export function ScoreViewPage() {
     scope: FitScope
   ) {
     if (!id || state.status !== 'ready' || applyingVersionRef.current) return;
+    const baseVersionId = state.response.score.currentVersionId;
     applyingVersionRef.current = true;
     setApplyingVersion(true);
     setApplyVersionError('');
@@ -646,7 +647,8 @@ export function ScoreViewPage() {
       const created = await createScoreVersion(
         id,
         model,
-        `Range-fit transposition to ${scoreKeyTonicName(suggestion.key)}${scopeNote}`
+        `Range-fit transposition to ${scoreKeyTonicName(suggestion.key)}${scopeNote}`,
+        baseVersionId
       );
       setRangeFitPanelOpen(false);
       setVersionNotice('A new transposed score version was saved.');

@@ -1,0 +1,314 @@
+.solfa-grid-editor {
+  min-width: 0;
+  max-width: 100%;
+  padding: clamp(1rem, 3vw, 1.5rem);
+  border: 1px solid var(--line, #dfe5dc);
+  border-radius: 1rem;
+  background: var(--surface, #fff);
+  color: var(--ink, #1b302a);
+  box-shadow: 0 12px 34px rgb(34 54 44 / 6%);
+}
+
+.solfa-grid-editor__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--line, #dfe5dc);
+}
+
+.solfa-grid-editor__eyebrow {
+  margin: 0;
+  color: var(--accent-dark, #1d523d);
+  font-size: 0.72rem;
+  font-weight: 750;
+  letter-spacing: 0.13em;
+}
+
+.solfa-grid-editor__header h2 {
+  margin: 0.25rem 0;
+  font-family: Georgia, 'Times New Roman', serif;
+  font-size: clamp(1.5rem, 5vw, 2rem);
+  font-weight: 500;
+}
+
+.solfa-grid-editor__meta,
+.solfa-grid-editor__keyboard-help,
+.solfa-grid-editor__codec-note {
+  margin: 0;
+  color: var(--muted, #52635a);
+  font-size: 0.88rem;
+  line-height: 1.55;
+}
+
+.solfa-grid-editor__history,
+.solfa-grid-editor__inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.solfa-grid-editor__button,
+.solfa-grid-editor__cell {
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  border: 1px solid #cbd8ce;
+  border-radius: 0.65rem;
+  background: #fff;
+  color: var(--ink, #1b302a);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 650;
+  touch-action: manipulation;
+}
+
+.solfa-grid-editor__button {
+  padding: 0.6rem 0.85rem;
+}
+
+.solfa-grid-editor__button:hover:not(:disabled),
+.solfa-grid-editor__cell:hover:not(:disabled) {
+  border-color: var(--accent, #286b50);
+  background: #f2f7f3;
+}
+
+.solfa-grid-editor__button--primary {
+  border-color: var(--accent, #286b50);
+  background: var(--accent, #286b50);
+  color: #fff;
+}
+
+.solfa-grid-editor__button--primary:hover:not(:disabled) {
+  background: var(--accent-dark, #1d523d);
+  color: #fff;
+}
+
+.solfa-grid-editor__button--danger {
+  border-color: #e5c8c4;
+  color: var(--danger, #9b3434);
+}
+
+.solfa-grid-editor__button:disabled,
+.solfa-grid-editor__cell:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+.solfa-grid-editor__button:focus-visible,
+.solfa-grid-editor__cell:focus-visible,
+.solfa-grid-editor select:focus-visible,
+.solfa-grid-editor input:focus-visible,
+.solfa-grid-editor__scroll:focus-visible {
+  outline: 3px solid var(--focus, #1976d2);
+  outline-offset: 2px;
+}
+
+.solfa-grid-editor__keyboard-help {
+  margin-block: 0.9rem;
+}
+
+.solfa-grid-editor__notice,
+.solfa-grid-editor__error {
+  margin-block: 0.75rem;
+  padding: 0.8rem 0.9rem;
+  border: 1px solid #efd1cb;
+  border-radius: 0.7rem;
+  background: var(--danger-wash, #fcf0ee);
+  color: var(--danger, #9b3434);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.solfa-grid-editor__scroll {
+  max-width: 100%;
+  margin-inline: -0.25rem;
+  padding: 0.25rem;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
+}
+
+.solfa-grid-editor__parts {
+  display: grid;
+  width: max-content;
+  min-width: 100%;
+  gap: 0.7rem;
+}
+
+.solfa-grid-editor__part {
+  display: grid;
+  grid-template-columns: 5.8rem max-content;
+  align-items: start;
+  gap: 0.55rem;
+  padding: 0.65rem;
+  border: 1px solid #e4e9e2;
+  border-radius: 0.8rem;
+  background: #fbfcfa;
+}
+
+.solfa-grid-editor__part-heading {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  margin: 0;
+  padding-top: 0.65rem;
+  background: #fbfcfa;
+  font-size: 0.82rem;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.solfa-grid-editor__measures {
+  display: flex;
+  width: max-content;
+  gap: 0.65rem;
+}
+
+.solfa-grid-editor__measure {
+  width: max-content;
+  padding: 0.45rem;
+  border: 1px solid #e4e9e2;
+  border-radius: 0.65rem;
+  background: #fff;
+}
+
+.solfa-grid-editor__measure h4 {
+  margin: 0 0 0.4rem;
+  color: var(--muted, #52635a);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.solfa-grid-editor__cells {
+  display: grid;
+  grid-auto-rows: 3.25rem;
+  gap: 0.25rem;
+  width: max-content;
+}
+
+.solfa-grid-editor__cell {
+  display: flex;
+  min-width: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.25rem;
+  background: #f7faf7;
+}
+
+.solfa-grid-editor__cell--selected {
+  border: 2px solid var(--accent, #286b50);
+  background: #edf7f0;
+  color: var(--accent-dark, #1d523d);
+  box-shadow: inset 0 0 0 1px rgb(40 107 80 / 8%);
+}
+
+.solfa-grid-editor__cell-symbol {
+  font-size: 0.92rem;
+  line-height: 1.05;
+}
+
+.solfa-grid-editor__cell-duration {
+  color: var(--muted, #52635a);
+  font-size: 0.65rem;
+  font-weight: 500;
+}
+
+.solfa-grid-editor__empty {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 0.4rem;
+  color: var(--muted, #52635a);
+  font-size: 0.82rem;
+}
+
+.solfa-grid-editor__tools {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line, #dfe5dc);
+}
+
+.solfa-grid-editor__tools h3 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.solfa-grid-editor__selected-summary {
+  margin: 0.45rem 0 0.85rem;
+  color: var(--muted, #52635a);
+  font-size: 0.87rem;
+}
+
+.solfa-grid-editor__control-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end;
+  gap: 0.7rem;
+}
+
+.solfa-grid-editor__field {
+  display: grid;
+  min-width: 0;
+  gap: 0.3rem;
+  color: var(--muted, #52635a);
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.solfa-grid-editor__field select,
+.solfa-grid-editor__field input {
+  width: 100%;
+  min-width: 0;
+  min-height: 2.75rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid #cbd8ce;
+  border-radius: 0.65rem;
+  background: #fff;
+  color: var(--ink, #1b302a);
+  font: inherit;
+  font-size: 0.9rem;
+}
+
+.solfa-grid-editor__inline-actions {
+  align-self: end;
+}
+
+.solfa-grid-editor__codec-note {
+  margin-top: 0.85rem;
+  font-size: 0.78rem;
+}
+
+@media (max-width: 560px) {
+  .solfa-grid-editor {
+    padding: 0.85rem;
+    border-radius: 0.8rem;
+  }
+
+  .solfa-grid-editor__header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .solfa-grid-editor__history {
+    width: 100%;
+  }
+
+  .solfa-grid-editor__history .solfa-grid-editor__button {
+    flex: 1 1 7rem;
+  }
+
+  .solfa-grid-editor__part {
+    grid-template-columns: 4.25rem max-content;
+    gap: 0.35rem;
+    padding: 0.45rem;
+  }
+
+  .solfa-grid-editor__control-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

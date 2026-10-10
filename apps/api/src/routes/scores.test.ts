@@ -67,6 +67,53 @@ function asActor<T extends request.Test>(
   return result;
 }
 
+async function listScoreVersions(scoreId: string) {
+  const inspector = createClient({
+    url: `file:${join(tempDirectory, 'scores.sqlite')}`,
+  });
+  try {
+    const result = await inspector.execute({
+      sql: `SELECT id, musicxml, note, created_at, version_kind,
+                   autosave_request_id, autosave_base_version_id
+            FROM score_versions WHERE score_id = ? ORDER BY created_at, id`,
+      args: [scoreId],
+    });
+    return result.rows.map((row) => ({
+      id: String(row.id),
+      musicxml: String(row.musicxml),
+      note: String(row.note),
+      createdAt: String(row.created_at),
+      versionKind: String(row.version_kind),
+      autosaveRequestId:
+        row.autosave_request_id == null
+          ? null
+          : String(row.autosave_request_id),
+      autosaveBaseVersionId:
+        row.autosave_base_version_id == null
+          ? null
+          : String(row.autosave_base_version_id),
+    }));
+  } finally {
+    inspector.close();
+  }
+}
+
+async function listScoreAutosaveNoopRequestIds(scoreId: string) {
+  const inspector = createClient({
+    url: `file:${join(tempDirectory, 'scores.sqlite')}`,
+  });
+  try {
+    const result = await inspector.execute({
+      sql: `SELECT request_id FROM score_autosave_noop_requests
+            WHERE score_id = ? ORDER BY id`,
+      args: [scoreId],
+    });
+    return result.rows.map((row) => String(row.request_id));
+  } finally {
+    inspector.close();
+  }
+}
+
 async function insertTestUser(
   username: string,
   role: UserRecord['role'],
@@ -277,7 +324,10 @@ describe('M2 score API routes', () => {
       request(app).post(`/scores/${id}/versions`),
       actors.recipient,
       true
-    ).send({ model: recipientDetail.body.score.model });
+    ).send({
+      model: recipientDetail.body.score.model,
+      baseVersionId: recipientDetail.body.score.currentVersionId,
+    });
     expect(deniedVersion.status).toBe(403);
 
     const editableGrant = await asActor(
@@ -298,7 +348,11 @@ describe('M2 score API routes', () => {
       request(app).post(`/scores/${id}/versions`),
       actors.recipient,
       true
-    ).send({ model: editedModel, note: 'Recipient edit' });
+    ).send({
+      model: editedModel,
+      note: 'Recipient edit',
+      baseVersionId: editableDetail.body.score.currentVersionId,
+    });
     expect(recipientVersion.status).toBe(201);
 
     const privateAgain = await asActor(
@@ -397,19 +451,32 @@ describe('M2 score API routes', () => {
       repository.createScoreVersion.bind(repository);
     const versionSpy = vi
       .spyOn(repository, 'createScoreVersion')
-      .mockImplementation(async (version, updatedAt, actorId) => {
-        await repository.replaceScoreAccess(
-          version.scoreId,
-          [],
-          actors.owner.id
-        );
-        return await originalCreateVersion(version, updatedAt, actorId);
-      });
+      .mockImplementation(
+        async (version, updatedAt, actorId, baseVersionId, audit, noOp) => {
+          await repository.replaceScoreAccess(
+            version.scoreId,
+            [],
+            actors.owner.id
+          );
+          return await originalCreateVersion(
+            version,
+            updatedAt,
+            actorId,
+            baseVersionId,
+            audit,
+            noOp
+          );
+        }
+      );
     const staleVersion = await asActor(
       request(app).post(`/scores/${id}/versions`),
       actors.recipient,
       true
-    ).send({ model: recipientDetail.body.score.model, note: 'Stale edit' });
+    ).send({
+      model: recipientDetail.body.score.model,
+      note: 'Stale edit',
+      baseVersionId: currentVersionId,
+    });
     expect(staleVersion.status).toBe(403);
     versionSpy.mockRestore();
 
@@ -564,11 +631,16 @@ describe('M2 score API routes', () => {
 
     const changedModel = structuredClone(model);
     changedModel.parts[0]!.measures[0]!.notes[0]!.pitch = 'D4';
+    const initialVersionId = adminCreate.body.versionId as string;
     const version = await asActor(
       request(app).post(`/scores/${scoreId}/versions`),
       actors.admin,
       true
-    ).send({ model: changedModel, note: 'Sensitive version note' });
+    ).send({
+      model: changedModel,
+      note: 'Sensitive version note',
+      baseVersionId: initialVersionId,
+    });
     expect(version.status).toBe(201);
     await expectAudit(4, 'scores.version.create', 'success', {}, null);
 
@@ -832,7 +904,11 @@ describe('M2 score API routes', () => {
       request(app).post(`/scores/${id}/versions`),
       actors.owner,
       true
-    ).send({ model: editedModel, note: 'Try edit' });
+    ).send({
+      model: editedModel,
+      note: 'Try edit',
+      baseVersionId: detail.body.score.currentVersionId,
+    });
     expect(blocked.status).toBe(409);
     expect(blocked.body.error.code).toBe('SCORE_CONTENT_READ_ONLY');
     expect(blocked.body.error.preservation.state).toBe(
@@ -843,7 +919,11 @@ describe('M2 score API routes', () => {
       request(app).post(`/scores/${id}/versions`),
       actors.owner,
       true
-    ).send({ model: detail.body.score.model, note: 'Unchanged source' });
+    ).send({
+      model: detail.body.score.model,
+      note: 'Unchanged source',
+      baseVersionId: detail.body.score.currentVersionId,
+    });
     expect(unchanged.status).toBe(409);
     expect(unchanged.body.error.code).toBe('NO_CHANGES');
     const unchangedDetail = await asActor(
@@ -877,6 +957,7 @@ describe('M2 score API routes', () => {
       true
     ).send({
       model: detail.body.score.model,
+      baseVersionId: initialVersionId,
       note: 'Range-fit transposition to C major',
     });
 
@@ -886,9 +967,8 @@ describe('M2 score API routes', () => {
       message: 'The submitted score has no musical changes to save.',
     });
     expect(createVersion).toHaveBeenCalledTimes(1);
-    expect(createVersion.mock.calls[0]?.[4]).toEqual({
-      currentVersionId: initialVersionId,
-    });
+    expect(createVersion.mock.calls[0]?.[3]).toBe(initialVersionId);
+    expect(createVersion.mock.calls[0]?.[5]).toBe(true);
     const after = await asActor(
       request(app).get(`/scores/${id}`),
       actors.owner
@@ -917,8 +997,8 @@ describe('M2 score API routes', () => {
     const versionSpy = vi
       .spyOn(repository, 'createScoreVersion')
       .mockImplementation(
-        async (version, updatedAt, actorId, audit, noOpGuard) => {
-          if (noOpGuard && !concurrentVersionId) {
+        async (version, updatedAt, actorId, baseVersionId, audit, noOp) => {
+          if (noOp && !concurrentVersionId) {
             const concurrentModel = structuredClone(MODEL);
             concurrentModel.parts[0]!.measures[0]!.notes[0]!.pitch = 'D4';
             concurrentVersionId = newId();
@@ -933,9 +1013,13 @@ describe('M2 score API routes', () => {
                 note: 'Concurrent edit',
                 createdBy: actors.owner.id,
                 createdAt: committedAt,
+                versionKind: 'explicit',
+                autosaveRequestId: null,
+                autosaveBaseVersionId: null,
               },
               committedAt,
-              actors.owner.id
+              actors.owner.id,
+              initialVersionId
             );
             expect(concurrent).toEqual({ status: 'created' });
           }
@@ -943,8 +1027,9 @@ describe('M2 score API routes', () => {
             version,
             updatedAt,
             actorId,
+            baseVersionId,
             audit,
-            noOpGuard
+            noOp
           );
         }
       );
@@ -955,6 +1040,7 @@ describe('M2 score API routes', () => {
       true
     ).send({
       model: detail.body.score.model,
+      baseVersionId: initialVersionId,
       note: 'Stale no-op transposition',
     });
     versionSpy.mockRestore();
@@ -976,6 +1062,51 @@ describe('M2 score API routes', () => {
     expect(afterRace.body.score.model.parts[0].measures[0].notes[0].pitch).toBe(
       'D4'
     );
+  });
+
+  it('rejects a stale explicit save from a second editor without inserting or moving current', async () => {
+    const created = await asActor(
+      request(app).post('/scores'),
+      actors.owner,
+      true
+    ).send({ model: MODEL });
+    const id = created.body.score.id as string;
+    const [editorA, editorB] = await Promise.all([
+      asActor(request(app).get(`/scores/${id}`), actors.owner),
+      asActor(request(app).get(`/scores/${id}`), actors.owner),
+    ]);
+    const loadedBase = editorA.body.score.currentVersionId as string;
+    expect(editorB.body.score.currentVersionId).toBe(loadedBase);
+
+    const winnerModel = structuredClone(editorA.body.score.model);
+    winnerModel.parts[0].measures[0].notes[0].pitch = 'D4';
+    const winner = await asActor(
+      request(app).post(`/scores/${id}/versions`),
+      actors.owner,
+      true
+    ).send({ model: winnerModel, baseVersionId: loadedBase, note: 'Editor A' });
+    expect(winner.status).toBe(201);
+    const versionsAfterWinner = await listScoreVersions(id);
+
+    const staleDraft = structuredClone(editorB.body.score.model);
+    staleDraft.parts[0].measures[0].notes[0].pitch = 'E4';
+    const stale = await asActor(
+      request(app).post(`/scores/${id}/versions`),
+      actors.owner,
+      true
+    ).send({ model: staleDraft, baseVersionId: loadedBase, note: 'Editor B' });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error.code).toBe('VERSION_CONFLICT');
+
+    const afterStale = await asActor(
+      request(app).get(`/scores/${id}`),
+      actors.owner
+    );
+    expect(await listScoreVersions(id)).toEqual(versionsAfterWinner);
+    expect(afterStale.body.score.currentVersionId).toBe(winner.body.versionId);
+    expect(
+      afterStale.body.score.model.parts[0].measures[0].notes[0].pitch
+    ).toBe('D4');
   });
 
   it('creates immutable edited versions for clean imports and applies safe export filenames', async () => {
@@ -1001,7 +1132,11 @@ describe('M2 score API routes', () => {
       request(app).post(`/scores/${id}/versions`),
       actors.owner,
       true
-    ).send({ model: editedModel, note: 'Changed melody' });
+    ).send({
+      model: editedModel,
+      note: 'Changed melody',
+      baseVersionId: detail.body.score.currentVersionId,
+    });
     expect(version.status).toBe(201);
     expect(version.body.versionId).not.toBe(imported.body.versionId);
     expect(version.body.score.canEditContent).toBe(true);
@@ -1024,6 +1159,750 @@ describe('M2 score API routes', () => {
       'attachment; filename="manana-river.musicxml"'
     );
     expect(exported.text).toContain('<step>D</step>');
+  });
+
+  it('requires auth, CSRF, and edit permission, and leaves unchanged drafts unpersisted', async () => {
+    const created = await asActor(
+      request(app).post('/scores'),
+      actors.owner,
+      true
+    ).send({ model: MODEL });
+    expect(created.status).toBe(201);
+    const id = created.body.score.id as string;
+    const detail = await asActor(
+      request(app).get(`/scores/${id}`),
+      actors.owner
+    );
+    const requestBody = {
+      model: detail.body.score.model,
+      baseVersionId: detail.body.score.currentVersionId,
+      requestId: 'auth-check',
+    };
+
+    const anonymous = await request(app)
+      .post(`/scores/${id}/autosaves`)
+      .set('X-Requested-With', 'choirscore')
+      .send(requestBody);
+    expect(anonymous.status).toBe(401);
+
+    const missingCsrf = await asActor(
+      request(app).post(`/scores/${id}/autosaves`),
+      actors.owner
+    ).send(requestBody);
+    expect(missingCsrf.status).toBe(403);
+    expect(missingCsrf.body.error.code).toBe('CSRF_HEADER_REQUIRED');
+
+    const shared = await asActor(
+      request(app).patch(`/scores/${id}`),
+      actors.owner,
+      true
+    ).send({ visibility: 'shared' });
+    expect(shared.status).toBe(200);
+    const grant = await asActor(
+      request(app).put(`/scores/${id}/access`),
+      actors.owner,
+      true
+    ).send({ users: [{ userId: actors.recipient.id, canEdit: false }] });
+    expect(grant.status).toBe(200);
+    const denied = await asActor(
+      request(app).post(`/scores/${id}/autosaves`),
+      actors.recipient,
+      true
+    ).send(requestBody);
+    expect(denied.status).toBe(403);
+
+    const unchanged = await asActor(
+      request(app).post(`/scores/${id}/autosaves`),
+      actors.owner,
+      true
+    ).send(requestBody);
+    expect(unchanged.status).toBe(200);
+    expect(unchanged.body.outcome).toBe('unchanged');
+    expect(unchanged.body.currentVersionId).toBe(requestBody.baseVersionId);
+    const versions = await listScoreVersions(id);
+    expect(versions).toHaveLength(1);
+    expect(versions[0]?.versionKind).toBe('explicit');
+  });
+
+  it('audits unchanged admin autosave replays transactionally without changing idempotency semantics', async () => {
+    const created = await asActor(
+      request(app).post('/scores'),
+      actors.admin,
+      true
+    ).send({ model: MODEL });
+    expect(created.status).toBe(201);
+    const id = created.body.score.id as string;
+    const detail = await asActor(
+      request(app).get(`/scores/${id}`),
+      actors.admin
+    );
+    const body = {
+      model: detail.body.score.model,
+      baseVersionId: detail.body.score.currentVersionId as string,
+      requestId: 'admin-unchanged-replay',
+    };
+    const triggerClient = createClient({
+      url: `file:${join(tempDirectory, 'scores.sqlite')}`,
+    });
+    await triggerClient.execute(`CREATE TRIGGER fail_autosave_success_audit
+      BEFORE INSERT ON audit_log
+      WHEN NEW.action = 'scores.autosave.create' AND NEW.outcome = 'success'
+      BEGIN SELECT RAISE(ABORT, 'simulated audit failure'); END`);
+    triggerClient.close();
+
+    const failed = await asActor(
+      request(app).post(`/scores/${id}/autosaves`),
+      actors.admin,
+      true
+    ).send(body);
+    expect(failed.status).toBe(500);
+    expect(await listScoreAutosaveNoopRequestIds(id)).toEqual([]);
+    const versionsAfterFailure = await listScoreVersions(id);
+    expect(versionsAfterFailure).toHaveLength(1);
+    expect(versionsAfterFailure[0]?.versionKind).toBe('explicit');
+    const failedAudits = (await repository.listAuditEntries()).filter(
+      (entry) =>
+        entry.action === 'scores.autosave.create' && entry.targetId === id
+    );
+    expect(failedAudits).toHaveLength(1);
+    expect(failedAudits[0]).toMatchObject({
+      actorId: actors.admin.id,
+      outcome: 'failed',
+      errorCode: 'INTERNAL_ERROR',
+      detailJson: '{}',
+    });
+
+    const cleanupClient = createClient({
+      url: `file:${join(tempDirectory, 'scores.sqlite')}`,
+    });
+    await cleanupClient.execute('DROP TRIGGER fail_autosave_success_audit');
+    cleanupClient.close();
+    const first = await asActor(
+      request(app).post(`/scores/${id}/autosaves`),
+      actors.admin,
+      true
+    ).send(body);
+    const replay = await asActor(
+      request(app).post(`/scores/${id}/autosaves`),
+      actors.admin,
+      true
+    ).send(body);
+    expect(first.status).toBe(200);
+    expect(replay.status).toBe(200);
+    expect(first.body.outcome).toBe('unchanged');
+    expect(replay.body.outcome).toBe('unchanged');
+    expect(first.body.versionId).toBe(body.baseVersionId);
+    expect(replay.body.versionId).toBe(first.body.versionId);
+    expect(await listScoreAutosaveNoopRequestIds(id)).toEqual([body.requestId]);
+    const versionsAfterReplay = await listScoreVersions(id);
+    expect(versionsAfterReplay).toHaveLength(1);
+    expect(versionsAfterReplay[0]?.versionKind).toBe('explicit');
+    const autosaveAudits = (await repository.listAuditEntries()).filter(
+      (entry) =>
+        entry.action === 'scores.autosave.create' && entry.targetId === id
+    );
+    expect(
+      autosaveAudits.filter((entry) => entry.outcome === 'success')
+    ).toHaveLength(2);
+    expect(
+      autosaveAudits.filter((entry) => entry.outcome === 'failed')
+    ).toHaveLength(1);
+    for (const audit of autosaveAudits.filter(
+      (entry) => entry.outcome === 'success'
+    )) {
+      expect(audit).toMatchObject({
+        actorId: actors.admin.id,
+        targetType: 'score',
+        targetId: id,
+        errorCode: null,
+        detailJson: '{}',
+      });
+    }
+  });
+
+  it('reserves unchanged autosave keys and rejects mismatched reuse without creating a version', async () => {
+    const created = await asActor(
+      request(app).post('/scores'),
+      actors.owner,
+      true
+    ).send({ model: MODEL });
+    expect(created.status).toBe(201);
+    const id = created.body.score.id as string;
+    const detail = await asActor(
+      request(app).get(`/scores/${id}`),
+      actors.owner
+    );
+    const body = {
+      model: detail.body.score.model,
+      baseVersionId: detail.body.score.currentVersionId as string,
+      requestId: 'unchanged-autosave-key',
+    };
+    const first = await asActor(
+      request(app).post(`/scores/${id}/autosaves`),
+      actors.owner,
+      true
+    ).send(body);
+    expect(first.status).toBe(200);
+    expect(first.body.outcome).toBe('unchanged');
+    expect(first.body.versionId).toBe(body.baseVersionId);
+
+    const retry = await asActor(
+      request(app).post(`/scores/${id}/autosaves`),
+      actors.owner,
+      true
+    ).send(body);
+    expect(retry.status).toBe(200);
+    expect(retry.body.outcome).toBe('unchanged');
+    expect(retry.body.versionId).toBe(first.body.versionId);
+
+    const changedModel = structuredClone(body.model);
+    changedModel.parts[0].measures[0].notes[0].pitch = 'D4';
+    const reusedKey = await asActor(
+      request(app).post(`/scores/${id}/autosaves`),
+      actors.owner,
+      true
+    ).send({ ...body, model: changedModel });
+    expect(reusedKey.status).toBe(409);
+    expect(reusedKey.body.error.code).toBe('IDEMPOTENCY_KEY_REUSED');
+    const versions = await listScoreVersions(id);
+    expect(versions).toHaveLength(1);
+    expect(versions[0]?.versionKind).toBe('explicit');
+  });
+
+  it('retains the 20 newest unchanged receipts in FIFO order, independently of autosave versions', async () => {
+    const created = await asActor(
+      request(app).post('/scores'),
+      actors.owner,
+      true
+    ).send({ model: MODEL });
+    expect(created.status).toBe(201);
+    const id = created.body.score.id as string;
+    const baseVersionId = created.body.versionId as string;
+    const createdAt = '2026-01-01T00:00:00.000Z';
+    const requestIds = Array.from(
+      { length: 21 },
+      (_, index) => `receipt-window-${String(index + 1).padStart(2, '0')}`
+    );
+    const musicxml = modelToMusicXml(MODEL, { mode: 'new-score' });
+
+    for (const [index, requestId] of requestIds.entries()) {
+      const saved = await repository.createScoreAutosave(
+        {
+          id: `unused-noop-version-${index + 1}`,
+          scoreId: id,
+          musicxml,
+          note: 'Autosave',
+          createdBy: actors.owner.id,
+          createdAt,
+          versionKind: 'autosave',
+          autosaveRequestId: requestId,
+          autosaveBaseVersionId: baseVersionId,
+        },
+        baseVersionId,
+        createdAt,
+        actors.owner.id,
+        undefined,
+        true
+      );
+      expect(saved).toEqual({ status: 'unchanged', versionId: baseVersionId });
+    }
+
+    expect(await listScoreAutosaveNoopRequestIds(id)).toEqual(
+      requestIds.slice(1)
+    );
+    const versions = await listScoreVersions(id);
+    expect(versions).toHaveLength(1);
+    expect(versions[0]?.versionKind).toBe('explicit');
+
+    const changedModel = structuredClone(MODEL);
+    changedModel.parts[0].measures[0].notes[0].pitch = 'D4';
+    const changedMusicXml = modelToMusicXml(changedModel, {
+      mode: 'new-score',
+    });
+    const retainedKeyReuse = await repository.createScoreAutosave(
+      {
+        id: 'retained-noop-key-conflict',
+        scoreId: id,
+        musicxml: changedMusicXml,
+        note: 'Autosave',
+        createdBy: actors.owner.id,
+        createdAt,
+        versionKind: 'autosave',
+        autosaveRequestId: requestIds[1]!,
+        autosaveBaseVersionId: baseVersionId,
+      },
+      baseVersionId,
+      createdAt,
+      actors.owner.id
+    );
+    expect(retainedKeyReuse).toEqual({ status: 'idempotency_conflict' });
+
+    const expiredKeyReuse = await repository.createScoreAutosave(
+      {
+        id: 'expired-noop-key-version',
+        scoreId: id,
+        musicxml: changedMusicXml,
+        note: 'Autosave',
+        createdBy: actors.owner.id,
+        createdAt,
+        versionKind: 'autosave',
+        autosaveRequestId: requestIds[0]!,
+        autosaveBaseVersionId: baseVersionId,
+      },
+      baseVersionId,
+      createdAt,
+      actors.owner.id
+    );
+    expect(expiredKeyReuse).toEqual({
+      status: 'created',
+      versionId: 'expired-noop-key-version',
+    });
+  });
+
+  it('replays identical retries without moving current and keeps explicit saves separate', async () => {
+    const created = await asActor(
+      request(app).post('/scores'),
+      actors.owner,
+      true
+    ).send({ model: MODEL });
+    const id = created.body.score.id as string;
+    const detail = await asActor(
+      request(app).get(`/scores/${id}`),
+      actors.owner
+    );
+    const baseVersionId = detail.body.score.currentVersionId as string;
+    const changedModel = structuredClone(detail.body.score.model);
+    changedModel.parts[0].measures[0].notes[0].pitch = 'D4';
+    const autosaveRequest = {
+      model: changedModel,
+      baseVersionId,
+      requestId: 'stable-retry-key',
+    };
+
+    const first = await asActor(
+      request(app).post(`/scores/${id}/autosaves`),
+      actors.owner,
+      true
+    ).send(autosaveRequest);
+    expect(first.status).toBe(201);
+    expect(first.body.outcome).toBe('saved');
+    const replay = await asActor(
+      request(app).post(`/scores/${id}/autosaves`),
+      actors.owner,
+      true
+    ).send(autosaveRequest);
+    expect(replay.status).toBe(200);
+    expect(replay.body.outcome).toBe('replayed');
+    expect(replay.body.versionId).toBe(first.body.versionId);
+    expect(replay.body.currentVersionId).toBe(first.body.currentVersionId);
+
+    const reusedKeyModel = structuredClone(changedModel);
+    reusedKeyModel.parts[0].measures[0].notes[0].pitch = 'E4';
+    const reusedKey = await asActor(
+      request(app).post(`/scores/${id}/autosaves`),
+      actors.owner,
+      true
+    ).send({ ...autosaveRequest, model: reusedKeyModel });
+    expect(reusedKey.status).toBe(409);
+    expect(reusedKey.body.error.code).toBe('IDEMPOTENCY_KEY_REUSED');
+
+    const current = await asActor(
+      request(app).get(`/scores/${id}`),
+      actors.owner
+    );
+    const explicitModel = structuredClone(current.body.score.model);
+    explicitModel.parts[0].measures[0].notes[0].pitch = 'E4';
+    const explicit = await asActor(
+      request(app).post(`/scores/${id}/versions`),
+      actors.owner,
+      true
+    ).send({
+      model: explicitModel,
+      note: 'Explicit save',
+      baseVersionId: current.body.score.currentVersionId,
+    });
+    expect(explicit.status).toBe(201);
+    const retryAfterExplicit = await asActor(
+      request(app).post(`/scores/${id}/autosaves`),
+      actors.owner,
+      true
+    ).send(autosaveRequest);
+    expect(retryAfterExplicit.status).toBe(200);
+    expect(retryAfterExplicit.body.outcome).toBe('replayed');
+    expect(retryAfterExplicit.body.currentVersionId).toBe(
+      explicit.body.versionId
+    );
+
+    const versions = await listScoreVersions(id);
+    expect(
+      versions.filter((version) => version.versionKind === 'explicit')
+    ).toHaveLength(2);
+    expect(
+      versions.filter((version) => version.versionKind === 'autosave')
+    ).toHaveLength(1);
+  });
+
+  it('audits successful admin autosave retries that replay a saved version', async () => {
+    const created = await asActor(
+      request(app).post('/scores'),
+      actors.admin,
+      true
+    ).send({ model: MODEL });
+    const id = created.body.score.id as string;
+    const detail = await asActor(
+      request(app).get(`/scores/${id}`),
+      actors.admin
+    );
+    const model = structuredClone(detail.body.score.model);
+    model.parts[0].measures[0].notes[0].pitch = 'D4';
+    const body = {
+      model,
+      baseVersionId: detail.body.score.currentVersionId as string,
+      requestId: 'admin-saved-autosave-replay',
+    };
+    const first = await asActor(
+      request(app).post(`/scores/${id}/autosaves`),
+      actors.admin,
+      true
+    ).send(body);
+    const replay = await asActor(
+      request(app).post(`/scores/${id}/autosaves`),
+      actors.admin,
+      true
+    ).send(body);
+    expect(first.status).toBe(201);
+    expect(replay.status).toBe(200);
+    expect(replay.body.outcome).toBe('replayed');
+    expect(replay.body.versionId).toBe(first.body.versionId);
+    expect(
+      (await listScoreVersions(id)).filter(
+        (version) => version.versionKind === 'autosave'
+      )
+    ).toHaveLength(1);
+    const autosaveAudits = (await repository.listAuditEntries()).filter(
+      (entry) =>
+        entry.action === 'scores.autosave.create' && entry.targetId === id
+    );
+    expect(autosaveAudits).toHaveLength(2);
+    expect(autosaveAudits.map((entry) => entry.outcome)).toEqual([
+      'success',
+      'success',
+    ]);
+  });
+
+  it('rejects one of two concurrent autosaves from the same base as stale', async () => {
+    const created = await asActor(
+      request(app).post('/scores'),
+      actors.owner,
+      true
+    ).send({ model: MODEL });
+    const id = created.body.score.id as string;
+    const detail = await asActor(
+      request(app).get(`/scores/${id}`),
+      actors.owner
+    );
+    const baseVersionId = detail.body.score.currentVersionId as string;
+    const leftModel = structuredClone(detail.body.score.model);
+    leftModel.parts[0].measures[0].notes[0].pitch = 'D4';
+    const rightModel = structuredClone(detail.body.score.model);
+    rightModel.parts[0].measures[0].notes[0].pitch = 'E4';
+
+    const results = await Promise.all([
+      asActor(
+        request(app).post(`/scores/${id}/autosaves`),
+        actors.owner,
+        true
+      ).send({ model: leftModel, baseVersionId, requestId: 'race-left' }),
+      asActor(
+        request(app).post(`/scores/${id}/autosaves`),
+        actors.owner,
+        true
+      ).send({ model: rightModel, baseVersionId, requestId: 'race-right' }),
+    ]);
+    expect(results.map((result) => result.status).sort()).toEqual([201, 409]);
+    expect(
+      results.find((result) => result.status === 409)?.body.error.code
+    ).toBe('VERSION_CONFLICT');
+    const versions = await listScoreVersions(id);
+    expect(
+      versions.filter((version) => version.versionKind === 'autosave')
+    ).toHaveLength(1);
+  });
+
+  it('replays concurrent identical autosave requests without duplicate rows', async () => {
+    const created = await asActor(
+      request(app).post('/scores'),
+      actors.owner,
+      true
+    ).send({ model: MODEL });
+    const id = created.body.score.id as string;
+    const detail = await asActor(
+      request(app).get(`/scores/${id}`),
+      actors.owner
+    );
+    const changedModel = structuredClone(detail.body.score.model);
+    changedModel.parts[0].measures[0].notes[0].pitch = 'D4';
+    const body = {
+      model: changedModel,
+      baseVersionId: detail.body.score.currentVersionId,
+      requestId: 'same-key-race',
+    };
+
+    const results = await Promise.all([
+      asActor(
+        request(app).post(`/scores/${id}/autosaves`),
+        actors.owner,
+        true
+      ).send(body),
+      asActor(
+        request(app).post(`/scores/${id}/autosaves`),
+        actors.owner,
+        true
+      ).send(body),
+    ]);
+    expect(results.map((result) => result.status).sort()).toEqual([200, 201]);
+    expect(results.map((result) => result.body.versionId)).toEqual([
+      results[0]?.body.versionId,
+      results[0]?.body.versionId,
+    ]);
+    expect(results.map((result) => result.body.outcome).sort()).toEqual([
+      'replayed',
+      'saved',
+    ]);
+    const versions = await listScoreVersions(id);
+    expect(
+      versions.filter((version) => version.versionKind === 'autosave')
+    ).toHaveLength(1);
+  });
+
+  it('serializes concurrent identical no-op autosaves into two unchanged responses and one receipt', async () => {
+    const created = await asActor(
+      request(app).post('/scores'),
+      actors.admin,
+      true
+    ).send({ model: MODEL });
+    const id = created.body.score.id as string;
+    const detail = await asActor(
+      request(app).get(`/scores/${id}`),
+      actors.admin
+    );
+    const body = {
+      model: detail.body.score.model,
+      baseVersionId: detail.body.score.currentVersionId as string,
+      requestId: 'concurrent-identical-noop',
+    };
+    const results = await Promise.all([
+      asActor(
+        request(app).post(`/scores/${id}/autosaves`),
+        actors.admin,
+        true
+      ).send(body),
+      asActor(
+        request(app).post(`/scores/${id}/autosaves`),
+        actors.admin,
+        true
+      ).send(body),
+    ]);
+    expect(results.map((result) => result.status)).toEqual([200, 200]);
+    expect(results.map((result) => result.body.outcome)).toEqual([
+      'unchanged',
+      'unchanged',
+    ]);
+    expect(results.map((result) => result.body.versionId)).toEqual([
+      body.baseVersionId,
+      body.baseVersionId,
+    ]);
+    expect(results.map((result) => result.body.currentVersionId)).toEqual([
+      body.baseVersionId,
+      body.baseVersionId,
+    ]);
+    expect(await listScoreAutosaveNoopRequestIds(id)).toEqual([body.requestId]);
+    const versions = await listScoreVersions(id);
+    expect(versions).toHaveLength(1);
+    expect(versions[0]?.versionKind).toBe('explicit');
+    const autosaveAudits = (await repository.listAuditEntries()).filter(
+      (entry) =>
+        entry.action === 'scores.autosave.create' && entry.targetId === id
+    );
+    expect(autosaveAudits).toHaveLength(2);
+    expect(autosaveAudits.every((entry) => entry.outcome === 'success')).toBe(
+      true
+    );
+  });
+
+  it('keeps the newest 20 autosaves in order and never prunes explicit versions', async () => {
+    const created = await asActor(
+      request(app).post('/scores'),
+      actors.owner,
+      true
+    ).send({ model: MODEL });
+    const id = created.body.score.id as string;
+    let baseVersionId = created.body.versionId as string;
+    const autosaveIds: string[] = [];
+    const baseTime = Date.parse('2026-01-01T00:00:00.000Z');
+
+    for (let index = 1; index <= 23; index += 1) {
+      const model = structuredClone(MODEL);
+      model.tempo += index;
+      const versionId = `autosave-${String(index).padStart(2, '0')}`;
+      const createdAt = new Date(baseTime).toISOString();
+      const saved = await repository.createScoreAutosave(
+        {
+          id: versionId,
+          scoreId: id,
+          musicxml: modelToMusicXml(model, { mode: 'new-score' }),
+          note: 'Autosave',
+          createdBy: actors.owner.id,
+          createdAt,
+          versionKind: 'autosave',
+          autosaveRequestId: `retention-${index}`,
+          autosaveBaseVersionId: baseVersionId,
+        },
+        baseVersionId,
+        createdAt,
+        actors.owner.id
+      );
+      expect(saved.status).toBe('created');
+      baseVersionId = versionId;
+      autosaveIds.push(versionId);
+    }
+
+    let versions = await listScoreVersions(id);
+    expect(
+      versions.filter((version) => version.versionKind === 'autosave')
+    ).toHaveLength(20);
+    expect(
+      versions
+        .filter((version) => version.versionKind === 'autosave')
+        .map((version) => version.id)
+    ).toEqual(autosaveIds.slice(3));
+
+    const current = await asActor(
+      request(app).get(`/scores/${id}`),
+      actors.owner
+    );
+    const explicitModel = structuredClone(current.body.score.model);
+    explicitModel.parts[0].measures[0].notes[0].pitch = 'D4';
+    const explicit = await asActor(
+      request(app).post(`/scores/${id}/versions`),
+      actors.owner,
+      true
+    ).send({
+      model: explicitModel,
+      note: 'Preserved explicit version',
+      baseVersionId: current.body.score.currentVersionId,
+    });
+    expect(explicit.status).toBe(201);
+
+    const finalModel = structuredClone(explicitModel);
+    finalModel.tempo += 1;
+    const nextId = 'autosave-24';
+    const nextAt = new Date(baseTime).toISOString();
+    const afterExplicit = await repository.createScoreAutosave(
+      {
+        id: nextId,
+        scoreId: id,
+        musicxml: modelToMusicXml(finalModel, { mode: 'new-score' }),
+        note: 'Autosave',
+        createdBy: actors.owner.id,
+        createdAt: nextAt,
+        versionKind: 'autosave',
+        autosaveRequestId: 'retention-24',
+        autosaveBaseVersionId: explicit.body.versionId,
+      },
+      explicit.body.versionId as string,
+      nextAt,
+      actors.owner.id
+    );
+    expect(afterExplicit).toEqual({ status: 'created', versionId: nextId });
+    versions = await listScoreVersions(id);
+    expect(
+      versions.filter((version) => version.versionKind === 'explicit')
+    ).toHaveLength(2);
+    expect(
+      versions
+        .filter((version) => version.versionKind === 'autosave')
+        .map((version) => version.id)
+    ).toEqual(autosaveIds.slice(4).concat(nextId));
+  });
+
+  it('rolls back insertion, pruning, and current-pointer changes on prune failure', async () => {
+    const created = await asActor(
+      request(app).post('/scores'),
+      actors.owner,
+      true
+    ).send({ model: MODEL });
+    const id = created.body.score.id as string;
+    let baseVersionId = created.body.versionId as string;
+    const baseTime = Date.parse('2026-01-01T00:00:00.000Z');
+    for (let index = 1; index <= 20; index += 1) {
+      const model = structuredClone(MODEL);
+      model.tempo += index;
+      const versionId = newId();
+      const createdAt = new Date(baseTime + index * 1_000).toISOString();
+      const saved = await repository.createScoreAutosave(
+        {
+          id: versionId,
+          scoreId: id,
+          musicxml: modelToMusicXml(model, { mode: 'new-score' }),
+          note: 'Autosave',
+          createdBy: actors.owner.id,
+          createdAt,
+          versionKind: 'autosave',
+          autosaveRequestId: `rollback-${index}`,
+          autosaveBaseVersionId: baseVersionId,
+        },
+        baseVersionId,
+        createdAt,
+        actors.owner.id
+      );
+      expect(saved.status).toBe('created');
+      baseVersionId = versionId;
+    }
+    const beforeVersions = await listScoreVersions(id);
+    const inspector = createClient({
+      url: `file:${join(tempDirectory, 'scores.sqlite')}`,
+    });
+    await inspector.execute(`CREATE TRIGGER fail_autosave_prune
+      BEFORE DELETE ON score_versions
+      WHEN OLD.version_kind = 'autosave'
+      BEGIN SELECT RAISE(ABORT, 'simulated prune failure'); END`);
+    inspector.close();
+
+    const detail = await asActor(
+      request(app).get(`/scores/${id}`),
+      actors.owner
+    );
+    const attemptedModel = structuredClone(detail.body.score.model);
+    attemptedModel.parts[0].measures[0].notes[0].pitch = 'D4';
+    const auditsBefore = await repository.listAuditEntries();
+    const priorAuditIds = new Set(auditsBefore.map((entry) => entry.id));
+    const failed = await asActor(
+      request(app).post(`/scores/${id}/autosaves`),
+      actors.admin,
+      true
+    ).send({
+      model: attemptedModel,
+      baseVersionId,
+      requestId: 'trigger-failure',
+    });
+    expect(failed.status).toBe(500);
+
+    const after = await asActor(
+      request(app).get(`/scores/${id}`),
+      actors.owner
+    );
+    expect(after.body.score.currentVersionId).toBe(baseVersionId);
+    expect(await listScoreVersions(id)).toEqual(beforeVersions);
+    const auditsAfter = (await repository.listAuditEntries()).filter(
+      (entry) => !priorAuditIds.has(entry.id)
+    );
+    const autosaveAudits = auditsAfter.filter(
+      (entry) =>
+        entry.action === 'scores.autosave.create' && entry.targetId === id
+    );
+    expect(autosaveAudits).toHaveLength(1);
+    expect(autosaveAudits[0]?.outcome).toBe('failed');
   });
 });
 

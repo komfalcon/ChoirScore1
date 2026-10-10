@@ -372,9 +372,13 @@ describe('score-route range-fit integration', () => {
     const saved = JSON.parse(writes[0]!.body ?? '{}') as {
       model: typeof api.originalModel;
       note: string;
+      baseVersionId: string;
     };
     expect(saved.model.parts[0]?.measures[0]?.notes[0]?.pitch).not.toBe('C5');
     expect(saved.note).toContain('Range-fit transposition to');
+    expect(saved.baseVersionId).toBe(
+      scoreDetailResponse.score.currentVersionId
+    );
     expect(api.savedModel).toEqual(saved.model);
     expect(api.detailReads).toBe(2);
     expect(scoreDetailResponse.score.model).toEqual(api.originalModel);

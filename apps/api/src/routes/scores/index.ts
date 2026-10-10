@@ -4,6 +4,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { Router, type Response } from 'express';
 import {
   MusicXmlConversionError,
+  createScoreAutosaveRequestSchema,
+  createScoreAutosaveResponseSchema,
   createScoreFromModelRequestSchema,
   createScoreVersionRequestSchema,
   createScoreVersionResponseSchema,
@@ -352,9 +354,13 @@ export function createScoresRouter(
           note: parsed.data.note || 'Edited',
           createdBy: user.id,
           createdAt: now,
+          versionKind: 'explicit',
+          autosaveRequestId: null,
+          autosaveBaseVersionId: null,
         },
         now,
         user.id,
+        parsed.data.baseVersionId,
         scoreAdminAuditEntry(
           req as RequestWithContext,
           user,
@@ -362,7 +368,7 @@ export function createScoresRouter(
           row.score.id,
           {}
         ),
-        isNoOp ? { currentVersionId: row.version.id } : undefined
+        isNoOp
       );
       if (saved.status === 'no_changes') {
         return await sendApiError(
@@ -411,6 +417,177 @@ export function createScoresRouter(
         versionId,
       });
       return res.status(201).json(response);
+    } catch (error) {
+      if (error instanceof MusicXmlConversionError) {
+        if (error.code === 'PRESERVATION_CONTEXT_CHANGED') {
+          const conversion = musicXmlToModel(row.version.musicxml);
+          const body = scoreContentWriteErrorResponseSchema.parse({
+            error: {
+              code: 'SCORE_CONTENT_READ_ONLY',
+              message:
+                'This imported score contains preserved MusicXML and cannot be edited.',
+              preservation: conversion.preservation,
+            },
+          });
+          await recordScoreAdminMutationFailure(
+            res,
+            409,
+            'SCORE_CONTENT_READ_ONLY'
+          );
+          return res.status(409).json(body);
+        }
+        if (await sendConversionFailure(res, error)) return;
+      }
+      return next(error);
+    }
+  });
+
+  router.post('/:id/autosaves', async (req, res, next) => {
+    const user = (req as RequestWithContext).authUser;
+    if (!user)
+      return await sendApiError(
+        res,
+        401,
+        'UNAUTHENTICATED',
+        'Authentication is required.'
+      );
+    const row = await accessibleScore(repository, user, req.params.id, res);
+    if (!row) return;
+    if (!permissionsFor(row, user).canEdit) {
+      return await sendApiError(
+        res,
+        403,
+        'FORBIDDEN',
+        'You may not edit this score.'
+      );
+    }
+    const parsed = createScoreAutosaveRequestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return await sendApiError(
+        res,
+        400,
+        'VALIDATION_ERROR',
+        'The autosave request is invalid.'
+      );
+    }
+
+    try {
+      const current = musicXmlToModel(row.version.musicxml);
+      const hasOpaqueConstructs =
+        current.preservation.state === 'opaque_constructs_preserved';
+      const candidate = preservedScoreModelSchema.parse({
+        ...parsed.data.model,
+        title: hasOpaqueConstructs ? current.model.title : row.score.title,
+        composer: hasOpaqueConstructs
+          ? (current.model.composer ?? null)
+          : row.score.composer,
+        ...(current.model.preservation
+          ? { preservation: current.model.preservation }
+          : {}),
+      });
+      const isNoOp =
+        candidate.key.fifths === current.model.key.fifths &&
+        candidate.key.mode === current.model.key.mode &&
+        isDeepStrictEqual(candidate.time, current.model.time) &&
+        candidate.tempo === current.model.tempo &&
+        isDeepStrictEqual(candidate.parts, current.model.parts);
+      const musicXml = modelToMusicXml(candidate);
+      const versionId = newId();
+      const now = new Date().toISOString();
+      const saved = await repository.createScoreAutosave(
+        {
+          id: versionId,
+          scoreId: row.score.id,
+          musicxml: musicXml,
+          note: 'Autosave',
+          createdBy: user.id,
+          createdAt: now,
+          versionKind: 'autosave',
+          autosaveRequestId: parsed.data.requestId,
+          autosaveBaseVersionId: parsed.data.baseVersionId,
+        },
+        parsed.data.baseVersionId,
+        now,
+        user.id,
+        scoreAdminAuditEntry(
+          req as RequestWithContext,
+          user,
+          'scores.autosave.create',
+          row.score.id,
+          {}
+        ),
+        isNoOp
+      );
+      if (saved.status === 'stale_version') {
+        return await sendApiError(
+          res,
+          409,
+          'VERSION_CONFLICT',
+          'The score changed before this draft could be autosaved. Reload and retry.'
+        );
+      }
+      if (saved.status === 'idempotency_conflict') {
+        return await sendApiError(
+          res,
+          409,
+          'IDEMPOTENCY_KEY_REUSED',
+          'This autosave request ID was already used for different content.'
+        );
+      }
+      if (saved.status === 'not_found') {
+        return await sendApiError(
+          res,
+          404,
+          'NOT_FOUND',
+          'The score was not found.'
+        );
+      }
+      if (saved.status === 'forbidden') {
+        return await sendApiError(
+          res,
+          403,
+          'FORBIDDEN',
+          'You may no longer edit this score.'
+        );
+      }
+
+      if (
+        saved.status === 'created' ||
+        saved.status === 'replayed' ||
+        saved.status === 'unchanged' ||
+        saved.status === 'unchanged_replayed'
+      ) {
+        markScoreAdminAuditRecorded(req as RequestWithContext, user);
+      }
+      const updatedRow = await repository.findScoreRow(row.score.id, user.id);
+      if (!updatedRow) {
+        return await sendApiError(
+          res,
+          404,
+          'NOT_FOUND',
+          'The score was not found.'
+        );
+      }
+      const outcome =
+        saved.status === 'created'
+          ? 'saved'
+          : saved.status === 'unchanged' ||
+              saved.status === 'unchanged_replayed'
+            ? 'unchanged'
+            : 'replayed';
+      const response = createScoreAutosaveResponseSchema.parse({
+        score: summarize(updatedRow, user),
+        versionId:
+          saved.status === 'created' ||
+          saved.status === 'replayed' ||
+          saved.status === 'unchanged' ||
+          saved.status === 'unchanged_replayed'
+            ? saved.versionId
+            : updatedRow.version.id,
+        currentVersionId: updatedRow.version.id,
+        outcome,
+      });
+      return res.status(saved.status === 'created' ? 201 : 200).json(response);
     } catch (error) {
       if (error instanceof MusicXmlConversionError) {
         if (error.code === 'PRESERVATION_CONTEXT_CHANGED') {
@@ -715,6 +892,9 @@ async function persistNewScore(args: {
       note: args.note,
       createdBy: args.user.id,
       createdAt: now,
+      versionKind: 'explicit',
+      autosaveRequestId: null,
+      autosaveBaseVersionId: null,
     },
     args.user.id,
     scoreAdminAuditEntry(args.request, args.user, 'scores.create', scoreId, {

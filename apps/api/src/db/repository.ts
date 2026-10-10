@@ -14,12 +14,14 @@ import {
   type SQL,
 } from 'drizzle-orm';
 import { drizzle, type LibSQLDatabase } from 'drizzle-orm/libsql';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import * as schema from './schema';
 import {
   auditLog,
   scoreAccess,
+  scoreAutosaveNoopRequests,
   scoreVersions,
   scores,
   settings,
@@ -64,6 +66,16 @@ export interface AuditInput {
 export type AuditRecord = typeof auditLog.$inferSelect;
 export type ScoreRecord = typeof scores.$inferSelect;
 export type ScoreVersionRecord = typeof scoreVersions.$inferSelect;
+export type ExplicitScoreVersionRecord = ScoreVersionRecord & {
+  versionKind: 'explicit';
+  autosaveRequestId: null;
+  autosaveBaseVersionId: null;
+};
+export type AutosaveScoreVersionRecord = ScoreVersionRecord & {
+  versionKind: 'autosave';
+  autosaveRequestId: string;
+  autosaveBaseVersionId: string;
+};
 export type ScoreAccessRecord = typeof scoreAccess.$inferSelect;
 
 export interface ScoreRowWithVersion {
@@ -106,6 +118,15 @@ export type ScoreVersionCreationResult =
   | { status: 'forbidden' }
   | { status: 'no_changes' }
   | { status: 'stale_version' };
+export type ScoreAutosaveCreationResult =
+  | { status: 'created'; versionId: string }
+  | { status: 'replayed'; versionId: string }
+  | { status: 'unchanged'; versionId: string }
+  | { status: 'unchanged_replayed'; versionId: string }
+  | { status: 'not_found' }
+  | { status: 'forbidden' }
+  | { status: 'stale_version' }
+  | { status: 'idempotency_conflict' };
 
 export type ScorePatch = Partial<
   Pick<ScoreRecord, 'title' | 'composer' | 'visibility' | 'updatedAt'>
@@ -146,7 +167,7 @@ export interface ApiRepository extends RepositoryTransaction {
   findScoreRow(id: string, userId: string): Promise<ScoreRowWithVersion | null>;
   createScoreWithVersion(
     score: ScoreRecord,
-    version: ScoreVersionRecord,
+    version: ExplicitScoreVersionRecord,
     actorId: string,
     audit?: AuditInput
   ): Promise<ScoreCreationResult>;
@@ -163,12 +184,21 @@ export interface ApiRepository extends RepositoryTransaction {
     audit?: AuditInput
   ): Promise<ScoreAccessReplacementResult>;
   createScoreVersion(
-    version: ScoreVersionRecord,
+    version: ExplicitScoreVersionRecord,
+    updatedAt: string,
+    actorId: string,
+    baseVersionId: string,
+    audit?: AuditInput,
+    noOp?: boolean
+  ): Promise<ScoreVersionCreationResult>;
+  createScoreAutosave(
+    version: AutosaveScoreVersionRecord,
+    baseVersionId: string,
     updatedAt: string,
     actorId: string,
     audit?: AuditInput,
-    noOpGuard?: { currentVersionId: string }
-  ): Promise<ScoreVersionCreationResult>;
+    noOp?: boolean
+  ): Promise<ScoreAutosaveCreationResult>;
   close(): void;
 }
 
@@ -180,6 +210,8 @@ type QuerySession = Database | DatabaseTransaction;
 
 const LOGIN_THROTTLE_BUSY_RETRIES = 12;
 const TRANSACTION_BUSY_RETRIES = 12;
+const MAX_SCORE_AUTOSAVES = 20;
+const MAX_SCORE_AUTOSAVE_NOOP_RECEIPTS = 20;
 
 function isDatabaseBusy(error: unknown): boolean {
   return (
@@ -676,7 +708,7 @@ class DrizzleApiRepository implements ApiRepository {
 
   async createScoreWithVersion(
     score: ScoreRecord,
-    version: ScoreVersionRecord,
+    version: ExplicitScoreVersionRecord,
     actorId: string,
     audit?: AuditInput
   ) {
@@ -816,11 +848,12 @@ class DrizzleApiRepository implements ApiRepository {
   }
 
   async createScoreVersion(
-    version: ScoreVersionRecord,
+    version: ExplicitScoreVersionRecord,
     updatedAt: string,
     actorId: string,
+    baseVersionId: string,
     audit?: AuditInput,
-    noOpGuard?: { currentVersionId: string }
+    noOp = false
   ): Promise<ScoreVersionCreationResult> {
     return this.db.transaction(async (tx) => {
       const authorization = await scoreWriteAuthorization(
@@ -830,14 +863,9 @@ class DrizzleApiRepository implements ApiRepository {
       );
       if (!authorization) return { status: 'not_found' };
       if (!authorization.canEdit) return { status: 'forbidden' };
-      if (noOpGuard) {
-        if (
-          authorization.score.currentVersionId !== noOpGuard.currentVersionId
-        ) {
-          return { status: 'stale_version' };
-        }
-        return { status: 'no_changes' };
-      }
+      if (authorization.score.currentVersionId !== baseVersionId)
+        return { status: 'stale_version' };
+      if (noOp) return { status: 'no_changes' };
 
       await tx.insert(scoreVersions).values(version).run();
       await tx
@@ -847,6 +875,153 @@ class DrizzleApiRepository implements ApiRepository {
         .run();
       if (audit) await tx.insert(auditLog).values(audit).run();
       return { status: 'created' };
+    });
+  }
+
+  async createScoreAutosave(
+    version: AutosaveScoreVersionRecord,
+    baseVersionId: string,
+    updatedAt: string,
+    actorId: string,
+    audit?: AuditInput,
+    noOp = false
+  ): Promise<ScoreAutosaveCreationResult> {
+    if (
+      version.createdBy !== actorId ||
+      version.autosaveBaseVersionId !== baseVersionId
+    ) {
+      throw new Error('Autosave metadata does not match its actor and base.');
+    }
+    return this.db.transaction(async (tx) => {
+      const authorization = await scoreWriteAuthorization(
+        tx,
+        version.scoreId,
+        actorId
+      );
+      if (!authorization) return { status: 'not_found' };
+      if (!authorization.canEdit) return { status: 'forbidden' };
+
+      const musicXmlHash = createHash('sha256')
+        .update(version.musicxml, 'utf8')
+        .digest('hex');
+      const unchangedRequest = await tx
+        .select()
+        .from(scoreAutosaveNoopRequests)
+        .where(
+          and(
+            eq(scoreAutosaveNoopRequests.scoreId, version.scoreId),
+            eq(scoreAutosaveNoopRequests.actorId, actorId),
+            eq(scoreAutosaveNoopRequests.requestId, version.autosaveRequestId)
+          )
+        )
+        .limit(1);
+      if (unchangedRequest[0]) {
+        if (
+          unchangedRequest[0].baseVersionId !== baseVersionId ||
+          unchangedRequest[0].musicXmlHash !== musicXmlHash
+        ) {
+          return { status: 'idempotency_conflict' };
+        }
+        if (audit) await tx.insert(auditLog).values(audit).run();
+        return {
+          status: 'unchanged_replayed',
+          versionId: unchangedRequest[0].baseVersionId,
+        };
+      }
+
+      const duplicate = await tx
+        .select()
+        .from(scoreVersions)
+        .where(
+          and(
+            eq(scoreVersions.scoreId, version.scoreId),
+            eq(scoreVersions.createdBy, actorId),
+            eq(scoreVersions.versionKind, 'autosave'),
+            eq(scoreVersions.autosaveRequestId, version.autosaveRequestId)
+          )
+        )
+        .limit(1);
+      if (duplicate[0]) {
+        if (
+          duplicate[0].musicxml !== version.musicxml ||
+          duplicate[0].autosaveBaseVersionId !== baseVersionId
+        ) {
+          return { status: 'idempotency_conflict' };
+        }
+        if (audit) await tx.insert(auditLog).values(audit).run();
+        return { status: 'replayed', versionId: duplicate[0].id };
+      }
+
+      if (authorization.score.currentVersionId !== baseVersionId) {
+        return { status: 'stale_version' };
+      }
+      if (noOp) {
+        const priorReceipts = await tx
+          .select({ id: scoreAutosaveNoopRequests.id })
+          .from(scoreAutosaveNoopRequests)
+          .where(eq(scoreAutosaveNoopRequests.scoreId, version.scoreId))
+          .orderBy(asc(scoreAutosaveNoopRequests.id));
+        const expiredReceiptIds = priorReceipts
+          .slice(
+            0,
+            Math.max(
+              0,
+              priorReceipts.length - (MAX_SCORE_AUTOSAVE_NOOP_RECEIPTS - 1)
+            )
+          )
+          .map((receipt) => receipt.id);
+        await tx
+          .insert(scoreAutosaveNoopRequests)
+          .values({
+            scoreId: version.scoreId,
+            actorId,
+            requestId: version.autosaveRequestId,
+            baseVersionId,
+            musicXmlHash,
+            createdAt: version.createdAt,
+          })
+          .run();
+        if (expiredReceiptIds.length) {
+          await tx
+            .delete(scoreAutosaveNoopRequests)
+            .where(inArray(scoreAutosaveNoopRequests.id, expiredReceiptIds))
+            .run();
+        }
+        if (audit) await tx.insert(auditLog).values(audit).run();
+        return { status: 'unchanged', versionId: baseVersionId };
+      }
+
+      const priorAutosaves = await tx
+        .select({ id: scoreVersions.id })
+        .from(scoreVersions)
+        .where(
+          and(
+            eq(scoreVersions.scoreId, version.scoreId),
+            eq(scoreVersions.versionKind, 'autosave')
+          )
+        )
+        .orderBy(asc(scoreVersions.createdAt), asc(scoreVersions.id));
+      const pruneIds = priorAutosaves
+        .slice(
+          0,
+          Math.max(0, priorAutosaves.length - (MAX_SCORE_AUTOSAVES - 1))
+        )
+        .map((row) => row.id);
+
+      await tx.insert(scoreVersions).values(version).run();
+      await tx
+        .update(scores)
+        .set({ currentVersionId: version.id, updatedAt })
+        .where(eq(scores.id, version.scoreId))
+        .run();
+      if (pruneIds.length) {
+        await tx
+          .delete(scoreVersions)
+          .where(inArray(scoreVersions.id, pruneIds))
+          .run();
+      }
+      if (audit) await tx.insert(auditLog).values(audit).run();
+      return { status: 'created', versionId: version.id };
     });
   }
 
