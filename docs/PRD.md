@@ -353,8 +353,9 @@ Each validator returns `{ errors: Issue[], warnings: Issue[] }` where `Issue = {
 
 | Code | Type | Rule |
 |------|------|------|
-| `MEASURE_DURATION` | error | Sum of `dur` in each measure equals `beats × (4 / beatType)` |
+| `MEASURE_DURATION` | error | The furthest event end in each part/measure equals `beats × (4 / beatType)` quarter-note units. Explicit onsets are honored; omitted onsets advance independently per staff/voice, chord members share the preceding onset, and simultaneous events do not add time. A voice may end before the barline because trailing silence may be implicit; report at most one issue per part/measure. |
 | `OUT_OF_RANGE` | error | Note outside the part's range (Section 10.5) |
+| `VOICE_MAPPING` | error | An exact canonical SATB ID/name is missing, conflicting, or duplicated, or a mapped part's required range cannot be resolved. Fail closed and skip that validator without inferring identity. Emit one issue: part-specific failures use the actual part ID; score-level ambiguity uses the lexically lowest implicated part ID. In either case use that part's lowest-numbered measure and beat 1. |
 | `VOICE_CROSSING` | error | S below A, A below T, or T below B at any shared onset |
 | `SPACING` | warning | S–A or A–T more than an octave apart |
 | `PARALLEL_FIFTHS` / `PARALLEL_OCTAVES` | error | Between any two voices on consecutive onsets |

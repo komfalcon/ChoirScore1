@@ -1,0 +1,63 @@
+{
+  "title": "Crossing voice-crossing fixture",
+  "key": { "fifths": 0, "mode": "major" },
+  "time": { "beats": 4, "beatType": 4 },
+  "tempo": 90,
+  "parts": [
+    {
+      "id": "S",
+      "clef": "treble",
+      "measures": [
+        {
+          "number": 7,
+          "notes": [
+            { "pitch": "C5", "dur": 1, "onset": 0 },
+            { "pitch": "D5", "dur": 1, "onset": 1 },
+            { "pitch": "G4", "dur": 0.5, "onset": 2.5 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "A",
+      "clef": "treble",
+      "measures": [
+        {
+          "number": 7,
+          "notes": [
+            { "pitch": "G4", "dur": 1, "onset": 0 },
+            { "pitch": "F4", "dur": 1, "onset": 1 },
+            { "pitch": "A4", "dur": 0.5, "onset": 2.5 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "T",
+      "clef": "bass",
+      "measures": [
+        {
+          "number": 7,
+          "notes": [
+            { "pitch": "C4", "dur": 2.5, "onset": 0 },
+            { "pitch": "D4", "dur": 0.5, "onset": 2.5 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B",
+      "clef": "bass",
+      "measures": [
+        {
+          "number": 7,
+          "notes": [
+            { "pitch": "C3", "dur": 1.5, "onset": 0 },
+            { "pitch": "G3", "dur": 1, "onset": 1.5 },
+            { "pitch": "B3", "dur": 0.5, "onset": 2.5 }
+          ]
+        }
+      ]
+    }
+  ]
+}
