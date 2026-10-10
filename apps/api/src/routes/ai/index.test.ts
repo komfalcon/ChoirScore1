@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DEFAULT_VOICE_RANGES } from '@choirscore/shared';
 import type { ApiConfig } from '../../config';
 import { createApp } from '../../app';
 import { newId } from '../../audit';
@@ -1089,5 +1090,127 @@ describe('persisted AI jobs', () => {
     expect((await repository.findAiJobById(queuedJobId))?.status).toBe(
       'succeeded'
     );
+  });
+  it('runs Harmonize through the async worker and exposes only a validated preview', async () => {
+    const configuredRanges = {
+      ...DEFAULT_VOICE_RANGES,
+      A: {
+        ...DEFAULT_VOICE_RANGES.A,
+        comfortable: { low: 'A4', high: 'D5' },
+      },
+    };
+    await repository.setSetting(
+      'voice_ranges_json',
+      JSON.stringify(configuredRanges),
+      actors.admin!.id,
+      FIXED_NOW.toISOString()
+    );
+    const originalScore = {
+      title: 'Test hymn',
+      key: { fifths: 0, mode: 'major' },
+      time: { beats: 4, beatType: 4 },
+      tempo: 90,
+      parts: [
+        {
+          id: 'S',
+          clef: 'treble',
+          measures: [
+            {
+              number: 1,
+              notes: [
+                { pitch: 'C5', dur: 1 },
+                { pitch: 'D5', dur: 1 },
+                { pitch: 'C5', dur: 1 },
+                { pitch: 'D5', dur: 1 },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const provider: AiProvider = {
+      name: 'harmonize-test',
+      async generate(work) {
+        expect(work.feature).toBe('harmonize');
+        expect(work.input.prompt).toContain('Requested parts only');
+        expect(String(work.input.prompt)).toContain('"low":"A4"');
+        return {
+          result: {
+            parts: [
+              {
+                id: 'A',
+                measures: [{ number: 1, pitches: ['E4', 'E4', 'E4', 'E4'] }],
+              },
+              {
+                id: 'T',
+                measures: [{ number: 1, pitches: ['G3', 'G3', 'G3', 'G3'] }],
+              },
+              {
+                id: 'B',
+                measures: [{ number: 1, pitches: ['C3', 'C3', 'C3', 'C3'] }],
+              },
+            ],
+          },
+          warnings: [],
+          tokensIn: 12,
+          tokensOut: 34,
+        };
+      },
+    };
+    const submitted = await stateChanging(
+      asActor(request(app).post('/ai/jobs'), actors.alice!)
+    ).send({
+      requestId: 'harmonize-inline-preview',
+      feature: 'harmonize',
+      input: { score: originalScore },
+    });
+    expect(submitted.status).toBe(202);
+
+    const worker = new AiJobWorker(
+      repository,
+      provider,
+      () => new Date(FIXED_NOW)
+    );
+    await expect(worker.runOne()).resolves.toBe(true);
+    const poll = await asActor(
+      request(app).get(`/ai/jobs/${submitted.body.jobId as string}`),
+      actors.alice!
+    );
+    expect(poll.status).toBe(200);
+    expect(poll.body).toMatchObject({
+      status: 'succeeded',
+      result: { previewOnly: true },
+    });
+    expect(poll.body.warnings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'OUT_OF_RANGE' }),
+      ])
+    );
+    expect(
+      poll.body.result.model.parts.map((part: { id: string }) => part.id)
+    ).toEqual(['S', 'A', 'T', 'B']);
+    expect(
+      poll.body.result.model.parts[0].measures[0].notes.map(
+        (note: { pitch: string; dur: number }) => [note.pitch, note.dur]
+      )
+    ).toEqual([
+      ['C5', 1],
+      ['D5', 1],
+      ['C5', 1],
+      ['D5', 1],
+    ]);
+    expect(
+      poll.body.result.model.parts[1].measures[0].notes.map(
+        (note: { dur: number }) => note.dur
+      )
+    ).toEqual([1, 1, 1, 1]);
+    const persisted = await repository.findAiJobById(
+      submitted.body.jobId as string
+    );
+    expect(persisted).toMatchObject({
+      status: 'succeeded',
+      tokensIn: 12,
+      tokensOut: 34,
+    });
   });
 });
