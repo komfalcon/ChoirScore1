@@ -70,6 +70,29 @@ function work(value: Record<string, unknown>): AiWorkItem {
   };
 }
 
+type TieMeasureFixture = {
+  number: number;
+  notes: Array<{ tie?: boolean }>;
+};
+
+function fixtureHasSelectedRangeBoundaryTie(
+  measures: TieMeasureFixture[],
+  selectedMeasureNumbers: ReadonlySet<number>
+): boolean {
+  const events = measures.flatMap((measure) =>
+    measure.notes.map((note) => ({ measureNumber: measure.number, note }))
+  );
+  return events.some((event, index) => {
+    if (!event.note.tie) return false;
+    const continuation = events[index + 1];
+    return (
+      continuation !== undefined &&
+      selectedMeasureNumbers.has(event.measureNumber) !==
+        selectedMeasureNumbers.has(continuation.measureNumber)
+    );
+  });
+}
+
 describe('Harmonize inline pipeline', () => {
   it('normalizes score defaults and rejects scoreId, incomplete measures, and non-S melodies', () => {
     const accepted = validateHarmonizeSubmission(input());
@@ -292,6 +315,33 @@ describe('Harmonize inline pipeline', () => {
       generateHarmonizeProposal(provider, work(request))
     ).rejects.toThrow('Harmonize input failed deterministic precheck.');
     expect(calls).toHaveLength(0);
+  });
+
+  it('identifies an outgoing target boundary tie independently of the melody tie', () => {
+    const measure = (
+      number: number,
+      tieLastNote = false
+    ): TieMeasureFixture => ({
+      number,
+      notes: [0, 1, 2, 3].map((index) => ({
+        ...(tieLastNote && index === 3 ? { tie: true } : {}),
+      })),
+    });
+    const melodyMeasures = [measure(1), measure(2)];
+    const targetMeasures = [measure(1, true), measure(2)];
+    const selectedMeasureNumbers = new Set([1]);
+
+    // The outgoing target tie is a real boundary edge; the melody has none.
+    // Its selected-slot tie metadata differs, so this case cannot by itself
+    // distinguish the integration rejection from the skeleton check.
+    expect(
+      fixtureHasSelectedRangeBoundaryTie(melodyMeasures, selectedMeasureNumbers)
+    ).toBe(false);
+    expect(
+      fixtureHasSelectedRangeBoundaryTie(targetMeasures, selectedMeasureNumbers)
+    ).toBe(true);
+    expect(melodyMeasures[0]!.notes[3]!.tie).toBeUndefined();
+    expect(targetMeasures[0]!.notes[3]!.tie).toBe(true);
   });
 
   it('rejects requested target-part ties crossing either partial-range boundary before provider work', async () => {
