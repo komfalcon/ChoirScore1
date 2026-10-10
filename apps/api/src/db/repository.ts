@@ -275,6 +275,10 @@ export interface ApiRepository extends RepositoryTransaction {
     finishedAt: string
   ): Promise<boolean>;
   recoverExpiredAiJobs(finishedAt: string, error: string): Promise<number>;
+  reclaimExpiredAiJobs(finishedAt: string, error: string): Promise<string[]>;
+  subscribeToAiJobLeaseReclaims(
+    listener: (jobIds: readonly string[]) => void
+  ): () => void;
   close(): void;
 }
 
@@ -298,6 +302,37 @@ function aiLeaseExpiry(leaseDurationMs: number) {
 }
 
 const AI_DATABASE_NOW = sql<string>`strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`;
+export const AI_LEASE_EXPIRED_FAILURE_MESSAGE =
+  'The worker lease expired before this job completed. Submit a new request to retry.';
+
+async function failExpiredAiJobLeases(
+  session: QuerySession,
+  error: string,
+  finishedAt?: string
+): Promise<string[]> {
+  const result = await session
+    .update(aiJobs)
+    .set({
+      status: 'failed',
+      resultJson: null,
+      warningsJson: null,
+      error,
+      tokensIn: null,
+      tokensOut: null,
+      finishedAt: finishedAt ?? AI_DATABASE_NOW,
+      workerId: null,
+      leaseExpiresAt: null,
+    })
+    .where(
+      and(
+        eq(aiJobs.status, 'running'),
+        isNotNull(aiJobs.workerId),
+        lte(aiJobs.leaseExpiresAt, AI_DATABASE_NOW)
+      )
+    )
+    .returning({ id: aiJobs.id });
+  return result.map((row) => row.id);
+}
 
 function isDatabaseBusy(error: unknown): boolean {
   return (
@@ -513,12 +548,33 @@ async function scoreWriteAuthorization(
 
 class DrizzleApiRepository implements ApiRepository {
   private readonly operations: RepositoryTransaction;
+  private readonly aiJobLeaseReclaimListeners = new Set<
+    (jobIds: readonly string[]) => void
+  >();
 
   constructor(
     private readonly client: Client,
     private readonly db: Database
   ) {
     this.operations = repositoryOperations(db);
+  }
+
+  subscribeToAiJobLeaseReclaims(
+    listener: (jobIds: readonly string[]) => void
+  ): () => void {
+    this.aiJobLeaseReclaimListeners.add(listener);
+    return () => this.aiJobLeaseReclaimListeners.delete(listener);
+  }
+
+  private notifyAiJobLeaseReclaims(jobIds: readonly string[]): void {
+    if (jobIds.length === 0) return;
+    for (const listener of this.aiJobLeaseReclaimListeners) {
+      try {
+        listener(jobIds);
+      } catch {
+        // A listener cannot turn a committed database transition into a failure.
+      }
+    }
   }
 
   findUserById = (id: string) => this.operations.findUserById(id);
@@ -1120,8 +1176,9 @@ class DrizzleApiRepository implements ApiRepository {
     dayStart: string,
     nextDayStart: string
   ): Promise<AiJobSubmissionResult> {
-    return serializeRepositoryTransaction(() =>
-      this.db.transaction(async (tx) => {
+    let reclaimedJobIds: string[] = [];
+    const transaction = () =>
+      this.db.transaction(async (tx): Promise<AiJobSubmissionResult> => {
         const priorJobs = await tx
           .select()
           .from(aiJobs)
@@ -1176,6 +1233,10 @@ class DrizzleApiRepository implements ApiRepository {
             : defaultDailyLimit;
         const dailyLimit = user.aiDailyLimit ?? globalLimit;
 
+        reclaimedJobIds = await failExpiredAiJobLeases(
+          tx,
+          AI_LEASE_EXPIRED_FAILURE_MESSAGE
+        );
         const activeGlobalRows = await tx
           .select({ value: count() })
           .from(aiJobs)
@@ -1224,8 +1285,10 @@ class DrizzleApiRepository implements ApiRepository {
         };
         await tx.insert(aiJobs).values(row).run();
         return { status: 'created', job: row };
-      })
-    );
+      });
+    const result = await serializeRepositoryTransaction(transaction);
+    this.notifyAiJobLeaseReclaims(reclaimedJobIds);
+    return result;
   }
 
   async getAiQuota(
@@ -1293,8 +1356,13 @@ class DrizzleApiRepository implements ApiRepository {
     workerId: string,
     leaseDurationMs: number
   ): Promise<AiJobRecord | null> {
-    return serializeRepositoryTransaction(() =>
+    let reclaimedJobIds: string[] = [];
+    const result = await serializeRepositoryTransaction(() =>
       this.db.transaction(async (tx) => {
+        reclaimedJobIds = await failExpiredAiJobLeases(
+          tx,
+          AI_LEASE_EXPIRED_FAILURE_MESSAGE
+        );
         const runningRows = await tx
           .select({ value: count() })
           .from(aiJobs)
@@ -1338,6 +1406,8 @@ class DrizzleApiRepository implements ApiRepository {
         return claimedRows[0] ?? null;
       })
     );
+    this.notifyAiJobLeaseReclaims(reclaimedJobIds);
+    return result;
   }
 
   async completeAiJob(
@@ -1459,32 +1529,18 @@ class DrizzleApiRepository implements ApiRepository {
     finishedAt: string,
     error: string
   ): Promise<number> {
-    return serializeRepositoryTransaction(() =>
-      this.db.transaction(async (tx) => {
-        const result = await tx
-          .update(aiJobs)
-          .set({
-            status: 'failed',
-            resultJson: null,
-            warningsJson: null,
-            error,
-            tokensIn: null,
-            tokensOut: null,
-            finishedAt,
-            workerId: null,
-            leaseExpiresAt: null,
-          })
-          .where(
-            and(
-              eq(aiJobs.status, 'running'),
-              isNotNull(aiJobs.workerId),
-              lte(aiJobs.leaseExpiresAt, AI_DATABASE_NOW)
-            )
-          )
-          .run();
-        return Number(result.rowsAffected);
-      })
+    return (await this.reclaimExpiredAiJobs(finishedAt, error)).length;
+  }
+
+  async reclaimExpiredAiJobs(
+    finishedAt: string,
+    error: string
+  ): Promise<string[]> {
+    const reclaimedJobIds = await serializeRepositoryTransaction(() =>
+      this.db.transaction((tx) => failExpiredAiJobLeases(tx, error, finishedAt))
     );
+    this.notifyAiJobLeaseReclaims(reclaimedJobIds);
+    return reclaimedJobIds;
   }
 
   close() {

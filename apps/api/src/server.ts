@@ -42,12 +42,34 @@ async function start() {
       });
     });
     aiWorker.start();
+    let shutdownStarted = false;
     const close = () => {
-      void aiWorker.stop().finally(() => {
-        server.close(() => {
-          repository.close();
-          process.exitCode = 0;
+      if (shutdownStarted) return;
+      shutdownStarted = true;
+      const httpDrained = new Promise<void>((resolve) => {
+        server.close((error) => {
+          if (error) {
+            structuredLogger.error({
+              event: 'api_http_shutdown_failed',
+              errorType: error.name,
+            });
+            process.exitCode = 1;
+          }
+          resolve();
         });
+      });
+      void (async () => {
+        await httpDrained;
+        await aiWorker.stop();
+        repository.close();
+        if (process.exitCode !== 1) process.exitCode = 0;
+      })().catch((error: unknown) => {
+        structuredLogger.error({
+          event: 'api_worker_shutdown_failed',
+          errorType: error instanceof Error ? error.name : 'unknown',
+        });
+        repository.close();
+        process.exitCode = 1;
       });
     };
     process.once('SIGTERM', close);

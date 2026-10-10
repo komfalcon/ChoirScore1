@@ -296,6 +296,46 @@ describe('persisted AI jobs', () => {
     expect((await repository.findAiJobById(jobId))?.status).toBe('queued');
   });
 
+  it('drains active mock-provider work and its terminal write before worker stop resolves', async () => {
+    const accepted = await submit(actors.alice!, 'stop-drains-provider-work');
+    const providerStarted = deferred<void>();
+    const providerResult = deferred<AiProviderResult>();
+    const provider: AiProvider = {
+      name: 'delayed-drain-mock',
+      generate: async () => {
+        providerStarted.resolve();
+        return await providerResult.promise;
+      },
+    };
+    const worker = new AiJobWorker(
+      repository,
+      provider,
+      () => new Date(FIXED_NOW)
+    );
+    worker.start(60_000);
+    await providerStarted.promise;
+
+    let stopResolved = false;
+    const stopping = worker.stop().then(() => {
+      stopResolved = true;
+    });
+    const settledEarly = await Promise.race([
+      stopping.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 25)),
+    ]);
+    expect(settledEarly).toBe(false);
+    expect((await repository.findAiJobById(accepted.body.jobId))?.status).toBe(
+      'running'
+    );
+
+    providerResult.resolve(SUCCESSFUL_PROVIDER_RESULT);
+    await stopping;
+    expect(stopResolved).toBe(true);
+    expect((await repository.findAiJobById(accepted.body.jobId))?.status).toBe(
+      'succeeded'
+    );
+  });
+
   it('applies per-user quota overrides and returns standard quota errors', async () => {
     await repository.updateUser(actors.alice!.id, { aiDailyLimit: 1 });
     const first = await submit(actors.alice!, 'quota-a');
@@ -576,6 +616,198 @@ describe('persisted AI jobs', () => {
     ).toBe(false);
   });
 
+  it('reclaims an expired lease during a live claim and never resubmits the stale job', async () => {
+    const first = await submit(actors.alice!, 'runtime-claim-first');
+    const second = await submit(actors.bob!, 'runtime-claim-second');
+    const staleClaim = await repository.claimNextAiJob(
+      'expired-runtime-worker',
+      AI_WORKER_LEASE_MS
+    );
+    expect(staleClaim).not.toBeNull();
+
+    const expireClient = createClient({ url: `file:${databasePath}` });
+    await expireClient.execute({
+      sql: "UPDATE ai_jobs SET lease_expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?",
+      args: [staleClaim!.id],
+    });
+    expireClient.close();
+
+    const worker = new AiJobWorker(
+      repository,
+      new MockAiProvider(),
+      () => new Date(FIXED_NOW)
+    );
+    expect(await worker.runOne()).toBe(true);
+
+    const staleJob = await repository.findAiJobById(staleClaim!.id);
+    const waitingId =
+      staleClaim!.id === first.body.jobId
+        ? second.body.jobId
+        : first.body.jobId;
+    const waitingJob = await repository.findAiJobById(waitingId);
+    expect(staleJob).toMatchObject({
+      status: 'failed',
+      error:
+        'The worker lease expired before this job completed. Submit a new request to retry.',
+    });
+    expect(waitingJob?.status).toBe('succeeded');
+    expect(
+      await repository.completeAiJob(staleClaim!.id, staleClaim!.workerId!, {
+        resultJson: '{}',
+        warningsJson: '[]',
+        tokensIn: 0,
+        tokensOut: 0,
+        finishedAt: FIXED_NOW.toISOString(),
+      })
+    ).toBe(false);
+  });
+
+  it.each(['periodic sweep', 'claim recovery', 'admission recovery'] as const)(
+    'releases expired local work through %s while provider promises remain unresolved',
+    async (reclaimPath) => {
+      const pathKey = reclaimPath.replace(/ /g, '-');
+      const first = await submit(actors.alice!, `expiry-first-${pathKey}`);
+      const second = await submit(actors.bob!, `expiry-second-${pathKey}`);
+      expect(first.status).toBe(202);
+      expect(second.status).toBe(202);
+
+      const generated: Array<{
+        id: string;
+        signal: AbortSignal;
+        resolve: (result: AiProviderResult) => void;
+      }> = [];
+      const bothStarted = deferred<void>();
+      const bothProviderPromisesSettled = deferred<void>();
+      let providerSettled = 0;
+      const provider: AiProvider = {
+        name: 'runtime-expiry-hanging-mock',
+        generate: async (work) => {
+          if (generated.length >= 2) return SUCCESSFUL_PROVIDER_RESULT;
+          const result = deferred<AiProviderResult>();
+          generated.push({
+            id: work.id,
+            signal: work.signal,
+            resolve: result.resolve,
+          });
+          if (generated.length === 2) bothStarted.resolve();
+          try {
+            return await result.promise;
+          } finally {
+            providerSettled += 1;
+            if (providerSettled === 2) bothProviderPromisesSettled.resolve();
+          }
+        },
+      };
+      const worker = new AiJobWorker(
+        repository,
+        provider,
+        () => new Date(FIXED_NOW),
+        reclaimPath === 'periodic sweep' ? 10 : 60_000
+      );
+      worker.start(10);
+      let replacementJobId = '';
+      try {
+        await bothStarted.promise;
+        const expireClient = createClient({ url: `file:${databasePath}` });
+        await expireClient.execute({
+          sql: "UPDATE ai_jobs SET lease_expires_at = '2000-01-01T00:00:00.000Z' WHERE id IN (?, ?)",
+          args: [generated[0]!.id, generated[1]!.id],
+        });
+        expireClient.close();
+
+        if (reclaimPath === 'claim recovery') {
+          expect(
+            await repository.claimNextAiJob(
+              'claim-recovery-test',
+              AI_WORKER_LEASE_MS
+            )
+          ).toBeNull();
+        } else if (reclaimPath === 'admission recovery') {
+          const admitted = await submit(
+            actors.carol!,
+            'after-admission-recovery'
+          );
+          expect(admitted.status).toBe(202);
+          replacementJobId = admitted.body.jobId as string;
+        }
+
+        await vi.waitFor(
+          async () => {
+            const jobs = await Promise.all(
+              generated.map(({ id }) => repository.findAiJobById(id))
+            );
+            expect(jobs.map((job) => job?.status)).toEqual([
+              'failed',
+              'failed',
+            ]);
+            expect(generated.every((job) => job.signal.aborted)).toBe(true);
+          },
+          { timeout: 2_000, interval: 10 }
+        );
+
+        if (!replacementJobId) {
+          const admitted = await submit(
+            actors.carol!,
+            `after-runtime-recovery-${pathKey}`
+          );
+          expect(admitted.status).toBe(202);
+          replacementJobId = admitted.body.jobId as string;
+        }
+        await vi.waitFor(
+          async () => {
+            expect(
+              (await repository.findAiJobById(replacementJobId))?.status
+            ).toBe('succeeded');
+          },
+          { timeout: 2_000, interval: 10 }
+        );
+        expect(providerSettled).toBe(0);
+
+        for (const job of generated) {
+          job.resolve(SUCCESSFUL_PROVIDER_RESULT);
+        }
+        await bothProviderPromisesSettled.promise;
+        expect(providerSettled).toBe(2);
+      } finally {
+        for (const job of generated) {
+          job.resolve(SUCCESSFUL_PROVIDER_RESULT);
+        }
+        await worker.stop();
+      }
+
+      const terminalJobs = await Promise.all(
+        generated.map(({ id }) => repository.findAiJobById(id))
+      );
+      expect(terminalJobs.map((job) => job?.status)).toEqual([
+        'failed',
+        'failed',
+      ]);
+    }
+  );
+
+  it('reclaims expired running capacity before enforcing new-job admission limits', async () => {
+    const accepted = await submit(actors.alice!, 'runtime-admission-expired');
+    const claim = await repository.claimNextAiJob(
+      'admission-expiry-worker',
+      AI_WORKER_LEASE_MS
+    );
+    expect(claim?.id).toBe(accepted.body.jobId);
+
+    const expireClient = createClient({ url: `file:${databasePath}` });
+    await expireClient.execute({
+      sql: "UPDATE ai_jobs SET lease_expires_at = '2000-01-01T00:00:00.000Z' WHERE id = ?",
+      args: [claim!.id],
+    });
+    expireClient.close();
+
+    const admitted = await submit(actors.carol!, 'admitted-after-expiry');
+    expect(admitted.status).toBe(202);
+    expect((await repository.findAiJobById(claim!.id))?.status).toBe('failed');
+    expect(
+      (await repository.findAiJobById(admitted.body.jobId as string))?.status
+    ).toBe('queued');
+  });
+
   it('does not fail another repository instance’s unexpired worker lease', async () => {
     const accepted = await submit(actors.alice!, 'shared-db-live-lease');
     const claim = await repository.claimNextAiJob(
@@ -641,7 +873,7 @@ describe('persisted AI jobs', () => {
     expect(await recoveringWorker.recoverAfterRestart()).toBe(1);
     const recovered = await repository.findAiJobById(running!.id);
     expect(recovered?.status).toBe('failed');
-    expect(recovered?.error).toContain('server restarted');
+    expect(recovered?.error).toContain('lease expired');
 
     const resumedWorker = new AiJobWorker(
       repository,

@@ -9,6 +9,7 @@ export interface AiProviderResult {
 
 export interface AiProvider {
   readonly name: string;
+  /** Implementations must honor work.signal and stop stale work when aborted. */
   generate(work: AiWorkItem): Promise<AiProviderResult>;
 }
 
