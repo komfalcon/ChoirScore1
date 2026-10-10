@@ -1213,4 +1213,54 @@ describe('persisted AI jobs', () => {
       tokensOut: 34,
     });
   });
+
+  it('aligns the route prompt boundary at 4,000 characters', async () => {
+    const score = {
+      title: 'Prompt boundary test',
+      key: { fifths: 0, mode: 'major' },
+      time: { beats: 4, beatType: 4 },
+      parts: [
+        {
+          id: 'S',
+          clef: 'treble',
+          measures: [
+            {
+              number: 1,
+              notes: [
+                { pitch: 'C5', dur: 1 },
+                { pitch: 'D5', dur: 1 },
+                { pitch: 'C5', dur: 1 },
+                { pitch: 'D5', dur: 1 },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const submitPrompt = async (requestId: string, prompt: string) =>
+      await stateChanging(
+        asActor(request(app).post('/ai/jobs'), actors.alice!)
+      ).send({
+        requestId,
+        feature: 'harmonize',
+        input: { score, prompt },
+      });
+
+    const boundary = await submitPrompt(
+      'harmonize-prompt-4000',
+      'x'.repeat(4_000)
+    );
+    expect(boundary.status).toBe(202);
+
+    const overBoundary = await submitPrompt(
+      'harmonize-prompt-4001',
+      'x'.repeat(4_001)
+    );
+    expect(overBoundary.status).toBe(400);
+    expect(overBoundary.body.error.message).toBe(
+      'The request payload is invalid.'
+    );
+    const quota = await asActor(request(app).get('/ai/quota'), actors.alice!);
+    expect(quota.body.used).toBe(1);
+  });
 });

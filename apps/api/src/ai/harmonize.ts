@@ -70,6 +70,44 @@ function rejectInput(): never {
   );
 }
 
+type ScoreNote = ScorePart['measures'][number]['notes'][number];
+
+function sameTuplet(
+  left: ScoreNote['tuplet'],
+  right: ScoreNote['tuplet']
+): boolean {
+  if (!left || !right) return left === right;
+  return (
+    left.actualNotes === right.actualNotes &&
+    left.normalNotes === right.normalNotes &&
+    left.normalType === right.normalType
+  );
+}
+
+function hasSameRhythmSkeleton(
+  sourceMeasure: ScorePart['measures'][number],
+  targetMeasure: ScorePart['measures'][number]
+): boolean {
+  if (sourceMeasure.notes.length !== targetMeasure.notes.length) return false;
+
+  let sourceExpectedOnset = 0;
+  let targetExpectedOnset = 0;
+  return sourceMeasure.notes.every((sourceNote, index) => {
+    const targetNote = targetMeasure.notes[index]!;
+    const sourceOnset = sourceNote.onset ?? sourceExpectedOnset;
+    const targetOnset = targetNote.onset ?? targetExpectedOnset;
+    const matches =
+      Math.abs(sourceNote.dur - targetNote.dur) <= 1e-9 &&
+      Math.abs(sourceOnset - targetOnset) <= 1e-9 &&
+      sourceNote.tie === targetNote.tie &&
+      sourceNote.chord === targetNote.chord &&
+      sameTuplet(sourceNote.tuplet, targetNote.tuplet);
+    sourceExpectedOnset = sourceOnset + sourceNote.dur;
+    targetExpectedOnset = targetOnset + targetNote.dur;
+    return matches;
+  });
+}
+
 function prepareHarmonize(value: unknown): PreparedHarmonize {
   const parsed = harmonizeJobRequestSchema.safeParse(value);
   if (!parsed.success) return rejectInput();
@@ -141,6 +179,20 @@ function prepareHarmonize(value: unknown): PreparedHarmonize {
   });
   if (melodyDuration.errors.length > 0) return rejectInput();
 
+  const melodyNotes = sourceMeasures.flatMap(({ notes }) => notes);
+  for (let index = 0; index < melodyNotes.length; index += 1) {
+    const note = melodyNotes[index]!;
+    const continuation = melodyNotes[index + 1];
+    if (
+      note.tie &&
+      (!continuation ||
+        note.pitch === null ||
+        continuation.pitch !== note.pitch)
+    ) {
+      return rejectInput();
+    }
+  }
+
   const allMeasureNumbers = [...measureNumbers];
   for (const part of model.parts) {
     const partMeasureNumbers = part.measures.map(({ number }) => number);
@@ -168,6 +220,27 @@ function prepareHarmonize(value: unknown): PreparedHarmonize {
     ({ number }) => number >= requestRange.start && number <= requestRange.end
   );
   if (selectedMeasures.length === 0) return rejectInput();
+
+  // Existing requested parts are safe pitch-slot templates only when their
+  // selected measures share the melody's exact rhythmic/notation skeleton.
+  // Incompatible scores fail before admission or any provider work.
+  for (const voice of requestedVoices) {
+    const targetPartId = mapping.byVoicePart[voice];
+    if (targetPartId === undefined) continue;
+    const targetPart = model.parts.find(({ id }) => id === targetPartId);
+    if (!targetPart) return rejectInput();
+    for (const sourceMeasure of selectedMeasures) {
+      const targetMeasure = targetPart.measures.find(
+        ({ number }) => number === sourceMeasure.number
+      );
+      if (
+        !targetMeasure ||
+        !hasSameRhythmSkeleton(sourceMeasure, targetMeasure)
+      ) {
+        return rejectInput();
+      }
+    }
+  }
 
   for (const voice of SATB_ORDER) {
     const present = mapping.byVoicePart[voice] !== undefined;
@@ -384,24 +457,52 @@ function outputFindings(
 function partWithGeneratedPitches(
   sourcePart: ScorePart,
   measures: readonly ScorePart['measures'][number][],
-  generatedMeasures: HarmonizeGeneratedOutput['parts'][number]['measures']
+  generatedMeasures: HarmonizeGeneratedOutput['parts'][number]['measures'],
+  rhythmMeasures: readonly ScorePart['measures'][number][],
+  preserveLyrics: boolean
 ): ScorePart {
   const generatedByNumber = new Map(
     generatedMeasures.map((measure) => [measure.number, measure])
+  );
+  const rhythmByNumber = new Map(
+    rhythmMeasures.map((measure) => [measure.number, measure])
   );
   return {
     ...sourcePart,
     measures: measures.map((sourceMeasure) => {
       const generated = generatedByNumber.get(sourceMeasure.number);
-      if (!generated) return sourceMeasure;
+      const rhythm = rhythmByNumber.get(sourceMeasure.number);
+      if (!generated || !rhythm) return sourceMeasure;
       return {
         ...sourceMeasure,
-        notes: sourceMeasure.notes.map(
-          ({ lyric: _lyric, lyrics: _lyrics, ...sourceNote }, index) => ({
-            ...sourceNote,
+        notes: rhythm.notes.map((rhythmNote, index) => {
+          const sourceNote = sourceMeasure.notes[index]!;
+          const {
+            lyric,
+            lyrics,
+            dur: _dur,
+            tie: _tie,
+            onset: _onset,
+            chord: _chord,
+            tuplet: _tuplet,
+            ...retained
+          } = sourceNote;
+          return {
+            ...retained,
+            ...(preserveLyrics && lyric !== undefined ? { lyric } : {}),
+            ...(preserveLyrics && lyrics !== undefined ? { lyrics } : {}),
             pitch: generated.pitches[index]!,
-          })
-        ),
+            dur: rhythmNote.dur,
+            tie: rhythmNote.tie,
+            chord: rhythmNote.chord,
+            ...(rhythmNote.onset !== undefined
+              ? { onset: rhythmNote.onset }
+              : {}),
+            ...(rhythmNote.tuplet !== undefined
+              ? { tuplet: rhythmNote.tuplet }
+              : {}),
+          };
+        }),
       };
     }),
   };
@@ -432,7 +533,9 @@ function mergeOutput(
       partWithGeneratedPitches(
         sourcePart,
         sourcePart.measures,
-        generated.measures
+        generated.measures,
+        prepared.melodyPart.measures,
+        previous !== undefined
       )
     );
   }
@@ -445,6 +548,64 @@ function mergeOutput(
     ...prepared.model,
     parts: parts as ScorePart[],
   });
+}
+
+function tieContinuityFindings(
+  model: ScoreModel,
+  prepared: PreparedHarmonize
+): RepairFinding[] {
+  const selectedMeasureNumbers = new Set(
+    prepared.selectedMeasures.map(({ number }) => number)
+  );
+  const sourceEvents = prepared.melodyPart.measures.flatMap((measure) =>
+    measure.notes.map((note, noteIndex) => ({
+      measureNumber: measure.number,
+      noteIndex,
+      note,
+    }))
+  );
+  const mapping = mapScorePartsToVoiceParts(model.parts);
+  const findings: RepairFinding[] = [];
+
+  for (const voice of prepared.requestedVoices) {
+    const targetPartId = mapping.byVoicePart[voice];
+    const targetPart = model.parts.find(({ id }) => id === targetPartId);
+    if (!targetPart) continue;
+    const measuresByNumber = new Map(
+      targetPart.measures.map((measure) => [measure.number, measure])
+    );
+
+    sourceEvents.forEach((event, index) => {
+      if (!event.note.tie) return;
+      const continuation = sourceEvents[index + 1];
+      if (!continuation) return;
+      if (
+        !selectedMeasureNumbers.has(event.measureNumber) &&
+        !selectedMeasureNumbers.has(continuation.measureNumber)
+      ) {
+        return;
+      }
+
+      const targetNote = measuresByNumber.get(event.measureNumber)?.notes[
+        event.noteIndex
+      ];
+      const continuationNote = measuresByNumber.get(continuation.measureNumber)
+        ?.notes[continuation.noteIndex];
+      if (
+        !targetNote ||
+        !continuationNote ||
+        targetNote.pitch !== continuationNote.pitch
+      ) {
+        findings.push({
+          path: `$.parts[${targetPart.id}].measures[${event.measureNumber}].notes[${event.noteIndex}].pitch`,
+          message:
+            'Generated pitches must match across tied melody note continuations.',
+        });
+      }
+    });
+  }
+
+  return findings.slice(0, 16);
 }
 
 function runValidators(
@@ -565,6 +726,9 @@ export async function generateHarmonizeProposal(
       ];
       continue;
     }
+
+    previousFindings = tieContinuityFindings(model, prepared);
+    if (previousFindings.length > 0) continue;
 
     const validation = runValidators(model, voiceRanges);
     if (validation.errors.length > 0) {

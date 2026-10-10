@@ -21,8 +21,8 @@ export type AiJobStatus = z.infer<typeof aiJobStatusSchema>;
 export const aiJobResultSchema = z.record(z.string(), z.unknown());
 export type AiJobResult = z.infer<typeof aiJobResultSchema>;
 
-const promptTextSchema = z.string().trim().min(1).max(4_000);
-const harmonizePromptSchema = z.string().trim().min(1).max(16_000);
+const PROMPT_TEXT_MAX_LENGTH = 4_000;
+const promptTextSchema = z.string().trim().min(1).max(PROMPT_TEXT_MAX_LENGTH);
 const musicalTextSchema = z.string().trim().min(1).max(20_000);
 const titleTextSchema = z.string().trim().min(1).max(512);
 const harmonizeVoiceSchema = z.enum(['A', 'T', 'B']);
@@ -117,7 +117,8 @@ function requireInput(value: Record<string, unknown>) {
 export const aiJobInputSchemas = {
   harmonize: z
     .object({
-      prompt: harmonizePromptSchema.optional(),
+      // Keep shared admission aligned with harmonizeJobRequestSchema below.
+      prompt: promptTextSchema.optional(),
       score: scoreModelSchema.optional(),
       melody: musicalTextSchema.optional(),
       key: scoreKeySchema.optional(),

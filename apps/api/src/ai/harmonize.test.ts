@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { ScoreModel } from '@choirscore/shared';
 import type { AiWorkItem } from './jobs';
 import {
   generateHarmonizeProposal,
@@ -116,6 +117,54 @@ describe('Harmonize inline pipeline', () => {
     );
   });
 
+  it('rejects requested target parts with mismatched rhythm skeletons before provider work', async () => {
+    const mismatchedTargetMeasures = [
+      {
+        number: 1,
+        notes: [
+          { pitch: 'E4', dur: 2 },
+          { pitch: 'E4', dur: 2 },
+        ],
+      },
+      {
+        number: 1,
+        notes: [
+          { pitch: 'E4', dur: 1, onset: 0 },
+          { pitch: 'E4', dur: 1, onset: 1.5 },
+          { pitch: 'E4', dur: 1, onset: 2 },
+          { pitch: 'E4', dur: 1, onset: 3 },
+        ],
+      },
+    ];
+
+    for (const measure of mismatchedTargetMeasures) {
+      const base = sourceScore();
+      const score = {
+        ...base,
+        parts: [
+          ...base.parts,
+          { id: 'A', clef: 'treble', measures: [measure] },
+        ],
+      };
+      expect(validateHarmonizeSubmission({ score }).success).toBe(false);
+
+      const calls: AiWorkItem[] = [];
+      const provider = providerFor((item) => {
+        calls.push(item);
+        return {
+          result: validOutput(),
+          warnings: [],
+          tokensIn: 0,
+          tokensOut: 0,
+        };
+      });
+      await expect(
+        generateHarmonizeProposal(provider, work({ score }))
+      ).rejects.toThrow('Harmonize input failed deterministic precheck.');
+      expect(calls).toHaveLength(0);
+    }
+  });
+
   it('repairs schema and music-validator failures at most twice, then returns a safe proposal shape', async () => {
     const calls: AiWorkItem[] = [];
     const invalidParts = {
@@ -198,6 +247,127 @@ describe('Harmonize inline pipeline', () => {
     expect(calls[0]!.input.score).toMatchObject({
       title: 'Harmonize melody',
       parts: [{ id: 'S' }],
+    });
+  });
+
+  it('repairs generated pitches that break melody tie continuations', async () => {
+    const base = sourceScore();
+    const score = {
+      ...base,
+      parts: [
+        {
+          ...base.parts[0]!,
+          measures: [
+            {
+              number: 1,
+              notes: [
+                { pitch: 'C5', dur: 1, tie: true },
+                { pitch: 'C5', dur: 1 },
+                { pitch: 'C5', dur: 1 },
+                { pitch: 'D5', dur: 1 },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const brokenTie = validOutput();
+    brokenTie.parts[0]!.measures[0]!.pitches = ['E4', 'F4', 'E4', 'E4'];
+    const calls: AiWorkItem[] = [];
+    const provider = providerFor((item, call) => {
+      calls.push(item);
+      return {
+        result: call === 1 ? brokenTie : validOutput(),
+        warnings: [],
+        tokensIn: 0,
+        tokensOut: 0,
+      };
+    });
+    const accepted = validateHarmonizeSubmission({ score });
+    expect(accepted.success).toBe(true);
+    if (!accepted.success) return;
+
+    const result = await generateHarmonizeProposal(
+      provider,
+      work({ ...accepted.input })
+    );
+    expect(calls).toHaveLength(2);
+    expect(String(calls[1]!.input.prompt)).toContain(
+      'Generated pitches must match across tied melody note continuations.'
+    );
+    const preview = result.result as {
+      model: ScoreModel;
+    };
+    expect(
+      preview.model.parts[1]!.measures[0]!.notes.map(({ pitch, tie }) => [
+        pitch,
+        tie,
+      ])
+    ).toEqual([
+      ['E4', true],
+      ['E4', false],
+      ['E4', false],
+      ['E4', false],
+    ]);
+  });
+
+  it('preserves aligned existing target lyrics without copying melody lyrics to new parts', async () => {
+    const base = sourceScore();
+    const melodyPart = {
+      ...base.parts[0]!,
+      measures: base.parts[0]!.measures.map((measure) => ({
+        ...measure,
+        notes: measure.notes.map((note, index) =>
+          index === 0 ? { ...note, lyric: { text: 'melody lyric' } } : note
+        ),
+      })),
+    };
+    const altoPart = {
+      id: 'A',
+      clef: 'treble',
+      measures: [
+        {
+          number: 1,
+          notes: [
+            {
+              pitch: 'E4',
+              dur: 1,
+              lyric: { text: 'alto lyric' },
+              lyrics: [{ text: 'alto verse two', verse: 2 }],
+            },
+            { pitch: 'E4', dur: 1 },
+            { pitch: 'E4', dur: 1 },
+            { pitch: 'E4', dur: 1 },
+          ],
+        },
+      ],
+    };
+    const score = { ...base, parts: [melodyPart, altoPart] };
+    const accepted = validateHarmonizeSubmission({ score });
+    expect(accepted.success).toBe(true);
+    if (!accepted.success) return;
+
+    const result = await generateHarmonizeProposal(
+      providerFor(() => ({
+        result: validOutput(),
+        warnings: [],
+        tokensIn: 0,
+        tokensOut: 0,
+      })),
+      work({ ...accepted.input })
+    );
+    const preview = result.result as {
+      model: ScoreModel;
+    };
+    expect(preview.model.parts[1]!.measures[0]!.notes[0]).toMatchObject({
+      lyric: { text: 'alto lyric' },
+      lyrics: [{ text: 'alto verse two', verse: 2 }],
+    });
+    expect(
+      preview.model.parts[2]!.measures[0]!.notes[0]!.lyric
+    ).toBeUndefined();
+    expect(preview.model.parts[0]!.measures[0]!.notes[0]!.lyric).toEqual({
+      text: 'melody lyric',
     });
   });
 
