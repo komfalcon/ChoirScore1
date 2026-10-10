@@ -448,6 +448,413 @@ export function validateSpacing(model: ScoreModel): ValidationResult {
   return { errors: [], warnings };
 }
 
+const PARALLEL_VOICE_PART_PAIRS: ReadonlyArray<
+  readonly [VoicePartId, VoicePartId]
+> = [
+  ['S', 'A'],
+  ['S', 'T'],
+  ['S', 'B'],
+  ['A', 'T'],
+  ['A', 'B'],
+  ['T', 'B'],
+];
+
+interface ParallelTimelineOnset {
+  measure: number;
+  measureOrder: number;
+  onset: number;
+  anchor: ScoreNote | null;
+  tieContinuation: boolean;
+}
+
+interface ParallelMeasureTimeline {
+  measure: number;
+  measureOrder: number;
+  onsets: ParallelTimelineOnset[];
+}
+
+interface ParallelStreamTimeline {
+  staff: number;
+  voice: string;
+  measures: ParallelMeasureTimeline[];
+}
+
+function parallelTimelines(part: ScorePart): ParallelStreamTimeline[] {
+  const timelines = new Map<string, ParallelStreamTimeline>();
+  const measureCounts = new Map<number, number>();
+  for (const measure of part.measures) {
+    measureCounts.set(
+      measure.number,
+      (measureCounts.get(measure.number) ?? 0) + 1
+    );
+  }
+
+  for (const [measureOrder, measure] of part.measures.entries()) {
+    const positionsByStream = new Map<
+      string,
+      Array<{ note: ScoreNote; onset: number; noteOrder: number }>
+    >();
+    for (const [noteOrder, position] of notePositions(measure).entries()) {
+      const key = `${position.note.staff}\u0000${position.note.voice}`;
+      const positions = positionsByStream.get(key) ?? [];
+      positions.push({ ...position, noteOrder });
+      positionsByStream.set(key, positions);
+    }
+
+    for (const [key, positions] of positionsByStream) {
+      let timeline = timelines.get(key);
+      if (!timeline) {
+        const first = positions[0]!;
+        timeline = {
+          staff: first.note.staff,
+          voice: first.note.voice,
+          measures: [],
+        };
+        timelines.set(key, timeline);
+      }
+
+      positions.sort(
+        (first, second) =>
+          first.onset - second.onset || first.noteOrder - second.noteOrder
+      );
+      const onsets: ParallelTimelineOnset[] = [];
+      for (let start = 0; start < positions.length;) {
+        const first = positions[start]!;
+        let end = start + 1;
+        while (
+          end < positions.length &&
+          Math.abs(positions[end]!.onset - first.onset) <= ONSET_EPSILON
+        ) {
+          end += 1;
+        }
+
+        const sameOnset = positions.slice(start, end);
+        const pitched = sameOnset.filter(({ note }) => note.pitch !== null);
+        const anchor =
+          pitched.find(({ note }) => !note.chord)?.note ??
+          pitched[0]?.note ??
+          null;
+        onsets.push({
+          measure: measure.number,
+          measureOrder,
+          onset: first.onset,
+          anchor,
+          tieContinuation: false,
+        });
+        start = end;
+      }
+      timeline.measures.push({
+        measure: measure.number,
+        measureOrder,
+        onsets,
+      });
+    }
+  }
+
+  return [...timelines.values()]
+    .map((timeline) => {
+      timeline.measures.sort(
+        (first, second) =>
+          first.measure - second.measure ||
+          first.measureOrder - second.measureOrder
+      );
+      let previous: ParallelTimelineOnset | null = null;
+      for (const measure of timeline.measures) {
+        for (const event of measure.onsets) {
+          const sameMeasure = previous?.measureOrder === event.measureOrder;
+          const adjacentMeasures =
+            previous !== null &&
+            event.measure === previous.measure + 1 &&
+            measureCounts.get(previous.measure) === 1 &&
+            measureCounts.get(event.measure) === 1;
+          event.tieContinuation = Boolean(
+            previous?.anchor?.tie &&
+            event.anchor?.pitch === previous.anchor.pitch &&
+            (sameMeasure || adjacentMeasures)
+          );
+          previous = event;
+        }
+      }
+      return timeline;
+    })
+    .sort(
+      (first, second) =>
+        first.staff - second.staff ||
+        (first.voice < second.voice ? -1 : first.voice > second.voice ? 1 : 0)
+    );
+}
+
+interface ParallelUnionSlot {
+  measure: number;
+  onset: number;
+  measureUnambiguous: boolean;
+  first: ParallelTimelineOnset | null;
+  second: ParallelTimelineOnset | null;
+}
+
+function parallelOnsetsAtMeasure(
+  timeline: ParallelStreamTimeline,
+  measureOrder: number
+): ParallelTimelineOnset[] {
+  return (
+    timeline.measures.find(
+      (candidate) => candidate.measureOrder === measureOrder
+    )?.onsets ?? []
+  );
+}
+
+function appendParallelUnionSlots(
+  slots: ParallelUnionSlot[],
+  measure: number,
+  firstOnsets: ParallelTimelineOnset[],
+  secondOnsets: ParallelTimelineOnset[],
+  measureUnambiguous: boolean
+): void {
+  const events = [
+    ...firstOnsets.map((event) => ({ event, side: 'first' as const })),
+    ...secondOnsets.map((event) => ({ event, side: 'second' as const })),
+  ].sort(
+    (first, second) =>
+      first.event.onset - second.event.onset ||
+      (first.side === second.side ? 0 : first.side === 'first' ? -1 : 1)
+  );
+
+  for (const { event, side } of events) {
+    let slot = slots[slots.length - 1];
+    if (
+      !slot ||
+      slot.measure !== measure ||
+      Math.abs(slot.onset - event.onset) > ONSET_EPSILON
+    ) {
+      slot = {
+        measure,
+        onset: event.onset,
+        measureUnambiguous,
+        first: null,
+        second: null,
+      };
+      slots.push(slot);
+    }
+    slot[side] = event;
+  }
+}
+
+function parallelUnionTimeline(
+  firstPart: ScorePart,
+  firstTimeline: ParallelStreamTimeline,
+  secondPart: ScorePart,
+  secondTimeline: ParallelStreamTimeline
+): ParallelUnionSlot[] {
+  const measures = [
+    ...new Set([
+      ...firstPart.measures.map(({ number }) => number),
+      ...secondPart.measures.map(({ number }) => number),
+    ]),
+  ].sort((first, second) => first - second);
+  const slots: ParallelUnionSlot[] = [];
+
+  for (const number of measures) {
+    const firstMeasures = firstPart.measures
+      .map((measure, measureOrder) => ({ measure, measureOrder }))
+      .filter(({ measure }) => measure.number === number);
+    const secondMeasures = secondPart.measures
+      .map((measure, measureOrder) => ({ measure, measureOrder }))
+      .filter(({ measure }) => measure.number === number);
+
+    if (firstMeasures.length === 1 && secondMeasures.length === 1) {
+      appendParallelUnionSlots(
+        slots,
+        number,
+        parallelOnsetsAtMeasure(firstTimeline, firstMeasures[0]!.measureOrder),
+        parallelOnsetsAtMeasure(
+          secondTimeline,
+          secondMeasures[0]!.measureOrder
+        ),
+        true
+      );
+      continue;
+    }
+
+    for (const { measureOrder } of firstMeasures) {
+      appendParallelUnionSlots(
+        slots,
+        number,
+        parallelOnsetsAtMeasure(firstTimeline, measureOrder),
+        [],
+        false
+      );
+    }
+    for (const { measureOrder } of secondMeasures) {
+      appendParallelUnionSlots(
+        slots,
+        number,
+        [],
+        parallelOnsetsAtMeasure(secondTimeline, measureOrder),
+        false
+      );
+    }
+  }
+
+  return slots;
+}
+
+function perfectIntervalClass(
+  firstPitch: string,
+  secondPitch: string
+): 'fifth' | 'octave' | null {
+  const first = parsePitch(firstPitch);
+  const second = parsePitch(secondPitch);
+  const genericNumber =
+    Math.abs(first.diatonicIndex - second.diatonicIndex) + 1;
+  const simpleDegree = ((genericNumber - 1) % 7) + 1;
+  const compoundOctaves = Math.floor((genericNumber - 1) / 7);
+  const semitones = Math.abs(first.midi - second.midi);
+
+  if (simpleDegree === 5 && semitones === 7 + 12 * compoundOctaves) {
+    return 'fifth';
+  }
+  if (
+    simpleDegree === 1 &&
+    compoundOctaves > 0 &&
+    semitones === 12 * compoundOctaves
+  ) {
+    return 'octave';
+  }
+  return null;
+}
+
+function parallelAttack(
+  slot: ParallelUnionSlot,
+  side: 'first' | 'second'
+): ScoreNote | null {
+  const event = slot[side];
+  return event && !event.tieContinuation ? event.anchor : null;
+}
+
+function parallelSlotsAreConsecutive(
+  previous: ParallelUnionSlot,
+  current: ParallelUnionSlot
+): boolean {
+  if (!previous.measureUnambiguous || !current.measureUnambiguous) return false;
+  return (
+    previous.measure === current.measure ||
+    current.measure === previous.measure + 1
+  );
+}
+
+/**
+ * Reports parallel perfect fifths and octaves as errors between every pair of
+ * canonical SATB parts. Each distinct (staff, voice) stream is compared on the
+ * union of its onset timelines; unmatched attacks, rests, and tied continuations
+ * break a transition. Boundary transitions require unique, adjacent measures.
+ */
+export function validateParallelFifthsOctaves(
+  model: ScoreModel
+): ValidationResult {
+  let mapping: ReturnType<typeof mapScorePartsToVoiceParts>;
+  try {
+    mapping = mapScorePartsToVoiceParts(model.parts);
+  } catch (error) {
+    if (!(error instanceof VoiceMappingError)) throw error;
+    return { errors: [], warnings: [] };
+  }
+  const measureIdentityIssue = crossPartMeasureIdentityIssue(
+    model,
+    mapping,
+    PARALLEL_VOICE_PART_PAIRS
+  );
+  if (measureIdentityIssue) {
+    return { errors: [measureIdentityIssue], warnings: [] };
+  }
+
+  const partsById = new Map(model.parts.map((part) => [part.id, part]));
+  const timelinesByPartId = new Map(
+    model.parts.map((part) => [part.id, parallelTimelines(part)])
+  );
+  const errors: Issue[] = [];
+
+  for (const [firstVoice, secondVoice] of PARALLEL_VOICE_PART_PAIRS) {
+    const firstPartId = mapping.byVoicePart[firstVoice];
+    const secondPartId = mapping.byVoicePart[secondVoice];
+    if (!firstPartId || !secondPartId) continue;
+
+    const firstPart = partsById.get(firstPartId);
+    const secondPart = partsById.get(secondPartId);
+    if (!firstPart || !secondPart) continue;
+
+    const firstTimelines = timelinesByPartId.get(firstPartId) ?? [];
+    const secondTimelines = timelinesByPartId.get(secondPartId) ?? [];
+    for (const firstTimeline of firstTimelines) {
+      for (const secondTimeline of secondTimelines) {
+        const slots = parallelUnionTimeline(
+          firstPart,
+          firstTimeline,
+          secondPart,
+          secondTimeline
+        );
+        for (let index = 1; index < slots.length; index += 1) {
+          const previous = slots[index - 1]!;
+          const current = slots[index]!;
+          if (!parallelSlotsAreConsecutive(previous, current)) continue;
+
+          const previousFirst = parallelAttack(previous, 'first');
+          const previousSecond = parallelAttack(previous, 'second');
+          const currentFirst = parallelAttack(current, 'first');
+          const currentSecond = parallelAttack(current, 'second');
+          if (
+            !previousFirst?.pitch ||
+            !previousSecond?.pitch ||
+            !currentFirst?.pitch ||
+            !currentSecond?.pitch
+          ) {
+            continue;
+          }
+
+          const previousClass = perfectIntervalClass(
+            previousFirst.pitch,
+            previousSecond.pitch
+          );
+          if (!previousClass) continue;
+          const currentClass = perfectIntervalClass(
+            currentFirst.pitch,
+            currentSecond.pitch
+          );
+          if (currentClass !== previousClass) continue;
+
+          const firstMovement =
+            midiForPitch(currentFirst.pitch) -
+            midiForPitch(previousFirst.pitch);
+          const secondMovement =
+            midiForPitch(currentSecond.pitch) -
+            midiForPitch(previousSecond.pitch);
+          if (
+            firstMovement === 0 ||
+            secondMovement === 0 ||
+            Math.sign(firstMovement) !== Math.sign(secondMovement)
+          ) {
+            continue;
+          }
+
+          const direction = firstMovement > 0 ? 'up' : 'down';
+          const intervalName = previousClass === 'fifth' ? 'fifths' : 'octaves';
+          errors.push({
+            part: firstPart.id,
+            measure: current.measure,
+            beat: roundedBeat(current.first!.onset, model.time.beatType),
+            code:
+              previousClass === 'fifth'
+                ? 'PARALLEL_FIFTHS'
+                : 'PARALLEL_OCTAVES',
+            message: `${firstVoice}–${secondVoice} parallel ${intervalName} move ${direction} from ${previousFirst.pitch}–${previousSecond.pitch} to ${currentFirst.pitch}–${currentSecond.pitch}.`,
+          });
+        }
+      }
+    }
+  }
+
+  return { errors, warnings: [] };
+}
+
 const LARGE_LEAP_VOICES: ReadonlyArray<readonly [VoicePartId, number]> = [
   ['A', 6],
   ['T', 6],
