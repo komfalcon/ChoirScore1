@@ -5,6 +5,7 @@ import {
   count,
   desc,
   eq,
+  gte,
   inArray,
   like,
   lt,
@@ -20,6 +21,7 @@ import { resolve } from 'node:path';
 import * as schema from './schema';
 import {
   auditLog,
+  aiJobs,
   scoreAccess,
   scoreAutosaveNoopRequests,
   scoreVersions,
@@ -64,6 +66,8 @@ export interface AuditInput {
 }
 
 export type AuditRecord = typeof auditLog.$inferSelect;
+export type AiJobRecord = typeof aiJobs.$inferSelect;
+export type AiJobFeature = AiJobRecord['feature'];
 export type ScoreRecord = typeof scores.$inferSelect;
 export type ScoreVersionRecord = typeof scoreVersions.$inferSelect;
 export type ExplicitScoreVersionRecord = ScoreVersionRecord & {
@@ -77,6 +81,34 @@ export type AutosaveScoreVersionRecord = ScoreVersionRecord & {
   autosaveBaseVersionId: string;
 };
 export type ScoreAccessRecord = typeof scoreAccess.$inferSelect;
+
+export interface NewAiJob {
+  id: string;
+  requestId: string;
+  userId: string;
+  feature: AiJobFeature;
+  inputJson: string;
+  createdAt: string;
+}
+
+export type AiJobSubmissionResult =
+  | { status: 'created' | 'replayed'; job: AiJobRecord }
+  | {
+      status:
+        | 'idempotency_conflict'
+        | 'inactive_user'
+        | 'ai_disabled'
+        | 'ai_access_disabled'
+        | 'quota_exceeded'
+        | 'active_limit';
+    };
+
+export interface AiQuotaState {
+  used: number;
+  limit: number;
+  globalEnabled: boolean;
+  userEnabled: boolean;
+}
 
 export interface ScoreRowWithVersion {
   score: ScoreRecord;
@@ -199,6 +231,32 @@ export interface ApiRepository extends RepositoryTransaction {
     audit?: AuditInput,
     noOp?: boolean
   ): Promise<ScoreAutosaveCreationResult>;
+  submitAiJob(
+    job: NewAiJob,
+    defaultDailyLimit: number,
+    dayStart: string,
+    nextDayStart: string
+  ): Promise<AiJobSubmissionResult>;
+  getAiQuota(
+    userId: string,
+    defaultDailyLimit: number,
+    dayStart: string,
+    nextDayStart: string
+  ): Promise<AiQuotaState | null>;
+  findAiJobById(id: string): Promise<AiJobRecord | null>;
+  claimNextAiJob(): Promise<AiJobRecord | null>;
+  completeAiJob(
+    id: string,
+    update: {
+      resultJson: string;
+      warningsJson: string;
+      tokensIn: number;
+      tokensOut: number;
+      finishedAt: string;
+    }
+  ): Promise<boolean>;
+  failAiJob(id: string, error: string, finishedAt: string): Promise<boolean>;
+  recoverRunningAiJobs(finishedAt: string, error: string): Promise<number>;
   close(): void;
 }
 
@@ -258,6 +316,20 @@ function createWriteClient(client: Client): Client {
 let loginThrottleWriteQueue = Promise.resolve();
 // Reduce local SQLite write contention; guarded mutations remain atomic in SQL.
 let repositoryTransactionWriteQueue = Promise.resolve();
+
+async function serializeRepositoryTransaction<T>(work: () => Promise<T>) {
+  const previousWrite = repositoryTransactionWriteQueue;
+  let releaseWrite!: () => void;
+  repositoryTransactionWriteQueue = new Promise<void>((resolve) => {
+    releaseWrite = resolve;
+  });
+  await previousWrite;
+  try {
+    return await work();
+  } finally {
+    releaseWrite();
+  }
+}
 
 function repositoryOperations(session: QuerySession): RepositoryTransaction {
   return {
@@ -558,20 +630,9 @@ class DrizzleApiRepository implements ApiRepository {
   }
 
   async transaction<T>(work: (tx: RepositoryTransaction) => Promise<T>) {
-    const previousWrite = repositoryTransactionWriteQueue;
-    let releaseWrite!: () => void;
-    repositoryTransactionWriteQueue = new Promise<void>((resolve) => {
-      releaseWrite = resolve;
-    });
-    await previousWrite;
-
-    try {
-      return await this.db.transaction(async (tx) =>
-        work(repositoryOperations(tx))
-      );
-    } finally {
-      releaseWrite();
-    }
+    return serializeRepositoryTransaction(() =>
+      this.db.transaction(async (tx) => work(repositoryOperations(tx)))
+    );
   }
 
   async listUsers(query?: string) {
@@ -1023,6 +1084,267 @@ class DrizzleApiRepository implements ApiRepository {
       if (audit) await tx.insert(auditLog).values(audit).run();
       return { status: 'created', versionId: version.id };
     });
+  }
+
+  async submitAiJob(
+    job: NewAiJob,
+    defaultDailyLimit: number,
+    dayStart: string,
+    nextDayStart: string
+  ): Promise<AiJobSubmissionResult> {
+    return serializeRepositoryTransaction(() =>
+      this.db.transaction(async (tx) => {
+        const priorJobs = await tx
+          .select()
+          .from(aiJobs)
+          .where(
+            and(
+              eq(aiJobs.userId, job.userId),
+              eq(aiJobs.requestId, job.requestId)
+            )
+          )
+          .limit(1);
+        const prior = priorJobs[0];
+        if (prior) {
+          return prior.feature === job.feature &&
+            prior.inputJson === job.inputJson
+            ? { status: 'replayed', job: prior }
+            : { status: 'idempotency_conflict' };
+        }
+
+        const userRows = await tx
+          .select()
+          .from(users)
+          .where(eq(users.id, job.userId))
+          .limit(1);
+        const user = userRows[0];
+        if (!user || !user.isActive) return { status: 'inactive_user' };
+        if (!user.aiEnabled) return { status: 'ai_access_disabled' };
+
+        const settingRows = await tx
+          .select({ key: settings.key, value: settings.value })
+          .from(settings)
+          .where(
+            inArray(settings.key, [
+              'ai_global_enabled',
+              'ai_default_daily_limit',
+            ])
+          );
+        const aiGlobalEnabled = settingRows.find(
+          (setting) => setting.key === 'ai_global_enabled'
+        )?.value;
+        if (aiGlobalEnabled !== undefined && aiGlobalEnabled !== 'true') {
+          return { status: 'ai_disabled' };
+        }
+        const configuredLimitText = settingRows.find(
+          (setting) => setting.key === 'ai_default_daily_limit'
+        )?.value;
+        const configuredLimit = Number(configuredLimitText);
+        const globalLimit =
+          configuredLimitText !== undefined &&
+          Number.isSafeInteger(configuredLimit) &&
+          configuredLimit >= 0
+            ? configuredLimit
+            : defaultDailyLimit;
+        const dailyLimit = user.aiDailyLimit ?? globalLimit;
+
+        const activeGlobalRows = await tx
+          .select({ value: count() })
+          .from(aiJobs)
+          .where(inArray(aiJobs.status, ['queued', 'running']));
+        if ((activeGlobalRows[0]?.value ?? 0) >= 2) {
+          return { status: 'active_limit' };
+        }
+        const activeUserRows = await tx
+          .select({ value: count() })
+          .from(aiJobs)
+          .where(
+            and(
+              eq(aiJobs.userId, job.userId),
+              inArray(aiJobs.status, ['queued', 'running'])
+            )
+          );
+        if ((activeUserRows[0]?.value ?? 0) > 0) {
+          return { status: 'active_limit' };
+        }
+
+        const dailyRows = await tx
+          .select({ value: count() })
+          .from(aiJobs)
+          .where(
+            and(
+              eq(aiJobs.userId, job.userId),
+              gte(aiJobs.createdAt, dayStart),
+              lt(aiJobs.createdAt, nextDayStart)
+            )
+          );
+        if ((dailyRows[0]?.value ?? 0) >= dailyLimit) {
+          return { status: 'quota_exceeded' };
+        }
+
+        const row: AiJobRecord = {
+          ...job,
+          status: 'queued',
+          resultJson: null,
+          warningsJson: null,
+          error: null,
+          tokensIn: null,
+          tokensOut: null,
+          finishedAt: null,
+        };
+        await tx.insert(aiJobs).values(row).run();
+        return { status: 'created', job: row };
+      })
+    );
+  }
+
+  async getAiQuota(
+    userId: string,
+    defaultDailyLimit: number,
+    dayStart: string,
+    nextDayStart: string
+  ): Promise<AiQuotaState | null> {
+    const userRows = await this.db
+      .select()
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    const user = userRows[0];
+    if (!user) return null;
+
+    const settingRows = await this.db
+      .select({ key: settings.key, value: settings.value })
+      .from(settings)
+      .where(
+        inArray(settings.key, ['ai_global_enabled', 'ai_default_daily_limit'])
+      );
+    const aiGlobalEnabled = settingRows.find(
+      (setting) => setting.key === 'ai_global_enabled'
+    )?.value;
+    const configuredLimitText = settingRows.find(
+      (setting) => setting.key === 'ai_default_daily_limit'
+    )?.value;
+    const configuredLimit = Number(configuredLimitText);
+    const globalLimit =
+      configuredLimitText !== undefined &&
+      Number.isSafeInteger(configuredLimit) &&
+      configuredLimit >= 0
+        ? configuredLimit
+        : defaultDailyLimit;
+    const dailyRows = await this.db
+      .select({ value: count() })
+      .from(aiJobs)
+      .where(
+        and(
+          eq(aiJobs.userId, userId),
+          gte(aiJobs.createdAt, dayStart),
+          lt(aiJobs.createdAt, nextDayStart)
+        )
+      );
+    return {
+      used: dailyRows[0]?.value ?? 0,
+      limit: user.aiDailyLimit ?? globalLimit,
+      globalEnabled:
+        aiGlobalEnabled === undefined || aiGlobalEnabled === 'true',
+      userEnabled: user.aiEnabled,
+    };
+  }
+
+  async findAiJobById(id: string): Promise<AiJobRecord | null> {
+    const rows = await this.db
+      .select()
+      .from(aiJobs)
+      .where(eq(aiJobs.id, id))
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
+  async claimNextAiJob(): Promise<AiJobRecord | null> {
+    return serializeRepositoryTransaction(() =>
+      this.db.transaction(async (tx) => {
+        const runningRows = await tx
+          .select({ value: count() })
+          .from(aiJobs)
+          .where(eq(aiJobs.status, 'running'));
+        if ((runningRows[0]?.value ?? 0) >= 2) return null;
+
+        const queuedJobs = await tx
+          .select()
+          .from(aiJobs)
+          .where(eq(aiJobs.status, 'queued'))
+          .orderBy(asc(aiJobs.createdAt), asc(aiJobs.id))
+          .limit(2);
+        for (const job of queuedJobs) {
+          const userRunningRows = await tx
+            .select({ value: count() })
+            .from(aiJobs)
+            .where(
+              and(eq(aiJobs.userId, job.userId), eq(aiJobs.status, 'running'))
+            );
+          if ((userRunningRows[0]?.value ?? 0) > 0) continue;
+          const update = await tx
+            .update(aiJobs)
+            .set({ status: 'running' })
+            .where(and(eq(aiJobs.id, job.id), eq(aiJobs.status, 'queued')))
+            .run();
+          if (Number(update.rowsAffected) > 0) {
+            return { ...job, status: 'running' };
+          }
+        }
+        return null;
+      })
+    );
+  }
+
+  async completeAiJob(
+    id: string,
+    update: {
+      resultJson: string;
+      warningsJson: string;
+      tokensIn: number;
+      tokensOut: number;
+      finishedAt: string;
+    }
+  ): Promise<boolean> {
+    const result = await this.db
+      .update(aiJobs)
+      .set({ status: 'succeeded', ...update, error: null })
+      .where(and(eq(aiJobs.id, id), eq(aiJobs.status, 'running')))
+      .run();
+    return Number(result.rowsAffected) > 0;
+  }
+
+  async failAiJob(
+    id: string,
+    error: string,
+    finishedAt: string
+  ): Promise<boolean> {
+    const result = await this.db
+      .update(aiJobs)
+      .set({
+        status: 'failed',
+        resultJson: null,
+        warningsJson: null,
+        error,
+        tokensIn: null,
+        tokensOut: null,
+        finishedAt,
+      })
+      .where(and(eq(aiJobs.id, id), eq(aiJobs.status, 'running')))
+      .run();
+    return Number(result.rowsAffected) > 0;
+  }
+
+  async recoverRunningAiJobs(
+    finishedAt: string,
+    error: string
+  ): Promise<number> {
+    const result = await this.db
+      .update(aiJobs)
+      .set({ status: 'failed', error, finishedAt })
+      .where(eq(aiJobs.status, 'running'))
+      .run();
+    return Number(result.rowsAffected);
   }
 
   close() {

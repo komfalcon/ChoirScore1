@@ -3,6 +3,8 @@ import { readApiConfig, readBootstrapCredentials } from './config';
 import { createApp } from './app';
 import { createRepositoryFromEnv } from './db/repository';
 import { bootstrapAdmin } from './services/bootstrapAdmin';
+import { AiJobWorker } from './ai/jobs';
+import { UnavailableAiProvider } from './ai/providers';
 
 async function start() {
   const config = readApiConfig();
@@ -19,6 +21,14 @@ async function start() {
           'Change the bootstrap administrator password after first login.',
       });
     }
+    const aiWorker = new AiJobWorker(repository, new UnavailableAiProvider());
+    const recoveredJobs = await aiWorker.recoverAfterRestart();
+    if (recoveredJobs > 0) {
+      structuredLogger.warn({
+        event: 'ai_jobs_recovered_after_restart',
+        count: recoveredJobs,
+      });
+    }
     const port = Number(process.env.PORT ?? 4000);
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
       throw new Error('PORT must be a valid TCP port');
@@ -31,10 +41,13 @@ async function start() {
         nodeEnv: config.nodeEnv,
       });
     });
+    aiWorker.start();
     const close = () => {
-      server.close(() => {
-        repository.close();
-        process.exitCode = 0;
+      void aiWorker.stop().finally(() => {
+        server.close(() => {
+          repository.close();
+          process.exitCode = 0;
+        });
       });
     };
     process.once('SIGTERM', close);

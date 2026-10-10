@@ -22,6 +22,7 @@ const CONFIG: ApiConfig = {
   allowedOrigins: ['http://localhost:5173'],
   nodeEnv: 'test',
   trustProxyHops: 1,
+  aiDailyLimitDefault: 20,
 };
 const MODEL = scoreModelSchema.parse({
   title: 'Shared hymn',

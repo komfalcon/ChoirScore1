@@ -4,6 +4,7 @@ export interface ApiConfig {
   cookieDomain?: string;
   nodeEnv: string;
   trustProxyHops: number;
+  aiDailyLimitDefault: number;
 }
 
 export interface BootstrapCredentials {
@@ -57,12 +58,18 @@ export function readApiConfig(env: NodeJS.ProcessEnv = process.env): ApiConfig {
     throw new Error('TRUST_PROXY_HOPS must be an integer between 0 and 10');
   }
 
+  const aiDailyLimitDefault = Number(env.AI_DAILY_LIMIT_DEFAULT ?? '20');
+  if (!Number.isSafeInteger(aiDailyLimitDefault) || aiDailyLimitDefault < 0) {
+    throw new Error('AI_DAILY_LIMIT_DEFAULT must be a non-negative integer');
+  }
+
   return {
     jwtSecret,
     allowedOrigins,
     cookieDomain,
     nodeEnv: env.NODE_ENV ?? 'development',
     trustProxyHops,
+    aiDailyLimitDefault,
   };
 }
 

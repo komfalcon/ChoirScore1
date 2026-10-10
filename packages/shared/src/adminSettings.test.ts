@@ -10,6 +10,8 @@ import {
 const settings = {
   requirePasswordChangeAtFirstLogin: true,
   voiceRanges: DEFAULT_VOICE_RANGES,
+  aiGlobalEnabled: true,
+  aiDefaultDailyLimit: 20,
 };
 
 describe('Admin Settings contract schemas', () => {
@@ -71,11 +73,21 @@ describe('Admin Settings contract schemas', () => {
         voiceRanges: DEFAULT_VOICE_RANGES,
       })
     ).toEqual({ voiceRanges: DEFAULT_VOICE_RANGES });
+    expect(
+      patchAdminSettingsRequestSchema.parse({
+        aiGlobalEnabled: false,
+        aiDefaultDailyLimit: 7,
+      })
+    ).toEqual({ aiGlobalEnabled: false, aiDefaultDailyLimit: 7 });
     expect(patchAdminSettingsRequestSchema.safeParse({}).success).toBe(false);
     expect(
       patchAdminSettingsRequestSchema.safeParse({
         requirePasswordChangeAtFirstLogin: 'true',
       }).success
+    ).toBe(false);
+    expect(
+      patchAdminSettingsRequestSchema.safeParse({ aiDefaultDailyLimit: -1 })
+        .success
     ).toBe(false);
     expect(
       patchAdminSettingsRequestSchema.safeParse({

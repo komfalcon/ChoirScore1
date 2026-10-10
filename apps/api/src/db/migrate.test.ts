@@ -77,6 +77,14 @@ describe('score autosave migration', () => {
           autosave_base_version_id: null,
         },
       ]);
+      const aiJobColumns = await client.execute("PRAGMA table_info('ai_jobs')");
+      expect(aiJobColumns.rows.map((column) => column.name)).toContain(
+        'request_id'
+      );
+      const aiJobIndexes = await client.execute("PRAGMA index_list('ai_jobs')");
+      expect(aiJobIndexes.rows.map((index) => index.name)).toContain(
+        'ai_jobs_user_request_unique'
+      );
       const reservations = await client.execute(
         "PRAGMA table_info('score_autosave_noop_requests')"
       );

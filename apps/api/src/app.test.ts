@@ -32,6 +32,7 @@ const TEST_CONFIG: ApiConfig = {
   allowedOrigins: ['http://localhost:5173'],
   nodeEnv: 'test',
   trustProxyHops: 1,
+  aiDailyLimitDefault: 20,
 };
 const ADMIN_PASSWORD = 'AdminPass123!';
 const MEMBER_PASSWORD = 'MemberPass123!';
@@ -1060,6 +1061,8 @@ describe('M1 admin users, roles and audit', () => {
     expect(settings.status).toBe(200);
     expect(settings.body.requirePasswordChangeAtFirstLogin).toBe(true);
     expect(settings.body.voiceRanges).toEqual(DEFAULT_VOICE_RANGES);
+    expect(settings.body.aiGlobalEnabled).toBe(true);
+    expect(settings.body.aiDefaultDailyLimit).toBe(20);
     await checkAudit('admin.settings.read');
 
     const create = await stateChanging(
