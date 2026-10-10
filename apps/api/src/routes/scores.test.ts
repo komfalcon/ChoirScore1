@@ -239,7 +239,11 @@ describe('M2 score API routes', () => {
     expect(second.body.scores).toHaveLength(1);
     expect(second.body.scores[0].id).not.toBe(first.body.scores[0].id);
 
-    const tampered = `${first.body.nextCursor.slice(0, -1)}x`;
+    // Change a meaningful signature character; the final character's unused
+    // low bits can change without changing the decoded signature bytes.
+    const [encoded, signature] = first.body.nextCursor.split('.');
+    const tamperedSignature = `${signature[0] === 'A' ? 'B' : 'A'}${signature.slice(1)}`;
+    const tampered = `${encoded}.${tamperedSignature}`;
     const rejected = await asActor(
       request(app).get(
         `/scores?mine=true&limit=1&cursor=${encodeURIComponent(tampered)}`
