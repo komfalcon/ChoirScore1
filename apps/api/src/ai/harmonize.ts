@@ -108,6 +108,24 @@ function hasSameRhythmSkeleton(
   });
 }
 
+function hasSelectedRangeBoundaryTie(
+  sourceMeasures: ScorePart['measures'],
+  selectedMeasureNumbers: ReadonlySet<number>
+): boolean {
+  const sourceEvents = sourceMeasures.flatMap((measure) =>
+    measure.notes.map((note) => ({ measureNumber: measure.number, note }))
+  );
+  return sourceEvents.some((event, index) => {
+    if (!event.note.tie) return false;
+    const continuation = sourceEvents[index + 1];
+    return (
+      continuation !== undefined &&
+      selectedMeasureNumbers.has(event.measureNumber) !==
+        selectedMeasureNumbers.has(continuation.measureNumber)
+    );
+  });
+}
+
 function prepareHarmonize(value: unknown): PreparedHarmonize {
   const parsed = harmonizeJobRequestSchema.safeParse(value);
   if (!parsed.success) return rejectInput();
@@ -220,6 +238,16 @@ function prepareHarmonize(value: unknown): PreparedHarmonize {
     ({ number }) => number >= requestRange.start && number <= requestRange.end
   );
   if (selectedMeasures.length === 0) return rejectInput();
+
+  // A partial range cannot safely verify a tie edge against a measure whose
+  // target rhythm is not part of the request. Reject either boundary direction
+  // before admission/provider work instead of relying on note-array position.
+  const selectedMeasureNumbers = new Set(
+    selectedMeasures.map(({ number }) => number)
+  );
+  if (hasSelectedRangeBoundaryTie(sourceMeasures, selectedMeasureNumbers)) {
+    return rejectInput();
+  }
 
   // Existing requested parts are safe pitch-slot templates only when their
   // selected measures share the melody's exact rhythmic/notation skeleton.

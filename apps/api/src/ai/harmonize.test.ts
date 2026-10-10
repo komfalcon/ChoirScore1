@@ -118,26 +118,81 @@ describe('Harmonize inline pipeline', () => {
   });
 
   it('rejects requested target parts with mismatched rhythm skeletons before provider work', async () => {
+    const matchingNotes = [0, 1, 2, 3].map((onset) => ({
+      pitch: 'E4',
+      dur: 1,
+      onset,
+    }));
     const mismatchedTargetMeasures = [
       {
-        number: 1,
-        notes: [
-          { pitch: 'E4', dur: 2 },
-          { pitch: 'E4', dur: 2 },
-        ],
+        description: 'note count',
+        measure: {
+          number: 1,
+          notes: [
+            { pitch: 'E4', dur: 2 },
+            { pitch: 'E4', dur: 2 },
+          ],
+        },
       },
       {
-        number: 1,
-        notes: [
-          { pitch: 'E4', dur: 1, onset: 0 },
-          { pitch: 'E4', dur: 1, onset: 1.5 },
-          { pitch: 'E4', dur: 1, onset: 2 },
-          { pitch: 'E4', dur: 1, onset: 3 },
-        ],
+        description: 'same-count onset only',
+        measure: {
+          number: 1,
+          notes: matchingNotes.map((note, index) => ({
+            ...note,
+            ...(index === 1 ? { onset: 1.5 } : {}),
+          })),
+        },
+      },
+      {
+        description: 'same-count duration only',
+        measure: {
+          number: 1,
+          notes: matchingNotes.map((note, index) => ({
+            ...note,
+            ...(index === 0 ? { dur: 1.5 } : index === 1 ? { dur: 0.5 } : {}),
+          })),
+        },
+      },
+      {
+        description: 'tie metadata only',
+        measure: {
+          number: 1,
+          notes: matchingNotes.map((note, index) =>
+            index === 0 ? { ...note, tie: true } : note
+          ),
+        },
+      },
+      {
+        description: 'chord metadata only',
+        measure: {
+          number: 1,
+          notes: matchingNotes.map((note, index) =>
+            index === 0 ? { ...note, chord: true } : note
+          ),
+        },
+      },
+      {
+        description: 'tuplet metadata only',
+        measure: {
+          number: 1,
+          notes: matchingNotes.map((note, index) =>
+            index === 0
+              ? {
+                  ...note,
+                  tuplet: {
+                    actualNotes: 3,
+                    normalNotes: 2,
+                    normalType: 'quarter',
+                  },
+                }
+              : note
+          ),
+        },
       },
     ];
 
-    for (const measure of mismatchedTargetMeasures) {
+    for (const { description, measure } of mismatchedTargetMeasures) {
       const base = sourceScore();
       const score = {
         ...base,
@@ -146,7 +201,9 @@ describe('Harmonize inline pipeline', () => {
           { id: 'A', clef: 'treble', measures: [measure] },
         ],
       };
-      expect(validateHarmonizeSubmission({ score }).success).toBe(false);
+      expect(validateHarmonizeSubmission({ score }).success, description).toBe(
+        false
+      );
 
       const calls: AiWorkItem[] = [];
       const provider = providerFor((item) => {
@@ -161,8 +218,80 @@ describe('Harmonize inline pipeline', () => {
       await expect(
         generateHarmonizeProposal(provider, work({ score }))
       ).rejects.toThrow('Harmonize input failed deterministic precheck.');
-      expect(calls).toHaveLength(0);
+      expect(calls, description).toHaveLength(0);
     }
+  });
+
+  it('rejects a partial-range tie into a differently timed unselected target measure before provider work', async () => {
+    const base = sourceScore();
+    const melodyPart = {
+      ...base.parts[0]!,
+      measures: [
+        {
+          number: 1,
+          notes: [
+            { pitch: 'C5', dur: 1 },
+            { pitch: 'D5', dur: 1 },
+            { pitch: 'C5', dur: 1 },
+            { pitch: 'C5', dur: 1, tie: true },
+          ],
+        },
+        {
+          number: 2,
+          notes: [
+            { pitch: 'C5', dur: 1 },
+            { pitch: 'D5', dur: 1 },
+            { pitch: 'C5', dur: 1 },
+            { pitch: 'D5', dur: 1 },
+          ],
+        },
+      ],
+    };
+    const matchingMeasures = (pitch: string) =>
+      [1, 2].map((number) => ({
+        number,
+        notes: [1, 1, 1, 1].map((dur) => ({ pitch, dur })),
+      }));
+    const score = {
+      ...base,
+      parts: [
+        melodyPart,
+        {
+          id: 'A',
+          clef: 'treble',
+          measures: [
+            matchingMeasures('E4')[0]!,
+            {
+              number: 2,
+              notes: [2, 0.5, 0.5, 1].map((dur) => ({ pitch: 'E4', dur })),
+            },
+          ],
+        },
+        { id: 'T', clef: 'bass', measures: matchingMeasures('G3') },
+        { id: 'B', clef: 'bass', measures: matchingMeasures('C3') },
+      ],
+    };
+    const request = {
+      score,
+      partsToGenerate: ['A'],
+      measureRange: { start: 1, end: 1 },
+    };
+
+    expect(validateHarmonizeSubmission(request).success).toBe(false);
+    const calls: AiWorkItem[] = [];
+    const provider = providerFor((item) => {
+      calls.push(item);
+      return {
+        result: validOutput(),
+        warnings: [],
+        tokensIn: 0,
+        tokensOut: 0,
+      };
+    });
+    await expect(
+      generateHarmonizeProposal(provider, work(request))
+    ).rejects.toThrow('Harmonize input failed deterministic precheck.');
+    expect(calls).toHaveLength(0);
   });
 
   it('repairs schema and music-validator failures at most twice, then returns a safe proposal shape', async () => {
