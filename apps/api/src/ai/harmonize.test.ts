@@ -316,7 +316,7 @@ describe('Harmonize inline pipeline', () => {
       {
         description: 'outgoing target tie to an unselected measure',
         measureRange: { start: 1, end: 1 },
-        melodyFirstMeasureHasBoundaryTie: true,
+        melodyFirstMeasureHasBoundaryTie: false,
       },
     ];
 
