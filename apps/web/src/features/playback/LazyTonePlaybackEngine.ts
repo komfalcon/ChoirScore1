@@ -1,6 +1,6 @@
 import type { ScoreModel } from '@choirscore/shared';
 import type { PlaybackEnginePort } from './PlaybackController';
-import type { PlaybackSettings } from './playbackCore';
+import type { PlaybackPosition, PlaybackSettings } from './playbackCore';
 
 export type ManagedPlaybackEngine = PlaybackEnginePort & {
   dispose?: () => void;
@@ -75,7 +75,10 @@ export class LazyTonePlaybackEngine implements PlaybackEnginePort {
   async play(
     score: ScoreModel,
     settings: PlaybackSettings,
-    callbacks?: { onEnded?: () => void }
+    callbacks?: {
+      onEnded?: () => void;
+      onProgress?: (position: PlaybackPosition) => void;
+    }
   ): Promise<void> {
     const generation = this.generation;
     if (!this.engine && !this.loadPromise) {

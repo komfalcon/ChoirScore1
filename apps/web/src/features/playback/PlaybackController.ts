@@ -2,6 +2,7 @@ import type { ScoreModel } from '@choirscore/shared';
 import {
   clampPartVolume,
   clampTempoPercent,
+  type PlaybackPosition,
   type PlaybackSettings,
 } from './playbackCore';
 import {
@@ -17,7 +18,10 @@ export interface PlaybackEnginePort {
   play(
     score: ScoreModel,
     settings: PlaybackSettings,
-    callbacks?: { onEnded?: () => void }
+    callbacks?: {
+      onEnded?: () => void;
+      onProgress?: (position: PlaybackPosition) => void;
+    }
   ): Promise<void>;
   pause(): void;
   resume(): void;
@@ -31,6 +35,7 @@ export interface PlaybackControllerHost {
     status: PlaybackControlsState['status'],
     error?: string
   ) => void;
+  onProgressChange?: (position: PlaybackPosition | null) => void;
   onTempoChange: (tempoPercent: number) => void;
   onCountInChange: PlaybackControlsCallbacks['onCountInChange'];
   onLoopChange: PlaybackControlsCallbacks['onLoopChange'];
@@ -108,12 +113,29 @@ export class PlaybackController {
 
     const playRequestId = ++this.playRequestId;
     this.host.onStatusChange('loading');
+    this.host.onProgressChange?.(null);
     let pendingPlay: Promise<void> | undefined;
     try {
       pendingPlay = this.engine.play(
         this.host.getScore(),
-        playbackSettingsFromControls(this.host.getState()),
-        { onEnded: () => this.host.onStatusChange('idle') }
+        {
+          ...playbackSettingsFromControls(this.host.getState()),
+          startMeasure: 1,
+        },
+        {
+          onEnded: () => {
+            if (playRequestId !== this.playRequestId) return;
+            this.host.onProgressChange?.(null);
+            this.host.onStatusChange('idle');
+          },
+          onProgress: (position) => {
+            if (playRequestId !== this.playRequestId) return;
+            if (!['loading', 'playing'].includes(this.host.getState().status)) {
+              return;
+            }
+            this.host.onProgressChange?.(position);
+          },
+        }
       );
       this.pendingPlay = pendingPlay;
       await pendingPlay;
@@ -154,7 +176,66 @@ export class PlaybackController {
   stop(): void {
     this.playRequestId += 1;
     this.engine.stop();
+    this.host.onProgressChange?.(null);
     this.host.onStatusChange('idle');
+  }
+
+  async playFromMeasure(measure: number): Promise<void> {
+    const stopsCurrentRequest = [
+      'loading',
+      'playing',
+      'paused',
+      'error',
+    ].includes(this.host.getState().status);
+    if (stopsCurrentRequest) {
+      this.stop();
+    }
+    const playRequestId = ++this.playRequestId;
+    this.host.onStatusChange('loading');
+    if (!stopsCurrentRequest) this.host.onProgressChange?.(null);
+    let pendingPlay: Promise<void> | undefined;
+    try {
+      pendingPlay = this.engine.play(
+        this.host.getScore(),
+        {
+          ...playbackSettingsFromControls(this.host.getState()),
+          startMeasure: measure,
+        },
+        {
+          onEnded: () => {
+            if (playRequestId !== this.playRequestId) return;
+            this.host.onProgressChange?.(null);
+            this.host.onStatusChange('idle');
+          },
+          onProgress: (position) => {
+            if (playRequestId !== this.playRequestId) return;
+            if (!['loading', 'playing'].includes(this.host.getState().status)) {
+              return;
+            }
+            this.host.onProgressChange?.(position);
+          },
+        }
+      );
+      this.pendingPlay = pendingPlay;
+      await pendingPlay;
+      if (
+        playRequestId === this.playRequestId &&
+        this.host.getState().status === 'loading'
+      ) {
+        this.host.onStatusChange('playing');
+      }
+    } catch (error) {
+      if (
+        playRequestId === this.playRequestId &&
+        ['loading', 'paused'].includes(this.host.getState().status)
+      ) {
+        this.reportPlayError(error);
+      }
+    } finally {
+      if (pendingPlay && this.pendingPlay === pendingPlay) {
+        this.pendingPlay = undefined;
+      }
+    }
   }
 
   private patchPartSettings(partId: string, patch: PartSettingsPatch): void {
