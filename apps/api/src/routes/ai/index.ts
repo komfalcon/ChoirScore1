@@ -4,8 +4,10 @@ import {
   aiJobSubmissionRequestSchema,
   aiJobSubmissionResponseSchema,
   aiQuotaResponseSchema,
+  harmonizePreviewSchema,
 } from '@choirscore/shared';
 import { newId } from '../../audit';
+import { validateHarmonizeSubmission } from '../../ai/harmonize';
 import type { ApiRepository, NewAiJob } from '../../db/repository';
 import { sendApiError } from '../../errors';
 import type { RequestWithContext } from '../../types';
@@ -121,6 +123,19 @@ export function createAiRouter(
         'The request payload is invalid.'
       );
     }
+    let normalizedInput: Record<string, unknown> = parsed.data.input;
+    if (parsed.data.feature === 'harmonize') {
+      const harmonize = validateHarmonizeSubmission(parsed.data.input);
+      if (!harmonize.success) {
+        return await sendApiError(
+          res,
+          400,
+          'VALIDATION_ERROR',
+          harmonize.message
+        );
+      }
+      normalizedInput = { ...harmonize.input };
+    }
     const userId = (req as RequestWithContext).authUser?.id;
     if (!userId) {
       return await sendApiError(
@@ -135,7 +150,7 @@ export function createAiRouter(
     const { dayStart, nextDayStart } = utcDayBounds(currentTime);
     let inputJson: string;
     try {
-      inputJson = JSON.stringify(canonicalize(parsed.data.input));
+      inputJson = JSON.stringify(canonicalize(normalizedInput));
     } catch {
       return await sendApiError(
         res,
@@ -255,7 +270,14 @@ export function createAiRouter(
       jobId: job.id,
       feature: job.feature,
       status: job.status,
-      result: parseStoredJsonObject(job.resultJson),
+      result: (() => {
+        const storedResult = parseStoredJsonObject(job.resultJson);
+        if (job.feature !== 'harmonize' || storedResult === null) {
+          return storedResult;
+        }
+        const preview = harmonizePreviewSchema.safeParse(storedResult);
+        return preview.success ? preview.data : null;
+      })(),
       warnings:
         job.warningsJson === null ? null : parseStoredJson(job.warningsJson),
       error: job.error,

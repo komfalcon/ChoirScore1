@@ -5,6 +5,8 @@ import {
   AI_LEASE_EXPIRED_FAILURE_MESSAGE,
   type ApiRepository,
 } from '../db/repository';
+import { readVoiceRanges } from '../services/voiceRanges';
+import { generateHarmonizeProposal } from './harmonize';
 import type { AiProvider } from './providers';
 
 export const AI_PROCESSING_FAILURE_MESSAGE =
@@ -270,15 +272,19 @@ export class AiJobWorker {
       const parsedInput = inputSchema.safeParse(storedInput);
       if (!parsedInput.success) throw new Error('Invalid stored AI input');
       const input = parsedInput.data as Record<string, unknown>;
-      const output = await Promise.race([
-        this.provider.generate({
-          id: job.id,
-          feature: job.feature,
-          input,
-          signal: abortController.signal,
-        }),
-        aborted,
-      ]);
+      const work: AiWorkItem = {
+        id: job.id,
+        feature: job.feature,
+        input,
+        signal: abortController.signal,
+      };
+      const generation =
+        job.feature === 'harmonize'
+          ? readVoiceRanges(this.repository).then((voiceRanges) =>
+              generateHarmonizeProposal(this.provider, work, voiceRanges)
+            )
+          : this.provider.generate(work);
+      const output = await Promise.race([generation, aborted]);
       if (output === null) return;
       if (renewal) await renewal;
       if (leaseLost) return;

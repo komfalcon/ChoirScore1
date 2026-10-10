@@ -3,6 +3,7 @@ import { isoUtcTimestampSchema } from './timestamps.js';
 import {
   scoreKeySchema,
   scoreModelSchema,
+  scorePitchSchema,
   scoreTimeSchema,
 } from './scoreModel.js';
 
@@ -20,9 +21,89 @@ export type AiJobStatus = z.infer<typeof aiJobStatusSchema>;
 export const aiJobResultSchema = z.record(z.string(), z.unknown());
 export type AiJobResult = z.infer<typeof aiJobResultSchema>;
 
-const promptTextSchema = z.string().trim().min(1).max(4_000);
+const PROMPT_TEXT_MAX_LENGTH = 4_000;
+const promptTextSchema = z.string().trim().min(1).max(PROMPT_TEXT_MAX_LENGTH);
 const musicalTextSchema = z.string().trim().min(1).max(20_000);
 const titleTextSchema = z.string().trim().min(1).max(512);
+const harmonizeVoiceSchema = z.enum(['A', 'T', 'B']);
+
+export const harmonizeStyleSchema = z.enum(['hymn', 'gospel', 'simple']);
+export type HarmonizeStyle = z.infer<typeof harmonizeStyleSchema>;
+
+export const harmonizeMeasureRangeSchema = z
+  .object({
+    start: z.number().int().nonnegative(),
+    end: z.number().int().nonnegative(),
+  })
+  .strict()
+  .refine((range) => range.start <= range.end);
+
+const harmonizePartsSchema = z
+  .array(harmonizeVoiceSchema)
+  .min(1)
+  .max(3)
+  .refine((parts) => new Set(parts).size === parts.length);
+
+/** Strict v1 request contract; only inline score models are supported here. */
+export const harmonizeJobRequestSchema = z
+  .object({
+    score: scoreModelSchema,
+    melodyPartId: z.string().trim().min(1).max(128).optional(),
+    partsToGenerate: harmonizePartsSchema.optional(),
+    style: harmonizeStyleSchema.optional(),
+    measureRange: harmonizeMeasureRangeSchema.optional(),
+    prompt: promptTextSchema.optional(),
+  })
+  .strict();
+export type HarmonizeJobRequest = z.infer<typeof harmonizeJobRequestSchema>;
+
+/** Provider output contains pitches only; source durations/onsets are copied by code. */
+export const harmonizeGeneratedOutputSchema = z
+  .object({
+    parts: z
+      .array(
+        z
+          .object({
+            id: harmonizeVoiceSchema,
+            measures: z
+              .array(
+                z
+                  .object({
+                    number: z.number().int().nonnegative(),
+                    pitches: z.array(scorePitchSchema.nullable()),
+                  })
+                  .strict()
+              )
+              .min(1),
+          })
+          .strict()
+      )
+      .min(1)
+      .max(3),
+    chords: z
+      .array(
+        z
+          .object({
+            measure: z.number().int().nonnegative(),
+            label: z.string().trim().min(1).max(32),
+          })
+          .strict()
+      )
+      .optional(),
+  })
+  .strict();
+export type HarmonizeGeneratedOutput = z.infer<
+  typeof harmonizeGeneratedOutputSchema
+>;
+
+export const harmonizePreviewSchema = z
+  .object({
+    model: scoreModelSchema,
+    previewOnly: z.literal(true),
+    chords: harmonizeGeneratedOutputSchema.shape.chords,
+  })
+  .strict();
+export type HarmonizePreview = z.infer<typeof harmonizePreviewSchema>;
 
 function requireInput(value: Record<string, unknown>) {
   return Object.keys(value).length > 0;
@@ -36,11 +117,16 @@ function requireInput(value: Record<string, unknown>) {
 export const aiJobInputSchemas = {
   harmonize: z
     .object({
+      // Keep shared admission aligned with harmonizeJobRequestSchema below.
       prompt: promptTextSchema.optional(),
       score: scoreModelSchema.optional(),
       melody: musicalTextSchema.optional(),
       key: scoreKeySchema.optional(),
       time: scoreTimeSchema.optional(),
+      melodyPartId: z.string().trim().min(1).max(128).optional(),
+      partsToGenerate: harmonizePartsSchema.optional(),
+      style: harmonizeStyleSchema.optional(),
+      measureRange: harmonizeMeasureRangeSchema.optional(),
     })
     .strict()
     .refine(requireInput),
