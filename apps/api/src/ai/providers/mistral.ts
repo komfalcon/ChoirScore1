@@ -1,3 +1,4 @@
+import { aiJobInputSchemas } from '@choirscore/shared';
 import type { AiWorkItem } from '../jobs';
 import type { AiProvider, AiProviderResult } from './index';
 
@@ -67,6 +68,9 @@ function parseCompletion(value: unknown): AiProviderResult {
   } catch {
     throw new ProviderFailure(INVALID_RESPONSE);
   }
+  if (!isRecord(result)) {
+    throw new ProviderFailure(INVALID_RESPONSE);
+  }
 
   const usage = isRecord(value.usage) ? value.usage : {};
   return {
@@ -116,11 +120,14 @@ export class MistralAiProvider implements AiProvider {
       work.feature === 'simplify'
         ? this.options.modelLight
         : this.options.model;
+    const parsedInput = aiJobInputSchemas[work.feature].safeParse(work.input);
+    if (!parsedInput.success) throw new Error(REQUEST_FAILED);
+
     let userContent: string;
     try {
       userContent = JSON.stringify({
         feature: work.feature,
-        input: work.input,
+        input: parsedInput.data,
       });
     } catch {
       throw new Error(REQUEST_FAILED);

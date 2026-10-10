@@ -31,6 +31,10 @@ function validTokenCount(value: number): boolean {
   return Number.isSafeInteger(value) && value >= 0;
 }
 
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
 export class AiJobWorker {
   private readonly workerId = randomUUID();
   private readonly inFlight = new Set<Promise<void>>();
@@ -258,6 +262,7 @@ export class AiJobWorker {
       if (renewal) await renewal;
       if (leaseLost) return;
       if (
+        !isJsonObject(output.result) ||
         !validTokenCount(output.tokensIn) ||
         !validTokenCount(output.tokensOut) ||
         (output.warnings !== undefined && !Array.isArray(output.warnings))

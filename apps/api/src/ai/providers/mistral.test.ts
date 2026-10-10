@@ -180,6 +180,45 @@ describe('Mistral chat completions contract', () => {
     );
   });
 
+  it.each(['null', '"scalar"', '42', 'true', '[]'])(
+    'rejects parsed non-object JSON content (%s) with a generic error',
+    async (content) => {
+      const fetcher = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(successResponse(content));
+      const provider = new MistralAiProvider({
+        apiKey: 'test-only-key',
+        model: 'heavy-test-model',
+        modelLight: 'light-test-model',
+        fetcher,
+      });
+
+      await expect(provider.generate(makeWork())).rejects.toThrow(
+        'AI provider returned an invalid response.'
+      );
+      expect(fetcher).toHaveBeenCalledOnce();
+    }
+  );
+
+  it('rejects arbitrary and secret-like input keys before sending any request', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(successResponse());
+    const provider = new MistralAiProvider({
+      apiKey: 'test-only-key',
+      model: 'heavy-test-model',
+      modelLight: 'light-test-model',
+      fetcher,
+    });
+    const work = {
+      ...makeWork(),
+      input: { prompt: 'musical request', authorization: 'private-token' },
+    };
+
+    await expect(provider.generate(work)).rejects.toThrow(
+      'AI provider request failed.'
+    );
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it('forwards cancellation to fetch and settles promptly with a safe error', async () => {
     const started = vi.fn();
     const fetcher = vi.fn<typeof fetch>((_url, init) => {
