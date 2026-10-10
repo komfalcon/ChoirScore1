@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { aiJobInputSchemas, aiJobResultSchema } from '@choirscore/shared';
 import type { AiJobFeature, AiJobRecord } from '../db/repository';
 import {
   AI_LEASE_EXPIRED_FAILURE_MESSAGE,
@@ -33,6 +34,21 @@ function validTokenCount(value: number): boolean {
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function serializeJsonObject(value: unknown): string {
+  if (!isJsonObject(value)) throw new Error('AI result must be a JSON object');
+  const serialized = serializeJson(value);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(serialized) as unknown;
+  } catch {
+    throw new Error('AI result is not valid JSON');
+  }
+  if (!aiJobResultSchema.safeParse(parsed).success) {
+    throw new Error('AI result must serialize to a JSON object');
+  }
+  return serialized;
 }
 
 export class AiJobWorker {
@@ -248,7 +264,12 @@ export class AiJobWorker {
     heartbeat.unref?.();
 
     try {
-      const input = JSON.parse(job.inputJson) as Record<string, unknown>;
+      const storedInput: unknown = JSON.parse(job.inputJson) as unknown;
+      const inputSchema = aiJobInputSchemas[job.feature];
+      if (!inputSchema) throw new Error('Invalid stored AI feature');
+      const parsedInput = inputSchema.safeParse(storedInput);
+      if (!parsedInput.success) throw new Error('Invalid stored AI input');
+      const input = parsedInput.data as Record<string, unknown>;
       const output = await Promise.race([
         this.provider.generate({
           id: job.id,
@@ -270,7 +291,7 @@ export class AiJobWorker {
         throw new Error('Invalid provider response');
       }
       await this.repository.completeAiJob(job.id, this.workerId, {
-        resultJson: serializeJson(output.result),
+        resultJson: serializeJsonObject(output.result),
         warningsJson: serializeJson(output.warnings ?? []),
         tokensIn: output.tokensIn,
         tokensOut: output.tokensOut,

@@ -111,6 +111,19 @@ export interface AiQuotaState {
   limit: number;
   globalEnabled: boolean;
   userEnabled: boolean;
+  activeGlobalCount: number;
+  activeUserCount: number;
+}
+
+function isJsonObjectJson(value: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(value) as unknown;
+    return (
+      parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+    );
+  } catch {
+    return false;
+  }
 }
 
 export interface AiUsageUserAggregate {
@@ -1491,12 +1504,27 @@ class DrizzleApiRepository implements ApiRepository {
           lt(aiJobs.createdAt, nextDayStart)
         )
       );
+    const activeGlobalRows = await this.db
+      .select({ value: count() })
+      .from(aiJobs)
+      .where(inArray(aiJobs.status, ['queued', 'running']));
+    const activeUserRows = await this.db
+      .select({ value: count() })
+      .from(aiJobs)
+      .where(
+        and(
+          eq(aiJobs.userId, userId),
+          inArray(aiJobs.status, ['queued', 'running'])
+        )
+      );
     return {
       used: dailyRows[0]?.value ?? 0,
       limit: user.aiDailyLimit ?? globalLimit,
       globalEnabled:
         aiGlobalEnabled === undefined || aiGlobalEnabled === 'true',
       userEnabled: user.aiEnabled,
+      activeGlobalCount: activeGlobalRows[0]?.value ?? 0,
+      activeUserCount: activeUserRows[0]?.value ?? 0,
     };
   }
 
@@ -1578,6 +1606,9 @@ class DrizzleApiRepository implements ApiRepository {
       finishedAt: string;
     }
   ): Promise<boolean> {
+    if (!isJsonObjectJson(update.resultJson)) {
+      throw new Error('AI job result must be a JSON object');
+    }
     return serializeRepositoryTransaction(() =>
       this.db.transaction(async (tx) => {
         const result = await tx

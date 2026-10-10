@@ -45,10 +45,27 @@ function parseStoredJson(value: string | null): unknown | null {
   }
 }
 
+function parseStoredJsonObject(
+  value: string | null
+): Record<string, unknown> | null {
+  if (value === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(value) as unknown;
+    return parsed !== null &&
+      typeof parsed === 'object' &&
+      !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export function createAiRouter(
   repository: ApiRepository,
   defaultDailyLimit: number,
-  now: () => Date = () => new Date()
+  now: () => Date = () => new Date(),
+  providerAvailable = false
 ) {
   const router = Router();
 
@@ -83,7 +100,12 @@ export function createAiRouter(
       used: quota.used,
       remaining: Math.max(0, quota.limit - quota.used),
       available:
-        quota.globalEnabled && quota.userEnabled && quota.used < quota.limit,
+        providerAvailable &&
+        quota.globalEnabled &&
+        quota.userEnabled &&
+        quota.used < quota.limit &&
+        quota.activeGlobalCount < 2 &&
+        quota.activeUserCount === 0,
       resetsAt: nextDayStart,
     });
     return res.status(200).json(response);
@@ -233,7 +255,7 @@ export function createAiRouter(
       jobId: job.id,
       feature: job.feature,
       status: job.status,
-      result: parseStoredJson(job.resultJson),
+      result: parseStoredJsonObject(job.resultJson),
       warnings:
         job.warningsJson === null ? null : parseStoredJson(job.warningsJson),
       error: job.error,

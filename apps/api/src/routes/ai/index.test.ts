@@ -112,6 +112,7 @@ beforeEach(async () => {
     repository,
     config: CONFIG,
     aiNow: () => new Date(FIXED_NOW),
+    aiProviderAvailable: true,
   });
 });
 
@@ -189,7 +190,7 @@ describe('persisted AI jobs', () => {
       dailyLimit: 20,
       used: 1,
       remaining: 19,
-      available: true,
+      available: false,
       resetsAt: '2026-10-11T00:00:00.000Z',
     });
   });
@@ -207,6 +208,85 @@ describe('persisted AI jobs', () => {
     expect(rejected.body.error.code).toBe('VALIDATION_ERROR');
     const quota = await asActor(request(app).get('/ai/quota'), actors.alice!);
     expect(quota.body.used).toBe(0);
+  });
+
+  it('reports quota unavailable without a provider or when active admission capacity is full', async () => {
+    const initiallyAvailable = await asActor(
+      request(app).get('/ai/quota'),
+      actors.alice!
+    );
+    expect(initiallyAvailable.body.available).toBe(true);
+
+    app = createApp({
+      repository,
+      config: CONFIG,
+      aiNow: () => new Date(FIXED_NOW),
+      aiProviderAvailable: false,
+    });
+    const withoutProvider = await asActor(
+      request(app).get('/ai/quota'),
+      actors.alice!
+    );
+    expect(withoutProvider.body.available).toBe(false);
+
+    app = createApp({
+      repository,
+      config: CONFIG,
+      aiNow: () => new Date(FIXED_NOW),
+      aiProviderAvailable: true,
+    });
+    expect((await submit(actors.bob!, 'availability-cap-bob')).status).toBe(
+      202
+    );
+    expect((await submit(actors.carol!, 'availability-cap-carol')).status).toBe(
+      202
+    );
+    const atGlobalCapacity = await asActor(
+      request(app).get('/ai/quota'),
+      actors.alice!
+    );
+    expect(atGlobalCapacity.body.available).toBe(false);
+  });
+
+  it('revalidates stored feature input and dispatches the parsed input to any provider', async () => {
+    const accepted = await submit(actors.alice!, 'worker-parsed-input', {
+      prompt: '  normalized prompt  ',
+    });
+    expect(accepted.status).toBe(202);
+    const generate = vi.fn(async () => SUCCESSFUL_PROVIDER_RESULT);
+    const worker = new AiJobWorker(
+      repository,
+      { name: 'dispatch-spy-mock', generate },
+      () => new Date(FIXED_NOW)
+    );
+
+    expect(await worker.runOne()).toBe(true);
+    expect(generate).toHaveBeenCalledWith(
+      expect.objectContaining({ input: { prompt: 'normalized prompt' } })
+    );
+
+    const corrupted = await submit(actors.bob!, 'worker-corrupt-input');
+    expect(corrupted.status).toBe(202);
+    const maintenanceClient = createClient({ url: `file:${databasePath}` });
+    await maintenanceClient.execute({
+      sql: 'UPDATE ai_jobs SET input_json = ? WHERE id = ?',
+      args: [
+        JSON.stringify({ prompt: 'not allowed', apiKey: 'secret' }),
+        corrupted.body.jobId as string,
+      ],
+    });
+    maintenanceClient.close();
+    const mustNotRun = vi.fn(async () => SUCCESSFUL_PROVIDER_RESULT);
+    const rejectingWorker = new AiJobWorker(
+      repository,
+      { name: 'corrupt-input-spy-mock', generate: mustNotRun },
+      () => new Date(FIXED_NOW)
+    );
+    expect(await rejectingWorker.runOne()).toBe(true);
+    expect(mustNotRun).not.toHaveBeenCalled();
+    expect(
+      (await repository.findAiJobById(corrupted.body.jobId as string))?.status
+    ).toBe('failed');
   });
 
   it('preserves bounded queued admission and caps worker claims globally', async () => {
@@ -445,6 +525,7 @@ describe('persisted AI jobs', () => {
     ['null', null],
     ['scalar', 'not-an-object'],
     ['array', []],
+    ['toJSON scalar', { toJSON: () => 'not-an-object' }],
   ])(
     'fails accepted jobs with %s provider results generically',
     async (_kind, result) => {
@@ -488,7 +569,58 @@ describe('persisted AI jobs', () => {
     }
   );
 
+  it('enforces object results at persistence and returns null for legacy scalar results', async () => {
+    const accepted = await submit(actors.alice!, 'legacy-scalar-result');
+    expect(accepted.status).toBe(202);
+    const claim = await repository.claimNextAiJob(
+      'result-contract-worker',
+      AI_WORKER_LEASE_MS
+    );
+    expect(claim?.id).toBe(accepted.body.jobId);
+    const update = {
+      resultJson: '"not-an-object"',
+      warningsJson: '[]',
+      tokensIn: 0,
+      tokensOut: 0,
+      finishedAt: FIXED_NOW.toISOString(),
+    };
+    await expect(
+      repository.completeAiJob(claim!.id, claim!.workerId!, update)
+    ).rejects.toThrow('AI job result must be a JSON object');
+
+    expect(
+      await repository.completeAiJob(claim!.id, claim!.workerId!, {
+        ...update,
+        resultJson: '{"ok":true}',
+      })
+    ).toBe(true);
+    const maintenanceClient = createClient({ url: `file:${databasePath}` });
+    await maintenanceClient.execute({
+      sql: 'UPDATE ai_jobs SET result_json = ? WHERE id = ?',
+      args: ['"legacy-scalar"', claim!.id],
+    });
+    maintenanceClient.close();
+
+    const polled = await asActor(
+      request(app).get(`/ai/jobs/${claim!.id}`),
+      actors.alice!
+    );
+    expect(polled.status).toBe(200);
+    expect(polled.body.result).toBeNull();
+  });
+
   it('fails accepted work closed with UnavailableAiProvider', async () => {
+    app = createApp({
+      repository,
+      config: CONFIG,
+      aiNow: () => new Date(FIXED_NOW),
+      aiProviderAvailable: false,
+    });
+    const unavailableQuota = await asActor(
+      request(app).get('/ai/quota'),
+      actors.alice!
+    );
+    expect(unavailableQuota.body.available).toBe(false);
     const accepted = await submit(actors.alice!, 'unavailable-provider');
     expect(accepted.status).toBe(202);
     const worker = new AiJobWorker(
@@ -514,6 +646,7 @@ describe('persisted AI jobs', () => {
       repository,
       config: CONFIG,
       aiNow: () => new Date(currentTime),
+      aiProviderAvailable: true,
     });
 
     const beforeMidnight = await submit(

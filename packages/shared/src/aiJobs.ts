@@ -17,6 +17,9 @@ export const aiJobStatusSchema = z.enum([
 ]);
 export type AiJobStatus = z.infer<typeof aiJobStatusSchema>;
 
+export const aiJobResultSchema = z.record(z.string(), z.unknown());
+export type AiJobResult = z.infer<typeof aiJobResultSchema>;
+
 const promptTextSchema = z.string().trim().min(1).max(4_000);
 const musicalTextSchema = z.string().trim().min(1).max(20_000);
 const titleTextSchema = z.string().trim().min(1).max(512);
@@ -104,7 +107,7 @@ export const aiJobStatusResponseSchema = z
     jobId: z.string().min(1),
     feature: aiJobFeatureSchema,
     status: aiJobStatusSchema,
-    result: z.unknown().nullable(),
+    result: aiJobResultSchema.nullable(),
     warnings: z.array(z.unknown()).nullable(),
     error: z.string().nullable(),
     createdAt: isoUtcTimestampSchema,

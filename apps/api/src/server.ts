@@ -21,7 +21,8 @@ async function start() {
           'Change the bootstrap administrator password after first login.',
       });
     }
-    const aiWorker = new AiJobWorker(repository, createAiProvider());
+    const aiProvider = createAiProvider();
+    const aiWorker = new AiJobWorker(repository, aiProvider);
     const recoveredJobs = await aiWorker.recoverAfterRestart();
     if (recoveredJobs > 0) {
       structuredLogger.warn({
@@ -33,7 +34,11 @@ async function start() {
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
       throw new Error('PORT must be a valid TCP port');
     }
-    const app = createApp({ repository, config });
+    const app = createApp({
+      repository,
+      config,
+      aiProviderAvailable: aiProvider.name !== 'unavailable',
+    });
     const server = app.listen(port, () => {
       structuredLogger.info({
         event: 'api_started',
