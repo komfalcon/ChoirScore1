@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   getAdminSettings,
+  updateAiGlobalEnabled,
   updateFirstLoginPasswordSetting,
   updateVoiceRangesSetting,
 } from './adminSettings';
@@ -93,6 +94,35 @@ describe('admin first-login password setting API', () => {
     expect(JSON.parse(String(init.body))).toEqual({
       voiceRanges: updatedRanges,
     });
+    expect(new Headers(init.headers).get('X-Requested-With')).toBe(
+      'choirscore'
+    );
+  });
+
+  it('changes only the global AI setting through the existing settings API', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          requirePasswordChangeAtFirstLogin: true,
+          voiceRanges: DEFAULT_VOICE_RANGES,
+          aiGlobalEnabled: false,
+          aiDefaultDailyLimit: 20,
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      )
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(updateAiGlobalEnabled(false)).resolves.toMatchObject({
+      aiGlobalEnabled: false,
+    });
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe('/api/admin/settings');
+    expect(init.method).toBe('PATCH');
+    expect(JSON.parse(String(init.body))).toEqual({ aiGlobalEnabled: false });
     expect(new Headers(init.headers).get('X-Requested-With')).toBe(
       'choirscore'
     );

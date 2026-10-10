@@ -1,5 +1,6 @@
 import { Router, type Request } from 'express';
 import {
+  getAdminAiUsageResponseSchema,
   getAdminSettingsResponseSchema,
   patchAdminSettingsRequestSchema,
   patchAdminSettingsResponseSchema,
@@ -16,6 +17,22 @@ function invalidPayload() {
     'VALIDATION_ERROR',
     'The request payload is invalid.'
   );
+}
+
+const USAGE_WINDOW_DAYS = 30;
+const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
+
+function emptyUsageDay(date: string) {
+  return {
+    date,
+    requests: 0,
+    succeededRequests: 0,
+    failedRequests: 0,
+    pendingRequests: 0,
+    tokensIn: 0,
+    tokensOut: 0,
+    totalTokens: 0,
+  };
 }
 
 async function readAdminSettings(
@@ -46,10 +63,56 @@ async function readAdminSettings(
 
 export function createAdminRouter(
   repository: ApiRepository,
-  defaultDailyLimit = 20
+  defaultDailyLimit = 20,
+  now: () => Date = () => new Date()
 ) {
   const router = Router();
   router.use(requireRole(['admin']));
+
+  router.get('/usage', async (req, res) => {
+    const asOf = now();
+    const todayStartMs = Date.UTC(
+      asOf.getUTCFullYear(),
+      asOf.getUTCMonth(),
+      asOf.getUTCDate()
+    );
+    const windowStartMs =
+      todayStartMs - (USAGE_WINDOW_DAYS - 1) * MILLISECONDS_PER_DAY;
+    const windowEndExclusiveMs = todayStartMs + MILLISECONDS_PER_DAY;
+    const windowStart = new Date(windowStartMs).toISOString();
+    const windowEndExclusive = new Date(windowEndExclusiveMs).toISOString();
+    const { users, daily: aggregateDays } =
+      await repository.getAiUsageDashboard(
+        windowStart,
+        windowEndExclusive,
+        new Date(todayStartMs).toISOString()
+      );
+    const dayByDate = new Map(aggregateDays.map((day) => [day.date, day]));
+    const daily = Array.from({ length: USAGE_WINDOW_DAYS }, (_, index) => {
+      const date = new Date(windowStartMs + index * MILLISECONDS_PER_DAY)
+        .toISOString()
+        .slice(0, 10);
+      return dayByDate.get(date) ?? emptyUsageDay(date);
+    });
+    const response = getAdminAiUsageResponseSchema.parse({
+      asOf: asOf.toISOString(),
+      windowStart,
+      windowEndExclusive,
+      days: USAGE_WINDOW_DAYS,
+      users,
+      daily,
+    });
+    await runAdminAction(
+      repository,
+      req,
+      'admin.ai_usage.read',
+      'ai_usage',
+      null,
+      { windowDays: USAGE_WINDOW_DAYS },
+      async () => response
+    );
+    return res.status(200).json(response);
+  });
 
   router.get('/settings', async (req, res) => {
     const settings = await readAdminSettings(repository, defaultDailyLimit);

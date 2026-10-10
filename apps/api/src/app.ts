@@ -26,6 +26,7 @@ export interface AppOptions {
   throttle?: LoginThrottle;
   trustProxyHops?: number;
   aiNow?: () => Date;
+  adminNow?: () => Date;
 }
 
 export function createApp({
@@ -35,6 +36,7 @@ export function createApp({
   throttle,
   trustProxyHops = config.trustProxyHops,
   aiNow,
+  adminNow,
 }: AppOptions) {
   const app = express();
   const loginThrottle = throttle ?? new LoginThrottle(repository);
@@ -85,7 +87,10 @@ export function createApp({
   app.use('/scores', createScoresRouter(repository, config.jwtSecret));
   app.use('/ai', createAiRouter(repository, config.aiDailyLimitDefault, aiNow));
   app.use('/settings', createSettingsRouter(repository));
-  app.use('/admin', createAdminRouter(repository, config.aiDailyLimitDefault));
+  app.use(
+    '/admin',
+    createAdminRouter(repository, config.aiDailyLimitDefault, adminNow)
+  );
 
   app.use(async (_req, res) => {
     await sendApiError(
