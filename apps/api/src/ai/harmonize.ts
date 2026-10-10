@@ -257,6 +257,13 @@ function prepareHarmonize(value: unknown): PreparedHarmonize {
     if (targetPartId === undefined) continue;
     const targetPart = model.parts.find(({ id }) => id === targetPartId);
     if (!targetPart) return rejectInput();
+    // Requested target pitches may change inside the range, so reject ties
+    // connecting their selected and unselected measures in either direction.
+    if (
+      hasSelectedRangeBoundaryTie(targetPart.measures, selectedMeasureNumbers)
+    ) {
+      return rejectInput();
+    }
     for (const sourceMeasure of selectedMeasures) {
       const targetMeasure = targetPart.measures.find(
         ({ number }) => number === sourceMeasure.number

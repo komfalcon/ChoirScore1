@@ -294,6 +294,102 @@ describe('Harmonize inline pipeline', () => {
     expect(calls).toHaveLength(0);
   });
 
+  it('rejects requested target-part ties crossing either partial-range boundary before provider work', async () => {
+    const measure = (
+      number: number,
+      pitches: string[],
+      tieLastNote = false
+    ) => ({
+      number,
+      notes: pitches.map((pitch, index) => ({
+        pitch,
+        dur: 1,
+        ...(tieLastNote && index === pitches.length - 1 ? { tie: true } : {}),
+      })),
+    });
+    const cases = [
+      {
+        description: 'incoming target tie from an unselected measure',
+        measureRange: { start: 2, end: 2 },
+        melodyFirstMeasureHasBoundaryTie: false,
+      },
+      {
+        description: 'outgoing target tie to an unselected measure',
+        measureRange: { start: 1, end: 1 },
+        melodyFirstMeasureHasBoundaryTie: true,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const base = sourceScore();
+      const score = {
+        ...base,
+        parts: [
+          {
+            ...base.parts[0]!,
+            measures: [
+              measure(
+                1,
+                ['C5', 'D5', 'C5', 'C5'],
+                testCase.melodyFirstMeasureHasBoundaryTie
+              ),
+              measure(2, ['C5', 'D5', 'C5', 'D5']),
+            ],
+          },
+          {
+            id: 'A',
+            clef: 'treble',
+            measures: [
+              measure(1, ['E4', 'E4', 'E4', 'E4'], true),
+              measure(2, ['E4', 'E4', 'E4', 'E4']),
+            ],
+          },
+          {
+            id: 'T',
+            clef: 'bass',
+            measures: [
+              measure(1, ['G3', 'G3', 'G3', 'G3']),
+              measure(2, ['G3', 'G3', 'G3', 'G3']),
+            ],
+          },
+          {
+            id: 'B',
+            clef: 'bass',
+            measures: [
+              measure(1, ['C3', 'C3', 'C3', 'C3']),
+              measure(2, ['C3', 'C3', 'C3', 'C3']),
+            ],
+          },
+        ],
+      };
+      const request = {
+        score,
+        partsToGenerate: ['A'],
+        measureRange: testCase.measureRange,
+      };
+
+      expect(
+        validateHarmonizeSubmission(request).success,
+        testCase.description
+      ).toBe(false);
+      const calls: AiWorkItem[] = [];
+      const provider = providerFor((item) => {
+        calls.push(item);
+        return {
+          result: validOutput(),
+          warnings: [],
+          tokensIn: 0,
+          tokensOut: 0,
+        };
+      });
+      await expect(
+        generateHarmonizeProposal(provider, work(request)),
+        testCase.description
+      ).rejects.toThrow('Harmonize input failed deterministic precheck.');
+      expect(calls, testCase.description).toHaveLength(0);
+    }
+  });
+
   it('repairs schema and music-validator failures at most twice, then returns a safe proposal shape', async () => {
     const calls: AiWorkItem[] = [];
     const invalidParts = {
