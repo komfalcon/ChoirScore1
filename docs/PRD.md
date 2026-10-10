@@ -378,12 +378,16 @@ Hard-limit violations are errors; notes outside "comfortable" but inside "hard l
 
 ### 10.6 Job execution (important for hosting)
 AI calls can be slow and hosting platforms may have request timeouts. So AI work is **asynchronous**:
-1. `POST /api/ai/jobs` validates input, checks quota, inserts `ai_jobs` row with `status = queued`, returns `{ jobId }` immediately.
-2. An in-process worker (concurrency limit 2) runs the job and updates the row.
+1. `POST /api/ai/jobs` validates input, checks quota, inserts `ai_jobs` row with `status = queued`, and returns `202 { jobId, status: "queued" }` immediately. An idempotent replay returns the same ID and the current persisted status.
+2. An in-process worker executes at most two jobs concurrently, and at most one running job per user. Worker instances sharing a database coordinate claims and leases through that database.
 3. Client polls `GET /api/ai/jobs/:id` every 2 s (stop on `succeeded` or `failed`).
-4. On server restart, any job left `running` is marked `failed` with a retry message.
+4. On startup and during runtime, only `running` jobs with a recorded worker owner and an expired lease are marked `failed` with a safe retry message. Expired leases are swept before worker claims and admission checks, with a periodic worker sweep as a backstop. Leases use database time and are renewed while work is active. Recovery never automatically resubmits work whose provider completion is unknown. Ownerless running rows (including rows created before lease metadata existed) are left untouched and continue to count against capacity until operator reconciliation; replicas must share the same database to coordinate claims and recovery.
 
-Limits: max `AI_MAX_MEASURES_PER_CALL` measures per call (longer scores are processed in chunks of that size with a one-measure overlap for continuity); max 1 running job per user; per-user daily quota (default 20) and global kill switch. Return `429` with a clear message when exceeded.
+Admission is bounded to at most two active jobs globally (`queued` plus `running`) and one active job per user; a request that would exceed either cap receives `429 AI_ACTIVE_LIMIT_REACHED`. This limits the accepted backlog and is distinct from the worker execution limit of two simultaneous running jobs globally and one per user. Limits also include max `AI_MAX_MEASURES_PER_CALL` measures per call (longer scores are processed in chunks of that size with a one-measure overlap for continuity), per-user daily quota (default 20), and the global kill switch. Return `429` with a clear message when the daily quota is exceeded.
+
+On `SIGTERM` or `SIGINT`, the server stops accepting HTTP connections and drains already accepted requests first. It then stops claiming new jobs and drains in-flight worker tasks, including their final database writes, before closing the repository. A claim returned during shutdown but not yet started is released back to `queued`; active work continues renewing its lease while draining. Persisted queued work is eligible after restart. A provider operation that never returns can therefore delay graceful shutdown; lease expiry still fences its eventual writes and stale work is failed rather than automatically resubmitted.
+
+**M6 lifecycle-slice implementation note:** the API intentionally wires `UnavailableAiProvider` and makes no live provider calls. Accepted jobs therefore fail closed with a generic processing error and still consume quota; `MockAiProvider` is used only in deterministic tests. This is not live-provider support; a separate provider integration is required.
 
 ### 10.7 Feature A: Harmonize
 **Input:** `scoreId` (or inline model), `melodyPartId` (which part is the tune; default the top staff), `partsToGenerate` (subset of A/T/B, default all), `style` (`hymn` | `gospel` | `simple`; default `hymn`), optional `measureRange`.

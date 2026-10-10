@@ -148,6 +148,7 @@ export const aiJobs = sqliteTable(
   'ai_jobs',
   {
     id: text('id').primaryKey(),
+    requestId: text('request_id'),
     userId: text('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
@@ -165,11 +166,20 @@ export const aiJobs = sqliteTable(
     tokensOut: integer('tokens_out'),
     createdAt: text('created_at').notNull(),
     finishedAt: text('finished_at'),
+    workerId: text('worker_id'),
+    leaseExpiresAt: text('lease_expires_at'),
   },
   (table) => ({
     userCreatedIndex: index('ai_jobs_user_created_idx').on(
       table.userId,
       table.createdAt
+    ),
+    requestUnique: uniqueIndex('ai_jobs_user_request_unique')
+      .on(table.userId, table.requestId)
+      .where(sql`request_id IS NOT NULL`),
+    statusLeaseIndex: index('ai_jobs_status_lease_idx').on(
+      table.status,
+      table.leaseExpiresAt
     ),
   })
 );

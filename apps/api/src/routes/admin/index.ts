@@ -19,31 +19,54 @@ function invalidPayload() {
 }
 
 async function readAdminSettings(
-  repository: Pick<ApiRepository, 'getSetting'>
+  repository: Pick<ApiRepository, 'getSetting'>,
+  defaultDailyLimit: number
 ) {
-  const [passwordSetting, voiceRanges] = await Promise.all([
-    repository.getSetting('requirePasswordChangeAtFirstLogin'),
-    readVoiceRanges(repository),
-  ]);
+  const [passwordSetting, voiceRanges, aiGlobalSetting, aiLimitSetting] =
+    await Promise.all([
+      repository.getSetting('requirePasswordChangeAtFirstLogin'),
+      readVoiceRanges(repository),
+      repository.getSetting('ai_global_enabled'),
+      repository.getSetting('ai_default_daily_limit'),
+    ]);
+  const storedDailyLimit = Number(aiLimitSetting);
+  const aiDefaultDailyLimit =
+    aiLimitSetting !== null &&
+    Number.isSafeInteger(storedDailyLimit) &&
+    storedDailyLimit >= 0
+      ? storedDailyLimit
+      : defaultDailyLimit;
   return getAdminSettingsResponseSchema.parse({
     requirePasswordChangeAtFirstLogin: passwordSetting !== 'false',
     voiceRanges,
+    aiGlobalEnabled: aiGlobalSetting === null || aiGlobalSetting === 'true',
+    aiDefaultDailyLimit,
   });
 }
 
-export function createAdminRouter(repository: ApiRepository) {
+export function createAdminRouter(
+  repository: ApiRepository,
+  defaultDailyLimit = 20
+) {
   const router = Router();
   router.use(requireRole(['admin']));
 
   router.get('/settings', async (req, res) => {
-    const settings = await readAdminSettings(repository);
+    const settings = await readAdminSettings(repository, defaultDailyLimit);
     await runAdminAction(
       repository,
       req,
       'admin.settings.read',
       'settings',
       null,
-      { fields: ['requirePasswordChangeAtFirstLogin', 'voiceRanges'] },
+      {
+        fields: [
+          'requirePasswordChangeAtFirstLogin',
+          'voiceRanges',
+          'aiGlobalEnabled',
+          'aiDefaultDailyLimit',
+        ],
+      },
       async () => settings
     );
     return res.status(200).json(settings);
@@ -59,11 +82,16 @@ export function createAdminRouter(repository: ApiRepository) {
       'settings',
       () => {
         const changedFields = Object.keys(parsed.data);
-        return changedFields.length === 1 && changedFields[0] === 'voiceRanges'
-          ? 'voice_ranges_json'
-          : changedFields.length === 1
-            ? 'requirePasswordChangeAtFirstLogin'
-            : null;
+        const settingKeys: Record<string, string> = {
+          requirePasswordChangeAtFirstLogin:
+            'requirePasswordChangeAtFirstLogin',
+          voiceRanges: 'voice_ranges_json',
+          aiGlobalEnabled: 'ai_global_enabled',
+          aiDefaultDailyLimit: 'ai_default_daily_limit',
+        };
+        return changedFields.length === 1
+          ? (settingKeys[changedFields[0]!] ?? null)
+          : null;
       },
       { changedFields: Object.keys(parsed.data) },
       async (tx) => {
@@ -86,7 +114,23 @@ export function createAdminRouter(repository: ApiRepository) {
             updatedAt
           );
         }
-        return readAdminSettings(tx);
+        if (parsed.data.aiGlobalEnabled !== undefined) {
+          await tx.setSetting(
+            'ai_global_enabled',
+            String(parsed.data.aiGlobalEnabled),
+            actorId,
+            updatedAt
+          );
+        }
+        if (parsed.data.aiDefaultDailyLimit !== undefined) {
+          await tx.setSetting(
+            'ai_default_daily_limit',
+            String(parsed.data.aiDefaultDailyLimit),
+            actorId,
+            updatedAt
+          );
+        }
+        return readAdminSettings(tx, defaultDailyLimit);
       }
     );
     return res.status(200).json(patchAdminSettingsResponseSchema.parse(result));

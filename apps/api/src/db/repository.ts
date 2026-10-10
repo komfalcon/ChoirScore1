@@ -5,8 +5,12 @@ import {
   count,
   desc,
   eq,
+  gt,
+  gte,
   inArray,
+  isNotNull,
   like,
+  lte,
   lt,
   ne,
   or,
@@ -20,6 +24,7 @@ import { resolve } from 'node:path';
 import * as schema from './schema';
 import {
   auditLog,
+  aiJobs,
   scoreAccess,
   scoreAutosaveNoopRequests,
   scoreVersions,
@@ -64,6 +69,8 @@ export interface AuditInput {
 }
 
 export type AuditRecord = typeof auditLog.$inferSelect;
+export type AiJobRecord = typeof aiJobs.$inferSelect;
+export type AiJobFeature = AiJobRecord['feature'];
 export type ScoreRecord = typeof scores.$inferSelect;
 export type ScoreVersionRecord = typeof scoreVersions.$inferSelect;
 export type ExplicitScoreVersionRecord = ScoreVersionRecord & {
@@ -77,6 +84,34 @@ export type AutosaveScoreVersionRecord = ScoreVersionRecord & {
   autosaveBaseVersionId: string;
 };
 export type ScoreAccessRecord = typeof scoreAccess.$inferSelect;
+
+export interface NewAiJob {
+  id: string;
+  requestId: string;
+  userId: string;
+  feature: AiJobFeature;
+  inputJson: string;
+  createdAt: string;
+}
+
+export type AiJobSubmissionResult =
+  | { status: 'created' | 'replayed'; job: AiJobRecord }
+  | {
+      status:
+        | 'idempotency_conflict'
+        | 'inactive_user'
+        | 'ai_disabled'
+        | 'ai_access_disabled'
+        | 'quota_exceeded'
+        | 'active_limit';
+    };
+
+export interface AiQuotaState {
+  used: number;
+  limit: number;
+  globalEnabled: boolean;
+  userEnabled: boolean;
+}
 
 export interface ScoreRowWithVersion {
   score: ScoreRecord;
@@ -199,6 +234,51 @@ export interface ApiRepository extends RepositoryTransaction {
     audit?: AuditInput,
     noOp?: boolean
   ): Promise<ScoreAutosaveCreationResult>;
+  submitAiJob(
+    job: NewAiJob,
+    defaultDailyLimit: number,
+    dayStart: string,
+    nextDayStart: string
+  ): Promise<AiJobSubmissionResult>;
+  getAiQuota(
+    userId: string,
+    defaultDailyLimit: number,
+    dayStart: string,
+    nextDayStart: string
+  ): Promise<AiQuotaState | null>;
+  findAiJobById(id: string): Promise<AiJobRecord | null>;
+  claimNextAiJob(
+    workerId: string,
+    leaseDurationMs: number
+  ): Promise<AiJobRecord | null>;
+  renewAiJobLease(
+    id: string,
+    workerId: string,
+    leaseDurationMs: number
+  ): Promise<boolean>;
+  releaseAiJobClaim(id: string, workerId: string): Promise<boolean>;
+  completeAiJob(
+    id: string,
+    workerId: string,
+    update: {
+      resultJson: string;
+      warningsJson: string;
+      tokensIn: number;
+      tokensOut: number;
+      finishedAt: string;
+    }
+  ): Promise<boolean>;
+  failAiJob(
+    id: string,
+    workerId: string,
+    error: string,
+    finishedAt: string
+  ): Promise<boolean>;
+  recoverExpiredAiJobs(finishedAt: string, error: string): Promise<number>;
+  reclaimExpiredAiJobs(finishedAt: string, error: string): Promise<string[]>;
+  subscribeToAiJobLeaseReclaims(
+    listener: (jobIds: readonly string[]) => void
+  ): () => void;
   close(): void;
 }
 
@@ -212,6 +292,47 @@ const LOGIN_THROTTLE_BUSY_RETRIES = 12;
 const TRANSACTION_BUSY_RETRIES = 12;
 const MAX_SCORE_AUTOSAVES = 20;
 const MAX_SCORE_AUTOSAVE_NOOP_RECEIPTS = 20;
+
+function aiLeaseExpiry(leaseDurationMs: number) {
+  return sql<string>`strftime(
+    '%Y-%m-%dT%H:%M:%fZ',
+    'now',
+    ${`+${leaseDurationMs / 1000} seconds`}
+  )`;
+}
+
+const AI_DATABASE_NOW = sql<string>`strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`;
+export const AI_LEASE_EXPIRED_FAILURE_MESSAGE =
+  'The worker lease expired before this job completed. Submit a new request to retry.';
+
+async function failExpiredAiJobLeases(
+  session: QuerySession,
+  error: string,
+  finishedAt?: string
+): Promise<string[]> {
+  const result = await session
+    .update(aiJobs)
+    .set({
+      status: 'failed',
+      resultJson: null,
+      warningsJson: null,
+      error,
+      tokensIn: null,
+      tokensOut: null,
+      finishedAt: finishedAt ?? AI_DATABASE_NOW,
+      workerId: null,
+      leaseExpiresAt: null,
+    })
+    .where(
+      and(
+        eq(aiJobs.status, 'running'),
+        isNotNull(aiJobs.workerId),
+        lte(aiJobs.leaseExpiresAt, AI_DATABASE_NOW)
+      )
+    )
+    .returning({ id: aiJobs.id });
+  return result.map((row) => row.id);
+}
 
 function isDatabaseBusy(error: unknown): boolean {
   return (
@@ -258,6 +379,20 @@ function createWriteClient(client: Client): Client {
 let loginThrottleWriteQueue = Promise.resolve();
 // Reduce local SQLite write contention; guarded mutations remain atomic in SQL.
 let repositoryTransactionWriteQueue = Promise.resolve();
+
+async function serializeRepositoryTransaction<T>(work: () => Promise<T>) {
+  const previousWrite = repositoryTransactionWriteQueue;
+  let releaseWrite!: () => void;
+  repositoryTransactionWriteQueue = new Promise<void>((resolve) => {
+    releaseWrite = resolve;
+  });
+  await previousWrite;
+  try {
+    return await work();
+  } finally {
+    releaseWrite();
+  }
+}
 
 function repositoryOperations(session: QuerySession): RepositoryTransaction {
   return {
@@ -413,12 +548,33 @@ async function scoreWriteAuthorization(
 
 class DrizzleApiRepository implements ApiRepository {
   private readonly operations: RepositoryTransaction;
+  private readonly aiJobLeaseReclaimListeners = new Set<
+    (jobIds: readonly string[]) => void
+  >();
 
   constructor(
     private readonly client: Client,
     private readonly db: Database
   ) {
     this.operations = repositoryOperations(db);
+  }
+
+  subscribeToAiJobLeaseReclaims(
+    listener: (jobIds: readonly string[]) => void
+  ): () => void {
+    this.aiJobLeaseReclaimListeners.add(listener);
+    return () => this.aiJobLeaseReclaimListeners.delete(listener);
+  }
+
+  private notifyAiJobLeaseReclaims(jobIds: readonly string[]): void {
+    if (jobIds.length === 0) return;
+    for (const listener of this.aiJobLeaseReclaimListeners) {
+      try {
+        listener(jobIds);
+      } catch {
+        // A listener cannot turn a committed database transition into a failure.
+      }
+    }
   }
 
   findUserById = (id: string) => this.operations.findUserById(id);
@@ -558,20 +714,9 @@ class DrizzleApiRepository implements ApiRepository {
   }
 
   async transaction<T>(work: (tx: RepositoryTransaction) => Promise<T>) {
-    const previousWrite = repositoryTransactionWriteQueue;
-    let releaseWrite!: () => void;
-    repositoryTransactionWriteQueue = new Promise<void>((resolve) => {
-      releaseWrite = resolve;
-    });
-    await previousWrite;
-
-    try {
-      return await this.db.transaction(async (tx) =>
-        work(repositoryOperations(tx))
-      );
-    } finally {
-      releaseWrite();
-    }
+    return serializeRepositoryTransaction(() =>
+      this.db.transaction(async (tx) => work(repositoryOperations(tx)))
+    );
   }
 
   async listUsers(query?: string) {
@@ -1023,6 +1168,379 @@ class DrizzleApiRepository implements ApiRepository {
       if (audit) await tx.insert(auditLog).values(audit).run();
       return { status: 'created', versionId: version.id };
     });
+  }
+
+  async submitAiJob(
+    job: NewAiJob,
+    defaultDailyLimit: number,
+    dayStart: string,
+    nextDayStart: string
+  ): Promise<AiJobSubmissionResult> {
+    let reclaimedJobIds: string[] = [];
+    const transaction = () =>
+      this.db.transaction(async (tx): Promise<AiJobSubmissionResult> => {
+        const priorJobs = await tx
+          .select()
+          .from(aiJobs)
+          .where(
+            and(
+              eq(aiJobs.userId, job.userId),
+              eq(aiJobs.requestId, job.requestId)
+            )
+          )
+          .limit(1);
+        const prior = priorJobs[0];
+        if (prior) {
+          return prior.feature === job.feature &&
+            prior.inputJson === job.inputJson
+            ? { status: 'replayed', job: prior }
+            : { status: 'idempotency_conflict' };
+        }
+
+        const userRows = await tx
+          .select()
+          .from(users)
+          .where(eq(users.id, job.userId))
+          .limit(1);
+        const user = userRows[0];
+        if (!user || !user.isActive) return { status: 'inactive_user' };
+        if (!user.aiEnabled) return { status: 'ai_access_disabled' };
+
+        const settingRows = await tx
+          .select({ key: settings.key, value: settings.value })
+          .from(settings)
+          .where(
+            inArray(settings.key, [
+              'ai_global_enabled',
+              'ai_default_daily_limit',
+            ])
+          );
+        const aiGlobalEnabled = settingRows.find(
+          (setting) => setting.key === 'ai_global_enabled'
+        )?.value;
+        if (aiGlobalEnabled !== undefined && aiGlobalEnabled !== 'true') {
+          return { status: 'ai_disabled' };
+        }
+        const configuredLimitText = settingRows.find(
+          (setting) => setting.key === 'ai_default_daily_limit'
+        )?.value;
+        const configuredLimit = Number(configuredLimitText);
+        const globalLimit =
+          configuredLimitText !== undefined &&
+          Number.isSafeInteger(configuredLimit) &&
+          configuredLimit >= 0
+            ? configuredLimit
+            : defaultDailyLimit;
+        const dailyLimit = user.aiDailyLimit ?? globalLimit;
+
+        reclaimedJobIds = await failExpiredAiJobLeases(
+          tx,
+          AI_LEASE_EXPIRED_FAILURE_MESSAGE
+        );
+        const activeGlobalRows = await tx
+          .select({ value: count() })
+          .from(aiJobs)
+          .where(inArray(aiJobs.status, ['queued', 'running']));
+        if ((activeGlobalRows[0]?.value ?? 0) >= 2) {
+          return { status: 'active_limit' };
+        }
+        const activeUserRows = await tx
+          .select({ value: count() })
+          .from(aiJobs)
+          .where(
+            and(
+              eq(aiJobs.userId, job.userId),
+              inArray(aiJobs.status, ['queued', 'running'])
+            )
+          );
+        if ((activeUserRows[0]?.value ?? 0) > 0) {
+          return { status: 'active_limit' };
+        }
+
+        const dailyRows = await tx
+          .select({ value: count() })
+          .from(aiJobs)
+          .where(
+            and(
+              eq(aiJobs.userId, job.userId),
+              gte(aiJobs.createdAt, dayStart),
+              lt(aiJobs.createdAt, nextDayStart)
+            )
+          );
+        if ((dailyRows[0]?.value ?? 0) >= dailyLimit) {
+          return { status: 'quota_exceeded' };
+        }
+
+        const row: AiJobRecord = {
+          ...job,
+          status: 'queued',
+          resultJson: null,
+          warningsJson: null,
+          error: null,
+          tokensIn: null,
+          tokensOut: null,
+          finishedAt: null,
+          workerId: null,
+          leaseExpiresAt: null,
+        };
+        await tx.insert(aiJobs).values(row).run();
+        return { status: 'created', job: row };
+      });
+    const result = await serializeRepositoryTransaction(transaction);
+    this.notifyAiJobLeaseReclaims(reclaimedJobIds);
+    return result;
+  }
+
+  async getAiQuota(
+    userId: string,
+    defaultDailyLimit: number,
+    dayStart: string,
+    nextDayStart: string
+  ): Promise<AiQuotaState | null> {
+    const userRows = await this.db
+      .select()
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    const user = userRows[0];
+    if (!user) return null;
+
+    const settingRows = await this.db
+      .select({ key: settings.key, value: settings.value })
+      .from(settings)
+      .where(
+        inArray(settings.key, ['ai_global_enabled', 'ai_default_daily_limit'])
+      );
+    const aiGlobalEnabled = settingRows.find(
+      (setting) => setting.key === 'ai_global_enabled'
+    )?.value;
+    const configuredLimitText = settingRows.find(
+      (setting) => setting.key === 'ai_default_daily_limit'
+    )?.value;
+    const configuredLimit = Number(configuredLimitText);
+    const globalLimit =
+      configuredLimitText !== undefined &&
+      Number.isSafeInteger(configuredLimit) &&
+      configuredLimit >= 0
+        ? configuredLimit
+        : defaultDailyLimit;
+    const dailyRows = await this.db
+      .select({ value: count() })
+      .from(aiJobs)
+      .where(
+        and(
+          eq(aiJobs.userId, userId),
+          gte(aiJobs.createdAt, dayStart),
+          lt(aiJobs.createdAt, nextDayStart)
+        )
+      );
+    return {
+      used: dailyRows[0]?.value ?? 0,
+      limit: user.aiDailyLimit ?? globalLimit,
+      globalEnabled:
+        aiGlobalEnabled === undefined || aiGlobalEnabled === 'true',
+      userEnabled: user.aiEnabled,
+    };
+  }
+
+  async findAiJobById(id: string): Promise<AiJobRecord | null> {
+    const rows = await this.db
+      .select()
+      .from(aiJobs)
+      .where(eq(aiJobs.id, id))
+      .limit(1);
+    return rows[0] ?? null;
+  }
+
+  async claimNextAiJob(
+    workerId: string,
+    leaseDurationMs: number
+  ): Promise<AiJobRecord | null> {
+    let reclaimedJobIds: string[] = [];
+    const result = await serializeRepositoryTransaction(() =>
+      this.db.transaction(async (tx) => {
+        reclaimedJobIds = await failExpiredAiJobLeases(
+          tx,
+          AI_LEASE_EXPIRED_FAILURE_MESSAGE
+        );
+        const runningRows = await tx
+          .select({ value: count() })
+          .from(aiJobs)
+          .where(eq(aiJobs.status, 'running'));
+        if ((runningRows[0]?.value ?? 0) >= 2) return null;
+
+        const queuedJobs = await tx
+          .select()
+          .from(aiJobs)
+          .where(
+            and(
+              eq(aiJobs.status, 'queued'),
+              sql`NOT EXISTS (
+                SELECT 1 FROM ai_jobs AS running_jobs
+                WHERE running_jobs.user_id = ${aiJobs.userId}
+                  AND running_jobs.status = 'running'
+              )`
+            )
+          )
+          .orderBy(asc(aiJobs.createdAt), asc(aiJobs.id))
+          .limit(1);
+        const job = queuedJobs[0];
+        if (!job) return null;
+
+        const update = await tx
+          .update(aiJobs)
+          .set({
+            status: 'running',
+            workerId,
+            leaseExpiresAt: aiLeaseExpiry(leaseDurationMs),
+          })
+          .where(and(eq(aiJobs.id, job.id), eq(aiJobs.status, 'queued')))
+          .run();
+        if (Number(update.rowsAffected) === 0) return null;
+
+        const claimedRows = await tx
+          .select()
+          .from(aiJobs)
+          .where(eq(aiJobs.id, job.id))
+          .limit(1);
+        return claimedRows[0] ?? null;
+      })
+    );
+    this.notifyAiJobLeaseReclaims(reclaimedJobIds);
+    return result;
+  }
+
+  async completeAiJob(
+    id: string,
+    workerId: string,
+    update: {
+      resultJson: string;
+      warningsJson: string;
+      tokensIn: number;
+      tokensOut: number;
+      finishedAt: string;
+    }
+  ): Promise<boolean> {
+    return serializeRepositoryTransaction(() =>
+      this.db.transaction(async (tx) => {
+        const result = await tx
+          .update(aiJobs)
+          .set({
+            status: 'succeeded',
+            ...update,
+            error: null,
+            workerId: null,
+            leaseExpiresAt: null,
+          })
+          .where(
+            and(
+              eq(aiJobs.id, id),
+              eq(aiJobs.status, 'running'),
+              eq(aiJobs.workerId, workerId),
+              gt(aiJobs.leaseExpiresAt, AI_DATABASE_NOW)
+            )
+          )
+          .run();
+        return Number(result.rowsAffected) > 0;
+      })
+    );
+  }
+
+  async renewAiJobLease(
+    id: string,
+    workerId: string,
+    leaseDurationMs: number
+  ): Promise<boolean> {
+    return serializeRepositoryTransaction(() =>
+      this.db.transaction(async (tx) => {
+        const result = await tx
+          .update(aiJobs)
+          .set({ leaseExpiresAt: aiLeaseExpiry(leaseDurationMs) })
+          .where(
+            and(
+              eq(aiJobs.id, id),
+              eq(aiJobs.status, 'running'),
+              eq(aiJobs.workerId, workerId),
+              gt(aiJobs.leaseExpiresAt, AI_DATABASE_NOW)
+            )
+          )
+          .run();
+        return Number(result.rowsAffected) > 0;
+      })
+    );
+  }
+
+  async releaseAiJobClaim(id: string, workerId: string): Promise<boolean> {
+    return serializeRepositoryTransaction(() =>
+      this.db.transaction(async (tx) => {
+        const result = await tx
+          .update(aiJobs)
+          .set({ status: 'queued', workerId: null, leaseExpiresAt: null })
+          .where(
+            and(
+              eq(aiJobs.id, id),
+              eq(aiJobs.status, 'running'),
+              eq(aiJobs.workerId, workerId),
+              gt(aiJobs.leaseExpiresAt, AI_DATABASE_NOW)
+            )
+          )
+          .run();
+        return Number(result.rowsAffected) > 0;
+      })
+    );
+  }
+
+  async failAiJob(
+    id: string,
+    workerId: string,
+    error: string,
+    finishedAt: string
+  ): Promise<boolean> {
+    return serializeRepositoryTransaction(() =>
+      this.db.transaction(async (tx) => {
+        const result = await tx
+          .update(aiJobs)
+          .set({
+            status: 'failed',
+            resultJson: null,
+            warningsJson: null,
+            error,
+            tokensIn: null,
+            tokensOut: null,
+            finishedAt,
+            workerId: null,
+            leaseExpiresAt: null,
+          })
+          .where(
+            and(
+              eq(aiJobs.id, id),
+              eq(aiJobs.status, 'running'),
+              eq(aiJobs.workerId, workerId),
+              gt(aiJobs.leaseExpiresAt, AI_DATABASE_NOW)
+            )
+          )
+          .run();
+        return Number(result.rowsAffected) > 0;
+      })
+    );
+  }
+
+  async recoverExpiredAiJobs(
+    finishedAt: string,
+    error: string
+  ): Promise<number> {
+    return (await this.reclaimExpiredAiJobs(finishedAt, error)).length;
+  }
+
+  async reclaimExpiredAiJobs(
+    finishedAt: string,
+    error: string
+  ): Promise<string[]> {
+    const reclaimedJobIds = await serializeRepositoryTransaction(() =>
+      this.db.transaction((tx) => failExpiredAiJobLeases(tx, error, finishedAt))
+    );
+    this.notifyAiJobLeaseReclaims(reclaimedJobIds);
+    return reclaimedJobIds;
   }
 
   close() {

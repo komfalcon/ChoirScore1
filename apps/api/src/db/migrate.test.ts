@@ -62,6 +62,12 @@ describe('score autosave migration', () => {
       await client.execute({
         sql: "UPDATE scores SET current_version_id = 'legacy-version' WHERE id = 'score'",
       });
+      await client.execute({
+        sql: `INSERT INTO ai_jobs
+          (id, user_id, feature, status, input_json, created_at)
+          VALUES ('legacy-running-job', 'owner', 'draft', 'running', '{}',
+                  '2026-01-01T00:00:00.000Z')`,
+      });
 
       await runMigrations(client, migrationsDirectory);
       const migrated = await client.execute({
@@ -77,6 +83,26 @@ describe('score autosave migration', () => {
           autosave_base_version_id: null,
         },
       ]);
+      const aiJobColumns = await client.execute("PRAGMA table_info('ai_jobs')");
+      expect(aiJobColumns.rows.map((column) => column.name)).toEqual(
+        expect.arrayContaining(['request_id', 'worker_id', 'lease_expires_at'])
+      );
+      const aiJobIndexes = await client.execute("PRAGMA index_list('ai_jobs')");
+      expect(aiJobIndexes.rows.map((index) => index.name)).toContain(
+        'ai_jobs_user_request_unique'
+      );
+      expect(aiJobIndexes.rows.map((index) => index.name)).toContain(
+        'ai_jobs_status_lease_idx'
+      );
+      const legacyJob = await client.execute({
+        sql: 'SELECT status, worker_id, lease_expires_at FROM ai_jobs WHERE id = ?',
+        args: ['legacy-running-job'],
+      });
+      expect(legacyJob.rows[0]).toEqual({
+        status: 'running',
+        worker_id: null,
+        lease_expires_at: null,
+      });
       const reservations = await client.execute(
         "PRAGMA table_info('score_autosave_noop_requests')"
       );

@@ -11,7 +11,7 @@ import { requestIdMiddleware } from './middleware/requestId';
 import { requestLogMiddleware } from './middleware/requestLog';
 import { adminMutationAuditMiddleware } from './middleware/adminMutationAudit';
 import { createAdminRouter } from './routes/admin';
-import { aiRouter } from './routes/ai';
+import { createAiRouter } from './routes/ai';
 import { createAuthRouter } from './routes/auth';
 import { createScoresRouter } from './routes/scores';
 import { createSettingsRouter } from './routes/settings';
@@ -25,6 +25,7 @@ export interface AppOptions {
   logger?: StructuredLogger;
   throttle?: LoginThrottle;
   trustProxyHops?: number;
+  aiNow?: () => Date;
 }
 
 export function createApp({
@@ -33,6 +34,7 @@ export function createApp({
   logger = structuredLogger,
   throttle,
   trustProxyHops = config.trustProxyHops,
+  aiNow,
 }: AppOptions) {
   const app = express();
   const loginThrottle = throttle ?? new LoginThrottle(repository);
@@ -81,9 +83,9 @@ export function createApp({
   );
   app.use('/users', createUsersRouter(repository));
   app.use('/scores', createScoresRouter(repository, config.jwtSecret));
-  app.use('/ai', aiRouter);
+  app.use('/ai', createAiRouter(repository, config.aiDailyLimitDefault, aiNow));
   app.use('/settings', createSettingsRouter(repository));
-  app.use('/admin', createAdminRouter(repository));
+  app.use('/admin', createAdminRouter(repository, config.aiDailyLimitDefault));
 
   app.use(async (_req, res) => {
     await sendApiError(
