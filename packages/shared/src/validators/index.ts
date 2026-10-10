@@ -756,7 +756,7 @@ export function validateParallelFifthsOctaves(
     mapping = mapScorePartsToVoiceParts(model.parts);
   } catch (error) {
     if (!(error instanceof VoiceMappingError)) throw error;
-    return { errors: [], warnings: [] };
+    return { errors: [voiceMappingIssue(model, error)], warnings: [] };
   }
   const measureIdentityIssue = crossPartMeasureIdentityIssue(
     model,

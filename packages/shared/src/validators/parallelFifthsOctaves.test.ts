@@ -526,7 +526,7 @@ describe('validateParallelFifthsOctaves', () => {
     });
   });
 
-  it('returns no mapping errors or partial findings when canonical mapping fails', () => {
+  it('returns one sanitized VOICE_MAPPING error and no partial findings when canonical mapping fails', () => {
     const model = scoreWithNotesByVoice({
       S: [
         { pitch: 'C5', dur: 1, onset: 0 },
@@ -544,7 +544,16 @@ describe('validateParallelFifthsOctaves', () => {
       measures: [{ number: 1, notes: [] }],
     });
     expect(validateParallelFifthsOctaves(model)).toEqual({
-      errors: [],
+      errors: [
+        {
+          part: 'P1',
+          measure: 1,
+          beat: 1,
+          code: 'VOICE_MAPPING',
+          message:
+            'A score part has no exact canonical SATB identity; SATB validation was skipped.',
+        },
+      ],
       warnings: [],
     });
   });
