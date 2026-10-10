@@ -473,9 +473,12 @@ export function AdminUsagePage() {
               aria-label="AI provider readiness and admission limits"
             >
               <p className="admin-usage-readiness__provider" role="note">
-                <strong>Provider readiness: unavailable in this slice.</strong>{' '}
-                No provider calls are made. Accepted jobs fail with a generic
-                processing error and still consume the user’s daily quota.
+                <strong>Provider readiness:</strong> Provider calls are
+                attempted only when the supported Mistral provider is selected
+                and a non-empty API key is configured. Missing or unsupported
+                provider configuration leaves the provider unavailable. This
+                indicates configuration only, not provider health; accepted jobs
+                can still fail and count against the user’s daily quota.
               </p>
               <p className="admin-usage-readiness__limits">
                 <strong>Admission cap:</strong> at most 2 queued + running jobs

@@ -170,10 +170,13 @@ describe('AdminUsagePage', () => {
       'No accepted AI requests in the last 30 days'
     );
     expect(container.textContent).toContain(
-      'Provider readiness: unavailable in this slice.'
+      'Provider calls are attempted only when the supported Mistral provider is selected and a non-empty API key is configured.'
     );
     expect(container.textContent).toContain(
-      'Accepted jobs fail with a generic processing error and still consume the user’s daily quota.'
+      'Missing or unsupported provider configuration leaves the provider unavailable.'
+    );
+    expect(container.textContent).toContain(
+      'This indicates configuration only, not provider health; accepted jobs can still fail and count against the user’s daily quota.'
     );
     expect(container.textContent).toContain(
       'at most 2 queued + running jobs globally and 1 queued + running job per user'

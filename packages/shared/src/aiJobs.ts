@@ -1,5 +1,10 @@
 import { z } from 'zod';
 import { isoUtcTimestampSchema } from './timestamps.js';
+import {
+  scoreKeySchema,
+  scoreModelSchema,
+  scoreTimeSchema,
+} from './scoreModel.js';
 
 export const aiJobFeatureSchema = z.enum(['harmonize', 'draft', 'simplify']);
 export type AiJobFeature = z.infer<typeof aiJobFeatureSchema>;
@@ -12,6 +17,56 @@ export const aiJobStatusSchema = z.enum([
 ]);
 export type AiJobStatus = z.infer<typeof aiJobStatusSchema>;
 
+export const aiJobResultSchema = z.record(z.string(), z.unknown());
+export type AiJobResult = z.infer<typeof aiJobResultSchema>;
+
+const promptTextSchema = z.string().trim().min(1).max(4_000);
+const musicalTextSchema = z.string().trim().min(1).max(20_000);
+const titleTextSchema = z.string().trim().min(1).max(512);
+
+function requireInput(value: Record<string, unknown>) {
+  return Object.keys(value).length > 0;
+}
+
+/**
+ * Feature-specific request allowlists. Strict objects (including the shared,
+ * strict score model) prevent account, credential, and arbitrary metadata from
+ * crossing into persisted work or provider payloads.
+ */
+export const aiJobInputSchemas = {
+  harmonize: z
+    .object({
+      prompt: promptTextSchema.optional(),
+      score: scoreModelSchema.optional(),
+      melody: musicalTextSchema.optional(),
+      key: scoreKeySchema.optional(),
+      time: scoreTimeSchema.optional(),
+    })
+    .strict()
+    .refine(requireInput),
+  draft: z
+    .object({
+      prompt: promptTextSchema.optional(),
+      melody: musicalTextSchema.optional(),
+      lyrics: musicalTextSchema.optional(),
+      title: titleTextSchema.optional(),
+      key: scoreKeySchema.optional(),
+      time: scoreTimeSchema.optional(),
+      tempo: z.number().int().min(20).max(300).optional(),
+    })
+    .strict()
+    .refine(requireInput),
+  simplify: z
+    .object({
+      prompt: promptTextSchema.optional(),
+      score: scoreModelSchema.optional(),
+      melody: musicalTextSchema.optional(),
+      lyrics: musicalTextSchema.optional(),
+    })
+    .strict()
+    .refine(requireInput),
+} as const;
+
 export const aiJobSubmissionRequestSchema = z
   .object({
     requestId: z
@@ -22,7 +77,17 @@ export const aiJobSubmissionRequestSchema = z
     feature: aiJobFeatureSchema,
     input: z.record(z.string(), z.unknown()),
   })
-  .strict();
+  .strict()
+  .superRefine((request, context) => {
+    const input = aiJobInputSchemas[request.feature].safeParse(request.input);
+    if (!input.success) {
+      context.addIssue({
+        code: 'custom',
+        path: ['input'],
+        message: 'Input contains unsupported or invalid fields.',
+      });
+    }
+  });
 export type AiJobSubmissionRequest = z.infer<
   typeof aiJobSubmissionRequestSchema
 >;
@@ -42,7 +107,7 @@ export const aiJobStatusResponseSchema = z
     jobId: z.string().min(1),
     feature: aiJobFeatureSchema,
     status: aiJobStatusSchema,
-    result: z.unknown().nullable(),
+    result: aiJobResultSchema.nullable(),
     warnings: z.array(z.unknown()).nullable(),
     error: z.string().nullable(),
     createdAt: isoUtcTimestampSchema,

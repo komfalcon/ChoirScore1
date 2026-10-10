@@ -27,6 +27,7 @@ export interface AppOptions {
   trustProxyHops?: number;
   aiNow?: () => Date;
   adminNow?: () => Date;
+  aiProviderAvailable?: boolean;
 }
 
 export function createApp({
@@ -37,6 +38,7 @@ export function createApp({
   trustProxyHops = config.trustProxyHops,
   aiNow,
   adminNow,
+  aiProviderAvailable = false,
 }: AppOptions) {
   const app = express();
   const loginThrottle = throttle ?? new LoginThrottle(repository);
@@ -85,7 +87,15 @@ export function createApp({
   );
   app.use('/users', createUsersRouter(repository));
   app.use('/scores', createScoresRouter(repository, config.jwtSecret));
-  app.use('/ai', createAiRouter(repository, config.aiDailyLimitDefault, aiNow));
+  app.use(
+    '/ai',
+    createAiRouter(
+      repository,
+      config.aiDailyLimitDefault,
+      aiNow,
+      aiProviderAvailable
+    )
+  );
   app.use('/settings', createSettingsRouter(repository));
   app.use(
     '/admin',

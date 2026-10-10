@@ -1,4 +1,9 @@
 import type { AiWorkItem } from '../jobs';
+import {
+  MISTRAL_DEFAULT_MODEL,
+  MISTRAL_DEFAULT_MODEL_LIGHT,
+  MistralAiProvider,
+} from './mistral';
 
 export interface AiProviderResult {
   result: unknown;
@@ -27,7 +32,7 @@ export class MockAiProvider implements AiProvider {
   }
 }
 
-/** Safe default until a separately authorized real-provider slice is implemented. */
+/** Safe default when no supported provider and complete credentials are configured. */
 export class UnavailableAiProvider implements AiProvider {
   readonly name = 'unavailable';
 
@@ -35,3 +40,25 @@ export class UnavailableAiProvider implements AiProvider {
     throw new Error('No AI provider is configured.');
   }
 }
+
+/**
+ * Selects the server-side provider from environment values. Missing or unknown
+ * configuration deliberately keeps the API available with the unavailable provider.
+ */
+export function createAiProvider(
+  env: NodeJS.ProcessEnv = process.env,
+  fetcher?: typeof fetch
+): AiProvider {
+  const provider = (env.AI_PROVIDER ?? '').trim().toLowerCase();
+  const apiKey = env.AI_API_KEY?.trim();
+  if (provider !== 'mistral' || !apiKey) return new UnavailableAiProvider();
+
+  return new MistralAiProvider({
+    apiKey,
+    model: env.AI_MODEL?.trim() || MISTRAL_DEFAULT_MODEL,
+    modelLight: env.AI_MODEL_LIGHT?.trim() || MISTRAL_DEFAULT_MODEL_LIGHT,
+    fetcher,
+  });
+}
+
+export { MistralAiProvider } from './mistral';
