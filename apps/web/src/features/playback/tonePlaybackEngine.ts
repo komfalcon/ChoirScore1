@@ -5,6 +5,7 @@ import c5SampleUrl from './assets/choir-c5.wav?url';
 import {
   createPlaybackPlan,
   getEffectivePartGain,
+  type PlaybackPosition,
   type PlaybackSettings,
 } from './playbackCore';
 import type { ScoreModel } from '@choirscore/shared';
@@ -14,6 +15,7 @@ export const PLAYBACK_SAMPLE_BUDGET_BYTES = 3 * 1024 * 1024;
 
 export interface TonePlaybackCallbacks {
   onEnded?: () => void;
+  onProgress?: (position: PlaybackPosition) => void;
 }
 
 /** Use the AudioContext resumed synchronously from the Play gesture. */
@@ -32,6 +34,7 @@ export class TonePlaybackEngine {
   private clickSynth?: Tone.Synth;
   private scheduledIds: number[] = [];
   private playGeneration = 0;
+  private drawGeneration = 0;
   private paused = false;
   private playbackScheduled = false;
 
@@ -73,6 +76,23 @@ export class TonePlaybackEngine {
       this.scheduledIds.push(id);
     }
 
+    for (const cue of plan.progress) {
+      const id = transport.schedule((time) => {
+        if (playGeneration !== this.playGeneration || this.paused) return;
+        const drawGeneration = this.drawGeneration;
+        Tone.Draw.schedule(() => {
+          if (
+            playGeneration === this.playGeneration &&
+            drawGeneration === this.drawGeneration &&
+            !this.paused
+          ) {
+            callbacks.onProgress?.(cue.position);
+          }
+        }, time);
+      }, cue.timeSeconds);
+      this.scheduledIds.push(id);
+    }
+
     const mix = settings.parts;
     for (const note of plan.notes) {
       const gain = getEffectivePartGain(note.partId, mix);
@@ -102,6 +122,7 @@ export class TonePlaybackEngine {
 
   pause(): void {
     this.paused = true;
+    this.drawGeneration += 1;
     Tone.getTransport().pause();
   }
 
@@ -112,6 +133,7 @@ export class TonePlaybackEngine {
 
   stop(): void {
     this.playGeneration += 1;
+    this.drawGeneration += 1;
     this.paused = false;
     this.playbackScheduled = false;
     Tone.getTransport().stop();

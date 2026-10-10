@@ -44,6 +44,7 @@ function makeFixture(overrides: Partial<PlaybackControlsState> = {}) {
   const statusChanges: Array<
     [PlaybackControlsState['status'], string | undefined]
   > = [];
+  const progressChanges: Array<unknown> = [];
   const patches: Array<[string, Record<string, unknown>]> = [];
   const host: PlaybackControllerHost = {
     getScore: () => score,
@@ -52,6 +53,7 @@ function makeFixture(overrides: Partial<PlaybackControlsState> = {}) {
       statusChanges.push([status, error]);
       state = { ...state, status, ...(error === undefined ? {} : { error }) };
     },
+    onProgressChange: (position) => progressChanges.push(position),
     onTempoChange: vi.fn(),
     onCountInChange: vi.fn(),
     onLoopChange: vi.fn(),
@@ -71,6 +73,7 @@ function makeFixture(overrides: Partial<PlaybackControlsState> = {}) {
     engine,
     patches,
     statusChanges,
+    progressChanges,
     getState: () => state,
   };
 }
@@ -104,8 +107,12 @@ describe('PlaybackController', () => {
           P1: { muted: true, solo: false, volume: 0.7 },
           P2: { muted: true, solo: true, volume: 0 },
         },
+        startMeasure: 1,
       },
-      expect.objectContaining({ onEnded: expect.any(Function) })
+      expect.objectContaining({
+        onEnded: expect.any(Function),
+        onProgress: expect.any(Function),
+      })
     );
     expect(fixture.statusChanges.map(([status]) => status)).toEqual([
       'loading',
@@ -299,5 +306,32 @@ describe('PlaybackController', () => {
     ]);
     expect(fixture.getState().status).toBe('playing');
     expect(fixture.engine.play).toHaveBeenCalledTimes(2);
+  });
+
+  it('starts from a selected measure and clears progress on Stop', async () => {
+    const fixture = makeFixture({ status: 'playing' });
+    const position = {
+      measureIndex: 1,
+      measureNumber: 2,
+      beatIndex: 0,
+      subdivisionIndex: 0 as const,
+      scoreBeat: 4,
+      activePartIds: ['P1', 'P2'],
+    };
+
+    await fixture.controller.playFromMeasure(2);
+
+    expect(fixture.engine.stop).toHaveBeenCalledOnce();
+    expect(fixture.engine.play).toHaveBeenCalledWith(
+      score,
+      expect.objectContaining({ startMeasure: 2, countIn: false }),
+      expect.objectContaining({ onProgress: expect.any(Function) })
+    );
+    const callbacks = vi.mocked(fixture.engine.play).mock.calls[0]?.[2];
+    callbacks?.onProgress?.(position);
+    expect(fixture.progressChanges).toEqual([null, position]);
+    fixture.controller.stop();
+    callbacks?.onProgress?.(position);
+    expect(fixture.progressChanges).toEqual([null, position, null]);
   });
 });

@@ -1,4 +1,4 @@
-import { useMemo, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, type CSSProperties } from 'react';
 import {
   modelToSolfa,
   type SolfaBeat,
@@ -7,11 +7,14 @@ import {
   type ScoreModel,
   type ScorePreservedConstruct,
 } from '@choirscore/shared';
+import type { PlaybackPosition } from '../playback/playbackCore';
 
 type Props = {
   model: ScoreModel;
   title: string;
   preservedConstructs?: readonly ScorePreservedConstruct[];
+  playbackPosition?: PlaybackPosition | null;
+  onPlayFromMeasure?: (measure: number) => void;
   onShowStaff: () => void;
   onPrint: () => void;
 };
@@ -91,7 +94,19 @@ function segmentText(segment: SolfaSegment) {
   return <span aria-hidden="true">&nbsp;</span>;
 }
 
-function BeatStrip({ beats, verse }: { beats: SolfaBeat[]; verse?: number }) {
+function BeatStrip({
+  beats,
+  verse,
+  partId,
+  measureIndex,
+  playbackPosition,
+}: {
+  beats: SolfaBeat[];
+  verse?: number;
+  partId: string;
+  measureIndex: number;
+  playbackPosition: PlaybackPosition | null;
+}) {
   return (
     <div
       className={`solfa-beat-strip${verse ? ' solfa-beat-strip--lyrics' : ''}`}
@@ -110,6 +125,13 @@ function BeatStrip({ beats, verse }: { beats: SolfaBeat[]; verse?: number }) {
           ) : null}
           <div className="solfa-beat-cell" aria-label={`Beat ${beat.number}`}>
             {beat.segments.map((segment, segmentIndex) => {
+              const isCurrentPosition =
+                playbackPosition?.measureIndex === measureIndex &&
+                playbackPosition.beatIndex === beatIndex &&
+                (beat.segments.length === 1 ||
+                  playbackPosition.subdivisionIndex === segmentIndex) &&
+                (playbackPosition.activePartIds.length === 0 ||
+                  playbackPosition.activePartIds.includes(partId));
               const lyric =
                 verse === undefined
                   ? undefined
@@ -122,10 +144,12 @@ function BeatStrip({ beats, verse }: { beats: SolfaBeat[]; verse?: number }) {
                   : (lyric?.text ?? 'No lyric on this subdivision');
               return (
                 <span
-                  className={`solfa-token solfa-token--${segment.kind}${lyric ? ' solfa-token--lyric' : ''}`}
+                  className={`solfa-token solfa-token--${segment.kind}${lyric ? ' solfa-token--lyric' : ''}${isCurrentPosition ? ' solfa-token--current' : ''}`}
                   key={`${beat.number}-${segmentIndex}`}
                   aria-label={accessibleText}
                   title={accessibleText}
+                  aria-current={isCurrentPosition ? 'step' : undefined}
+                  data-playback-current={isCurrentPosition ? 'true' : undefined}
                 >
                   {segmentIndex > 0 ? (
                     <span
@@ -187,9 +211,12 @@ export function SolfaScore({
   model,
   title,
   preservedConstructs = [],
+  playbackPosition = null,
+  onPlayFromMeasure,
   onShowStaff,
   onPrint,
 }: Props) {
+  const rootRef = useRef<HTMLElement>(null);
   const layout = useMemo(() => modelToSolfa(model), [model]);
   const sourceNotices = useMemo(
     () => preservedNotices(preservedConstructs),
@@ -212,10 +239,27 @@ export function SolfaScore({
       );
     }
   }
+  const systemMeasureOffsets = new Map<number, number>();
+  let measureOffset = 0;
+  for (const system of layout.systems) {
+    systemMeasureOffsets.set(system.number, measureOffset);
+    measureOffset += system.measures.length;
+  }
   const hasWarnings = layout.warnings.length > 0 || sourceNotices.length > 0;
+  useEffect(() => {
+    if (!playbackPosition) return;
+    const activeCell = rootRef.current?.querySelector<HTMLElement>(
+      '.solfa-token--current[data-playback-current="true"]'
+    );
+    activeCell?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  }, [playbackPosition]);
 
   return (
-    <section className="solfa-view" aria-labelledby="solfa-view-title">
+    <section
+      ref={rootRef}
+      className="solfa-view"
+      aria-labelledby="solfa-view-title"
+    >
       <header className="solfa-view__header">
         <div className="solfa-view__heading">
           <p className="eyebrow">TONIC SOL-FA</p>
@@ -252,6 +296,12 @@ export function SolfaScore({
           <dd>{layout.header.tempo} BPM</dd>
         </div>
       </dl>
+      {playbackPosition ? (
+        <p className="sr-only" role="status" aria-live="polite">
+          Playback at bar {playbackPosition.measureNumber}, beat{' '}
+          {playbackPosition.beatIndex + 1}.
+        </p>
+      ) : null}
 
       {hasWarnings ? (
         <aside
@@ -291,6 +341,7 @@ export function SolfaScore({
       ) : null}
 
       {layout.systems.map((system) => {
+        const firstMeasureIndex = systemMeasureOffsets.get(system.number) ?? 0;
         const measureGridStyle = {
           '--solfa-measure-count': system.measures.length,
         } as CSSProperties & { '--solfa-measure-count': number };
@@ -308,23 +359,39 @@ export function SolfaScore({
                 className="solfa-system__measure-headings"
                 style={measureGridStyle}
               >
-                {system.measures.map((measure) => (
-                  <header
-                    className="solfa-measure__heading"
-                    key={`${system.number}-${measure.number}`}
-                    aria-label={`Bar ${measure.number}`}
-                  >
-                    <h3>Bar {measure.number}</h3>
-                    {measure.dohMarker ? (
-                      <p
-                        className="solfa-measure__key-change"
-                        aria-label={`Key change: ${measure.dohMarker}`}
-                      >
-                        {measure.dohMarker}
-                      </p>
-                    ) : null}
-                  </header>
-                ))}
+                {system.measures.map((measure, measureOffset) => {
+                  const measureIndex = firstMeasureIndex + measureOffset;
+                  return (
+                    <header
+                      className="solfa-measure__heading"
+                      key={`${system.number}-${measure.number}`}
+                      aria-label={`Bar ${measure.number}`}
+                    >
+                      <h3>
+                        {onPlayFromMeasure ? (
+                          <button
+                            className="solfa-bar-play"
+                            type="button"
+                            aria-label={`Play from bar ${measure.number}`}
+                            onClick={() => onPlayFromMeasure(measureIndex + 1)}
+                          >
+                            Bar {measure.number}
+                          </button>
+                        ) : (
+                          `Bar ${measure.number}`
+                        )}
+                      </h3>
+                      {measure.dohMarker ? (
+                        <p
+                          className="solfa-measure__key-change"
+                          aria-label={`Key change: ${measure.dohMarker}`}
+                        >
+                          {measure.dohMarker}
+                        </p>
+                      ) : null}
+                    </header>
+                  );
+                })}
               </div>
             </div>
             <div className="solfa-system__rows">
@@ -340,14 +407,19 @@ export function SolfaScore({
                       className="solfa-part-measures"
                       style={measureGridStyle}
                     >
-                      {part.measures.map((measure) => (
+                      {part.measures.map((measure, measureOffset) => (
                         <div
                           className="solfa-measure-cell"
                           key={`${part.id}-${measure.number}`}
                           role="group"
                           aria-label={`Bar ${measure.number}`}
                         >
-                          <BeatStrip beats={measure.beats} />
+                          <BeatStrip
+                            beats={measure.beats}
+                            partId={part.id}
+                            measureIndex={firstMeasureIndex + measureOffset}
+                            playbackPosition={playbackPosition}
+                          />
                         </div>
                       ))}
                     </div>
@@ -366,14 +438,20 @@ export function SolfaScore({
                         className="solfa-part-measures"
                         style={measureGridStyle}
                       >
-                        {part.measures.map((measure) => (
+                        {part.measures.map((measure, measureOffset) => (
                           <div
                             className="solfa-measure-cell"
                             key={`${part.id}-verse-${verse}-${measure.number}`}
                             role="group"
                             aria-label={`Bar ${measure.number}, verse ${verse}`}
                           >
-                            <BeatStrip beats={measure.beats} verse={verse} />
+                            <BeatStrip
+                              beats={measure.beats}
+                              verse={verse}
+                              partId={part.id}
+                              measureIndex={firstMeasureIndex + measureOffset}
+                              playbackPosition={playbackPosition}
+                            />
                           </div>
                         ))}
                       </div>

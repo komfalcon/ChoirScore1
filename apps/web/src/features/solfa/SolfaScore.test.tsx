@@ -6,6 +6,7 @@ import {
   type ScorePreservedConstruct,
 } from '@choirscore/shared';
 import { scoreDetailResponse } from '../../test/scoreFixtures';
+import type { PlaybackPosition } from '../playback/playbackCore';
 import { SolfaScore } from './SolfaScore';
 
 const appStyles = readFileSync(
@@ -16,13 +17,17 @@ const baseModel = scoreDetailResponse.score.model;
 
 function render(
   model = baseModel,
-  preservedConstructs: readonly ScorePreservedConstruct[] = []
+  preservedConstructs: readonly ScorePreservedConstruct[] = [],
+  playbackPosition: PlaybackPosition | null = null,
+  onPlayFromMeasure?: (measure: number) => void
 ) {
   return renderToStaticMarkup(
     <SolfaScore
       model={model}
       title="Morning Light"
       preservedConstructs={preservedConstructs}
+      playbackPosition={playbackPosition}
+      onPlayFromMeasure={onPlayFromMeasure}
       onShowStaff={() => undefined}
       onPrint={() => undefined}
     />
@@ -146,5 +151,28 @@ describe('responsive Tonic Sol-fa renderer', () => {
     expect(appStyles).toContain('.solfa-measure');
     expect(appStyles).toContain('.solfa-beat-strip');
     expect(appStyles).toContain('scroll-snap-type: inline proximity');
+    expect(appStyles).toMatch(
+      /\.solfa-bar-play\s*\{[^}]*min-height:\s*2\.75rem/
+    );
+    expect(appStyles).toMatch(
+      /@media print\s*\{[\s\S]*?\.solfa-token--current\s*\{[^}]*background:\s*transparent/
+    );
+  });
+
+  it('highlights the active part subdivision and renders accessible Play-from-bar buttons', () => {
+    const position: PlaybackPosition = {
+      measureIndex: 0,
+      measureNumber: 1,
+      beatIndex: 0,
+      subdivisionIndex: 0,
+      scoreBeat: 0,
+      activePartIds: [baseModel.parts[0]!.id],
+    };
+    const html = render(baseModel, [], position, () => undefined);
+
+    expect(html).toContain('aria-current="step"');
+    expect(html).toContain('data-playback-current="true"');
+    expect(html).toContain('Playback at bar 1, beat 1.');
+    expect(html).toContain('aria-label="Play from bar 1"');
   });
 });

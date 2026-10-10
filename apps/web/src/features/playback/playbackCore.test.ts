@@ -138,6 +138,38 @@ describe('playback core', () => {
     }
   );
 
+  it.each([
+    { beats: 3, beatType: 4, duration: 3 },
+    { beats: 4, beatType: 4, duration: 4 },
+    { beats: 7, beatType: 8, duration: 3.5 },
+  ])(
+    'keeps the meter-derived count-in when starting bar 2 in $beats/$beatType',
+    ({ beats, beatType, duration }) => {
+      const oneMeasure = scoreInMeter(beats, beatType);
+      const twoMeasures = scoreModelSchema.parse({
+        ...oneMeasure,
+        parts: oneMeasure.parts.map((part) => ({
+          ...part,
+          measures: [...part.measures, { ...part.measures[0]!, number: 2 }],
+        })),
+      });
+      const plan = createPlaybackPlan(twoMeasures, {
+        tempoPercent: 100,
+        countIn: true,
+        loop: null,
+        startMeasure: 2,
+      });
+
+      expect(plan.countInDurationBeats).toBe(duration);
+      expect(plan.countInClicks).toHaveLength(beats);
+      expect(plan.notes[0]?.startBeat).toBe(duration);
+      expect(plan.progress[0]).toMatchObject({
+        timeSeconds: duration * 0.5,
+        position: { measureIndex: 1, measureNumber: 2 },
+      });
+    }
+  );
+
   it('applies tempo scaling, a one-measure count-in, and an inclusive measure loop', () => {
     const plan = createPlaybackPlan(score, {
       tempoPercent: 50,
@@ -172,6 +204,119 @@ describe('playback core', () => {
     expect(plan.countInDurationBeats).toBe(0);
     expect(plan.countInClicks).toEqual([]);
     expect(plan.loop).toBeNull();
+  });
+
+  it('emits score-relative half-beat cues across bars and starts from a tapped bar', () => {
+    const fullPlan = createPlaybackPlan(score, {
+      tempoPercent: 100,
+      countIn: false,
+      loop: null,
+    });
+
+    expect(fullPlan.progress.slice(0, 4)).toEqual([
+      {
+        timeSeconds: 0,
+        position: {
+          measureIndex: 0,
+          measureNumber: 1,
+          beatIndex: 0,
+          subdivisionIndex: 0,
+          scoreBeat: 0,
+          activePartIds: ['S', 'B'],
+        },
+      },
+      {
+        timeSeconds: 0.25,
+        position: {
+          measureIndex: 0,
+          measureNumber: 1,
+          beatIndex: 0,
+          subdivisionIndex: 1,
+          scoreBeat: 0.5,
+          activePartIds: ['S', 'B'],
+        },
+      },
+      {
+        timeSeconds: 0.5,
+        position: {
+          measureIndex: 0,
+          measureNumber: 1,
+          beatIndex: 1,
+          subdivisionIndex: 0,
+          scoreBeat: 1,
+          activePartIds: ['S', 'B'],
+        },
+      },
+      {
+        timeSeconds: 0.75,
+        position: {
+          measureIndex: 0,
+          measureNumber: 1,
+          beatIndex: 1,
+          subdivisionIndex: 1,
+          scoreBeat: 1.5,
+          activePartIds: ['S', 'B'],
+        },
+      },
+    ]);
+    expect(fullPlan.progress[8]).toEqual({
+      timeSeconds: 2,
+      position: {
+        measureIndex: 1,
+        measureNumber: 2,
+        beatIndex: 0,
+        subdivisionIndex: 0,
+        scoreBeat: 4,
+        activePartIds: ['S', 'B'],
+      },
+    });
+
+    const secondBarPlan = createPlaybackPlan(score, {
+      tempoPercent: 100,
+      countIn: true,
+      loop: { startMeasure: 1, endMeasure: 2 },
+      startMeasure: 2,
+    });
+
+    expect(secondBarPlan.startMeasure).toBe(2);
+    expect(secondBarPlan.countInDurationBeats).toBe(4);
+    expect(secondBarPlan.countInClicks).toHaveLength(4);
+    expect(secondBarPlan.progress[0]).toEqual({
+      timeSeconds: 2,
+      position: {
+        measureIndex: 1,
+        measureNumber: 2,
+        beatIndex: 0,
+        subdivisionIndex: 0,
+        scoreBeat: 4,
+        activePartIds: ['S', 'B'],
+      },
+    });
+    expect(secondBarPlan.notes.every((note) => note.measureIndex === 1)).toBe(
+      true
+    );
+    expect(
+      secondBarPlan.notes.find((note) => note.pitch === 'C4')
+    ).toMatchObject({ startBeat: 4, scoreBeat: 4, durationBeats: 1 });
+    expect(secondBarPlan.loop).toEqual({ startSeconds: 2, endSeconds: 4 });
+    expect(secondBarPlan.totalDurationSeconds).toBe(4);
+  });
+
+  it('maps 7/8 progress to fourteen equal half-beat cells', () => {
+    const plan = createPlaybackPlan(scoreInMeter(7, 8), {
+      tempoPercent: 100,
+      countIn: false,
+      loop: null,
+    });
+
+    expect(plan.progress).toHaveLength(14);
+    expect(plan.progress.map(({ position }) => position.scoreBeat)).toEqual(
+      Array.from({ length: 14 }, (_, index) => index / 4)
+    );
+    expect(plan.progress.at(-1)).toMatchObject({
+      timeSeconds: 1.625,
+      position: { beatIndex: 6, subdivisionIndex: 1, scoreBeat: 3.25 },
+    });
   });
 
   it('models per-part mute, solo, volume, and My Part focus', () => {

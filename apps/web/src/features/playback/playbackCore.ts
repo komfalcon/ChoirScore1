@@ -24,6 +24,7 @@ export interface PlaybackSettings {
   countIn: boolean;
   loop: PlaybackLoopRange | null;
   parts: PartPlaybackMix;
+  startMeasure?: number;
 }
 
 export interface TimelineNote {
@@ -40,6 +41,29 @@ export interface TimelineNote {
 export interface PlaybackNote extends TimelineNote {
   startSeconds: number;
   durationSeconds: number;
+  /** Absolute quarter-note position in the source score, before count-in/seek offsets. */
+  scoreBeat: number;
+}
+
+export interface PlaybackPosition {
+  /** Zero-based index into the aligned score measures. */
+  measureIndex: number;
+  /** Display number taken from the first part that has this measure. */
+  measureNumber: number;
+  /** Zero-based notated beat index within the measure. */
+  beatIndex: number;
+  /** 0 for the first half of a beat, 1 for the second half. */
+  subdivisionIndex: 0 | 1;
+  /** Absolute quarter-note position in the source score. */
+  scoreBeat: number;
+  /** Audible parts with a note sounding at this score position. */
+  activePartIds: string[];
+}
+
+export interface PlaybackProgressCue {
+  /** Seconds from the start of this play request, including any count-in. */
+  timeSeconds: number;
+  position: PlaybackPosition;
 }
 
 export interface PlaybackClick {
@@ -55,6 +79,8 @@ export interface PlaybackPlan {
   countInDurationBeats: number;
   countInClicks: PlaybackClick[];
   notes: PlaybackNote[];
+  progress: PlaybackProgressCue[];
+  startMeasure: number;
   loop: { startSeconds: number; endSeconds: number } | null;
   totalDurationSeconds: number;
   measureStarts: number[];
@@ -297,18 +323,34 @@ function normalizeLoop(
  */
 export function createPlaybackPlan(
   model: ScoreModel,
-  settings: Pick<PlaybackSettings, 'tempoPercent' | 'countIn' | 'loop'>
+  settings: Pick<PlaybackSettings, 'tempoPercent' | 'countIn' | 'loop'> & {
+    /** One-based measure to start from; defaults to the score beginning. */
+    startMeasure?: number;
+    /** Optional mix used to exclude muted/solo-suppressed parts from highlights. */
+    parts?: PartPlaybackMix;
+  }
 ): PlaybackPlan {
   const timeline = compileTimeline(model);
   const tempoBpm =
     (model.tempo * clampTempoPercent(settings.tempoPercent)) / 100;
   const secondsPerBeat = 60 / tempoBpm;
   const quarterNotesPerNotatedBeat = 4 / model.time.beatType;
-  const countInDurationBeats = settings.countIn
+  const measureCount = timeline.measureDurations.length;
+  const requestedStartMeasure = settings.startMeasure ?? 1;
+  const startMeasure =
+    Number.isInteger(requestedStartMeasure) &&
+    requestedStartMeasure >= 1 &&
+    requestedStartMeasure <= measureCount
+      ? requestedStartMeasure
+      : 1;
+  const startMeasureIndex = startMeasure - 1;
+  const startScoreBeat = timeline.measureStarts[startMeasureIndex] ?? 0;
+  const countInActive = settings.countIn;
+  const countInDurationBeats = countInActive
     ? model.time.beats * quarterNotesPerNotatedBeat
     : 0;
   const countInClicks: PlaybackClick[] = Array.from(
-    { length: settings.countIn ? model.time.beats : 0 },
+    { length: countInActive ? model.time.beats : 0 },
     (_, beat) => ({
       beat: beat * quarterNotesPerNotatedBeat,
       timeSeconds: beat * quarterNotesPerNotatedBeat * secondsPerBeat,
@@ -316,33 +358,56 @@ export function createPlaybackPlan(
     })
   );
   const countInOffsetBeats = countInDurationBeats;
-  const notes: PlaybackNote[] = timeline.notes.map((note) => ({
-    partId: note.partId,
-    pitch: note.pitch,
-    startBeat: note.startBeat + countInOffsetBeats,
-    durationBeats: note.durationBeats,
-    measureIndex: note.measureIndex,
-    measureNumber: note.measureNumber,
-    voice: note.voice,
-    staff: note.staff,
-    startSeconds: (note.startBeat + countInOffsetBeats) * secondsPerBeat,
-    durationSeconds: note.durationBeats * secondsPerBeat,
-  }));
+  const notes: PlaybackNote[] = timeline.notes
+    .filter(
+      (note) => note.startBeat + note.durationBeats > startScoreBeat + 1e-9
+    )
+    .map((note) => {
+      const scoreBeat = Math.max(note.startBeat, startScoreBeat);
+      const endScoreBeat = note.startBeat + note.durationBeats;
+      const durationBeats = endScoreBeat - scoreBeat;
+      const measureIndex =
+        scoreBeat === note.startBeat ? note.measureIndex : startMeasureIndex;
+      const measureNumber =
+        model.parts.find((part) => part.measures[measureIndex])?.measures[
+          measureIndex
+        ]?.number ?? measureIndex + 1;
+      const startBeat = scoreBeat - startScoreBeat + countInOffsetBeats;
+      return {
+        partId: note.partId,
+        pitch: note.pitch,
+        startBeat,
+        durationBeats,
+        measureIndex,
+        measureNumber,
+        voice: note.voice,
+        staff: note.staff,
+        scoreBeat,
+        startSeconds: startBeat * secondsPerBeat,
+        durationSeconds: durationBeats * secondsPerBeat,
+      };
+    });
 
-  const loopRange = normalizeLoop(
-    settings.loop,
-    timeline.measureDurations.length
-  );
+  const configuredLoop = normalizeLoop(settings.loop, measureCount);
+  const loopRange =
+    configuredLoop && configuredLoop.endMeasure >= startMeasure
+      ? {
+          startMeasure: Math.max(configuredLoop.startMeasure, startMeasure),
+          endMeasure: configuredLoop.endMeasure,
+        }
+      : null;
   const loop = loopRange
     ? {
         startSeconds:
           (countInOffsetBeats +
-            (timeline.measureStarts[loopRange.startMeasure - 1] ?? 0)) *
+            (timeline.measureStarts[loopRange.startMeasure - 1] ?? 0) -
+            startScoreBeat) *
           secondsPerBeat,
         endSeconds:
           (countInOffsetBeats +
             (timeline.measureStarts[loopRange.endMeasure - 1] ?? 0) +
-            (timeline.measureDurations[loopRange.endMeasure - 1] ?? 0)) *
+            (timeline.measureDurations[loopRange.endMeasure - 1] ?? 0) -
+            startScoreBeat) *
           secondsPerBeat,
       }
     : null;
@@ -350,6 +415,77 @@ export function createPlaybackPlan(
     (total, duration) => total + duration,
     0
   );
+  const visibleMeasureBeats = model.time.beats * quarterNotesPerNotatedBeat;
+  const halfBeat = quarterNotesPerNotatedBeat / 2;
+  const progress: PlaybackProgressCue[] = [];
+  for (
+    let measureIndex = startMeasureIndex;
+    measureIndex < measureCount;
+    measureIndex += 1
+  ) {
+    const measureStart = timeline.measureStarts[measureIndex] ?? 0;
+    const offsets = new Set<number>();
+    for (
+      let offset = 0;
+      offset < visibleMeasureBeats - 1e-9;
+      offset += halfBeat
+    ) {
+      offsets.add(Number(offset.toFixed(9)));
+    }
+    for (const note of timeline.notes) {
+      if (note.measureIndex !== measureIndex) continue;
+      const offset = note.startBeat - measureStart;
+      if (offset >= -1e-9 && offset < visibleMeasureBeats - 1e-9) {
+        offsets.add(Number(Math.max(0, offset).toFixed(9)));
+      }
+    }
+    const measureNumber =
+      model.parts.find((part) => part.measures[measureIndex])?.measures[
+        measureIndex
+      ]?.number ?? measureIndex + 1;
+    for (const offset of [...offsets].sort((left, right) => left - right)) {
+      const scoreBeat = measureStart + offset;
+      const relativeScoreBeat = scoreBeat - startScoreBeat;
+      if (relativeScoreBeat < -1e-9) continue;
+      const beatIndex = Math.min(
+        model.time.beats - 1,
+        Math.floor(offset / quarterNotesPerNotatedBeat)
+      );
+      const withinBeat = offset - beatIndex * quarterNotesPerNotatedBeat;
+      const subdivisionIndex = (withinBeat >= halfBeat - 1e-9 ? 1 : 0) as 0 | 1;
+      const activePartIds = [
+        ...new Set(
+          timeline.notes
+            .filter((note) => {
+              const sounding =
+                note.startBeat <= scoreBeat + 1e-9 &&
+                note.startBeat + note.durationBeats > scoreBeat + 1e-9;
+              return (
+                sounding &&
+                (!settings.parts ||
+                  getEffectivePartGain(note.partId, settings.parts) > 0)
+              );
+            })
+            .map((note) => note.partId)
+        ),
+      ].sort(
+        (left, right) =>
+          model.parts.findIndex((part) => part.id === left) -
+          model.parts.findIndex((part) => part.id === right)
+      );
+      progress.push({
+        timeSeconds: (countInOffsetBeats + relativeScoreBeat) * secondsPerBeat,
+        position: {
+          measureIndex,
+          measureNumber,
+          beatIndex,
+          subdivisionIndex,
+          scoreBeat,
+          activePartIds,
+        },
+      });
+    }
+  }
 
   return {
     tempoBpm,
@@ -357,9 +493,12 @@ export function createPlaybackPlan(
     countInDurationBeats,
     countInClicks,
     notes,
+    progress,
+    startMeasure,
     loop,
     totalDurationSeconds:
-      (countInOffsetBeats + scoreDurationBeats) * secondsPerBeat,
+      (countInOffsetBeats + scoreDurationBeats - startScoreBeat) *
+      secondsPerBeat,
     measureStarts: timeline.measureStarts,
     measureDurations: timeline.measureDurations,
   };

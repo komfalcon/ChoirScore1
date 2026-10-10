@@ -4,6 +4,7 @@ import {
   useRef,
   useState,
   type FormEvent,
+  type RefObject,
 } from 'react';
 import type { OpenSheetMusicDisplay } from 'opensheetmusicdisplay';
 import { Link, useParams } from 'react-router-dom';
@@ -21,6 +22,9 @@ import {
   type FitScope,
 } from '../features/editor/TranspositionRangeFitPanel';
 import { ScorePlaybackPanel } from '../features/playback/ScorePlaybackPanel';
+import type { ScorePlaybackPanelHandle } from '../features/playback/ScorePlaybackPanel';
+import type { PlaybackPosition } from '../features/playback/playbackCore';
+import { syncScoreNotationCursor } from '../features/playback/scoreNotationCursor';
 import { ScoreSharingPanel } from '../features/sharing/ScoreSharingPanel';
 import { useAuth } from '../lib/auth';
 import {
@@ -46,11 +50,14 @@ import { getVoiceRanges } from '../lib/settingsApi';
 function ScoreNotation({
   musicXml,
   title,
+  playbackPosition,
 }: {
   musicXml: string;
   title: string;
+  playbackPosition: PlaybackPosition | null;
 }) {
   const element = useRef<HTMLDivElement>(null);
+  const rendererRef = useRef<OpenSheetMusicDisplay | undefined>(undefined);
   const [renderStatus, setRenderStatus] = useState<
     'loading' | 'ready' | 'error'
   >('loading');
@@ -72,11 +79,13 @@ function ScoreNotation({
           drawTitle: false,
           drawSubtitle: false,
           drawComposer: false,
-          disableCursor: true,
+          disableCursor: false,
+          followCursor: true,
         });
         await renderer.load(musicXml, title);
         if (cancelled) return;
         renderer.render();
+        rendererRef.current = renderer;
         setRenderStatus('ready');
       })
       .catch(() => {
@@ -84,7 +93,9 @@ function ScoreNotation({
       });
     return () => {
       cancelled = true;
+      if (rendererRef.current === renderer) rendererRef.current = undefined;
       try {
+        renderer?.cursor?.Dispose();
         renderer?.clear();
       } catch {
         // The component may unmount before OSMD finishes parsing the score.
@@ -92,6 +103,15 @@ function ScoreNotation({
       target.replaceChildren();
     };
   }, [musicXml, title]);
+
+  useEffect(() => {
+    if (renderStatus !== 'ready') return;
+    const renderer = rendererRef.current;
+    if (!renderer) return;
+    const cursor = renderer.cursor;
+    if (!cursor) return;
+    syncScoreNotationCursor(cursor, playbackPosition);
+  }, [playbackPosition, renderStatus]);
 
   return (
     <div className="score-notation-shell">
@@ -238,6 +258,9 @@ type WorkspaceProps = {
     suggestion: FitSuggestion,
     scope: FitScope
   ) => void | Promise<void>;
+  playbackPanelRef?: RefObject<ScorePlaybackPanelHandle | null>;
+  playbackPosition?: PlaybackPosition | null;
+  onPlaybackPositionChange?: (position: PlaybackPosition | null) => void;
 };
 
 export function StaffViewerWorkspace({
@@ -263,6 +286,9 @@ export function StaffViewerWorkspace({
   applyVersionError = '',
   versionNotice = '',
   onApplyTransposition = () => undefined,
+  playbackPanelRef,
+  playbackPosition = null,
+  onPlaybackPositionChange,
 }: WorkspaceProps) {
   const rangeFitWorkflowRef = useRef<HTMLElement>(null);
   const rangeFitOpenerRef = useRef<HTMLButtonElement>(null);
@@ -393,8 +419,10 @@ export function StaffViewerWorkspace({
           ) : null}
           <ScorePlaybackPanel
             key={`${score.id}:${score.currentVersionId}`}
+            ref={playbackPanelRef}
             score={score.model}
             profileVoicePart={profileVoicePart}
+            onProgressChange={onPlaybackPositionChange}
           />
           {score.canEdit && score.canEditContent ? (
             <section
@@ -462,6 +490,10 @@ export function StaffViewerWorkspace({
               model={score.model}
               title={score.title}
               preservedConstructs={score.preservation.preservedConstructs}
+              playbackPosition={playbackPosition}
+              onPlayFromMeasure={(measure) =>
+                playbackPanelRef?.current?.playFromMeasure(measure)
+              }
               onShowStaff={() => changeNotationMode('staff')}
               onPrint={() => window.print()}
             />
@@ -488,7 +520,11 @@ export function StaffViewerWorkspace({
                 </div>
               </div>
               <div className="staff-viewport__canvas">
-                <ScoreNotation musicXml={score.musicXml} title={score.title} />
+                <ScoreNotation
+                  musicXml={score.musicXml}
+                  title={score.title}
+                  playbackPosition={playbackPosition}
+                />
               </div>
             </section>
           )}
@@ -514,6 +550,9 @@ export function ScoreViewPage() {
   const { id } = useParams();
   const { user } = useAuth();
   const [state, setState] = useState<ScoreViewerState>({ status: 'loading' });
+  const [playbackPosition, setPlaybackPosition] =
+    useState<PlaybackPosition | null>(null);
+  const playbackPanelRef = useRef<ScorePlaybackPanelHandle>(null);
   const [revision, setRevision] = useState(0);
   const [voiceRangesRevision, setVoiceRangesRevision] = useState(0);
   const [voiceRangesState, setVoiceRangesState] = useState<VoiceRangesState>({
@@ -529,6 +568,12 @@ export function ScoreViewPage() {
   const [metadataSaving, setMetadataSaving] = useState(false);
   const [metadataError, setMetadataError] = useState('');
   const [metadataNotice, setMetadataNotice] = useState('');
+  const currentPlaybackVersionId =
+    state.status === 'ready' ? state.response.score.currentVersionId : null;
+
+  useEffect(() => {
+    setPlaybackPosition(null);
+  }, [currentPlaybackVersionId, id, revision]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -710,6 +755,9 @@ export function ScoreViewPage() {
           setMetadataNotice('');
         }}
         profileVoicePart={user?.voicePart ?? null}
+        playbackPanelRef={playbackPanelRef}
+        playbackPosition={playbackPosition}
+        onPlaybackPositionChange={setPlaybackPosition}
         voiceRangesState={voiceRangesState}
         onRetryVoiceRanges={() =>
           setVoiceRangesRevision((current) => current + 1)
