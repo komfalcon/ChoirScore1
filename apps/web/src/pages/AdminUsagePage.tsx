@@ -473,9 +473,12 @@ export function AdminUsagePage() {
               aria-label="AI provider readiness and admission limits"
             >
               <p className="admin-usage-readiness__provider" role="note">
-                <strong>Provider readiness: unavailable in this slice.</strong>{' '}
-                No provider calls are made. Accepted jobs fail with a generic
-                processing error and still consume the user’s daily quota.
+                <strong>Provider readiness is configuration-dependent.</strong>{' '}
+                Provider calls are attempted only when a provider is configured,
+                but configuration does not guarantee provider health. Accepted
+                jobs can still fail with a generic processing error and consume
+                the user’s daily quota when no provider is configured or a
+                configured provider is unavailable.
               </p>
               <p className="admin-usage-readiness__limits">
                 <strong>Admission cap:</strong> at most 2 queued + running jobs
