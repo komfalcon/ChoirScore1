@@ -4,7 +4,7 @@ import { createApp } from './app';
 import { createRepositoryFromEnv } from './db/repository';
 import { bootstrapAdmin } from './services/bootstrapAdmin';
 import { AiJobWorker } from './ai/jobs';
-import { UnavailableAiProvider } from './ai/providers';
+import { createAiProvider } from './ai/providers';
 
 async function start() {
   const config = readApiConfig();
@@ -21,7 +21,7 @@ async function start() {
           'Change the bootstrap administrator password after first login.',
       });
     }
-    const aiWorker = new AiJobWorker(repository, new UnavailableAiProvider());
+    const aiWorker = new AiJobWorker(repository, createAiProvider());
     const recoveredJobs = await aiWorker.recoverAfterRestart();
     if (recoveredJobs > 0) {
       structuredLogger.warn({
