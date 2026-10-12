@@ -98,6 +98,22 @@ describe('Mistral provider selection', () => {
       MISTRAL_DEFAULT_MODEL_LIGHT
     );
   });
+
+  it('supports custom AI_BASE_URL endpoint routing', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(successResponse());
+    const provider = createAiProvider(
+      {
+        AI_PROVIDER: 'mistral',
+        AI_API_KEY: 'test-only-key',
+        AI_BASE_URL: 'https://api.orcarouter.ai/v1/chat/completions',
+      },
+      fetcher
+    );
+    await provider.generate(makeWork());
+
+    const [url] = fetcher.mock.calls[0]!;
+    expect(url).toBe('https://api.orcarouter.ai/v1/chat/completions');
+  });
 });
 
 describe('Mistral chat completions contract', () => {

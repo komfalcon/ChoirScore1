@@ -24,6 +24,7 @@ export interface MistralAiProviderOptions {
   modelLight: string;
   fetcher?: typeof fetch;
   timeoutMs?: number;
+  baseUrl?: string;
 }
 
 class ProviderFailure extends Error {
@@ -205,7 +206,8 @@ export class MistralAiProvider implements AiProvider {
     const request = (async () => {
       let response: Response;
       try {
-        response = await this.fetcher(MISTRAL_CHAT_COMPLETIONS_URL, {
+        const url = this.options.baseUrl?.trim() || MISTRAL_CHAT_COMPLETIONS_URL;
+        response = await this.fetcher(url, {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${this.options.apiKey}`,

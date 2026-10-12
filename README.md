@@ -48,3 +48,5 @@ npm run lint
 - Start command: `npm run start`
 - Set environment values from `apps/api/.env.example`.
 - API server listens on `process.env.PORT`.
+- AI services route through Orca Router (or Mistral-compatible endpoints) using `AI_BASE_URL`.
+

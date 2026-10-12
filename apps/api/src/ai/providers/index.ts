@@ -57,6 +57,7 @@ export function createAiProvider(
     apiKey,
     model: env.AI_MODEL?.trim() || MISTRAL_DEFAULT_MODEL,
     modelLight: env.AI_MODEL_LIGHT?.trim() || MISTRAL_DEFAULT_MODEL_LIGHT,
+    baseUrl: env.AI_BASE_URL?.trim() || undefined,
     fetcher,
   });
 }
