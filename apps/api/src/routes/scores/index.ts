@@ -40,6 +40,10 @@ import type {
   ScoreRowWithVersion,
 } from '../../db/repository';
 import { sendApiError } from '../../errors';
+import {
+  findAccessibleScore,
+  scorePermissionsFor as permissionsFor,
+} from '../../services/scoreAccess';
 import type { RequestWithContext } from '../../types';
 import {
   ScoreImportFailure,
@@ -50,15 +54,6 @@ import {
 
 const MUSICXML_CONTENT_TYPE =
   'application/vnd.recordare.musicxml+xml; charset=utf-8';
-
-interface ScorePermissions {
-  isOwner: boolean;
-  canView: boolean;
-  canEdit: boolean;
-  canManageAccess: boolean;
-  canChangeVisibility: boolean;
-  canSetChoirVisibility: boolean;
-}
 
 interface CursorPayload {
   v: 1;
@@ -927,37 +922,12 @@ async function accessibleScore(
   id: string,
   res: Response
 ): Promise<ScoreRowWithVersion | null> {
-  const row = await repository.findScoreRow(id, user.id);
-  if (!row || !permissionsFor(row, user).canView) {
+  const row = await findAccessibleScore(repository, user, id);
+  if (!row) {
     await sendApiError(res, 404, 'NOT_FOUND', 'The score was not found.');
     return null;
   }
   return row;
-}
-
-function permissionsFor(
-  row: ScoreRowWithVersion,
-  user: NonNullable<RequestWithContext['authUser']>
-): ScorePermissions {
-  const isOwner = row.score.createdBy === user.id;
-  const isPrivileged = user.role === 'admin' || user.role === 'director';
-  const canView =
-    isOwner ||
-    isPrivileged ||
-    row.score.visibility === 'choir' ||
-    (row.score.visibility === 'shared' && row.hasAccess);
-  const canEdit =
-    isOwner ||
-    isPrivileged ||
-    (row.score.visibility === 'shared' && row.hasAccess && row.accessCanEdit);
-  return {
-    isOwner,
-    canView,
-    canEdit,
-    canManageAccess: isOwner || isPrivileged,
-    canChangeVisibility: isOwner || isPrivileged,
-    canSetChoirVisibility: isPrivileged,
-  };
 }
 
 function summarize(

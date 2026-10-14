@@ -15,6 +15,22 @@ const SCORE = {
 };
 
 describe('Harmonize prompt limits', () => {
+  it('accepts scoreId at admission without changing the inline provider contract', () => {
+    expect(
+      aiJobInputSchemas.harmonize.safeParse({ scoreId: 'score-1' }).success
+    ).toBe(true);
+    expect(
+      aiJobInputSchemas.harmonize.safeParse({ scoreId: '   ' }).success
+    ).toBe(false);
+    expect(
+      harmonizeJobRequestSchema.safeParse({ scoreId: 'score-1' }).success
+    ).toBe(false);
+    expect(
+      harmonizeJobRequestSchema.safeParse({ score: SCORE, scoreId: 'score-1' })
+        .success
+    ).toBe(false);
+  });
+
   it('aligns shared admission and inline route schemas at 4,000 characters', () => {
     const acceptedPrompt = 'x'.repeat(4_000);
     const rejectedPrompt = 'x'.repeat(4_001);

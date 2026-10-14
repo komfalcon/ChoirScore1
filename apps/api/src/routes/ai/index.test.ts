@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_VOICE_RANGES } from '@choirscore/shared';
+import {
+  DEFAULT_VOICE_RANGES,
+  modelToMusicXml,
+  scoreModelSchema,
+} from '@choirscore/shared';
 import type { ApiConfig } from '../../config';
 import { createApp } from '../../app';
 import { newId } from '../../audit';
@@ -27,6 +31,24 @@ const CONFIG: ApiConfig = {
   aiDailyLimitDefault: 20,
 };
 const FIXED_NOW = new Date('2026-10-10T22:40:00.000Z');
+const HARMONIZE_SCORE = scoreModelSchema.parse({
+  title: 'Stored source title',
+  composer: 'Stored source composer',
+  key: { mode: 'major', fifths: 0 },
+  time: { beats: 4, beatType: 4 },
+  tempo: 90,
+  parts: [
+    {
+      id: 'S',
+      name: 'Soprano',
+      clef: 'treble',
+      measures: [{ number: 1, notes: [{ pitch: 'C5', dur: 4 }] }],
+    },
+  ],
+});
+const HARMONIZE_MUSICXML = modelToMusicXml(HARMONIZE_SCORE, {
+  mode: 'new-score',
+});
 let repository: ApiRepository;
 let app: ReturnType<typeof createApp>;
 let actors: Record<string, UserRecord>;
@@ -57,6 +79,57 @@ async function submit(
       input,
     }
   );
+}
+
+async function submitHarmonize(
+  user: UserRecord,
+  requestId: string,
+  input: Record<string, unknown>
+) {
+  return await stateChanging(asActor(request(app).post('/ai/jobs'), user)).send(
+    {
+      requestId,
+      feature: 'harmonize',
+      input,
+    }
+  );
+}
+
+async function createStoredScore(
+  owner: UserRecord,
+  visibility: 'private' | 'shared' | 'choir' = 'private'
+) {
+  const scoreId = newId();
+  const versionId = newId();
+  const createdAt = FIXED_NOW.toISOString();
+  const result = await repository.createScoreWithVersion(
+    {
+      id: scoreId,
+      title: HARMONIZE_SCORE.title,
+      composer: HARMONIZE_SCORE.composer ?? null,
+      createdBy: owner.id,
+      visibility,
+      currentVersionId: null,
+      createdAt,
+      updatedAt: createdAt,
+    },
+    {
+      id: versionId,
+      scoreId,
+      musicxml: HARMONIZE_MUSICXML,
+      note: 'Test source',
+      createdBy: owner.id,
+      createdAt,
+      versionKind: 'explicit',
+      autosaveRequestId: null,
+      autosaveBaseVersionId: null,
+    },
+    owner.id
+  );
+  if (result.status !== 'created') {
+    throw new Error('Test score could not be created');
+  }
+  return scoreId;
 }
 
 function deferred<T>() {
@@ -194,6 +267,206 @@ describe('persisted AI jobs', () => {
       available: false,
       resetsAt: '2026-10-11T00:00:00.000Z',
     });
+  });
+
+  it('hydrates an authorized scoreId and persists the association while preserving inline input', async () => {
+    const scoreId = await createStoredScore(actors.alice!);
+    const linked = await submitHarmonize(actors.alice!, 'linked-harmonize', {
+      scoreId,
+      style: 'gospel',
+      prompt: '  keep it warm  ',
+    });
+    expect(linked.status).toBe(202);
+    const linkedJob = await repository.findAiJobById(linked.body.jobId);
+    expect(linkedJob?.scoreId).toBe(scoreId);
+    const hydratedInput = JSON.parse(linkedJob!.inputJson) as Record<
+      string,
+      unknown
+    >;
+    expect(hydratedInput).not.toHaveProperty('scoreId');
+    expect(hydratedInput).toMatchObject({
+      score: {
+        title: 'Stored source title',
+        composer: 'Stored source composer',
+        parts: [{ id: 'S', measures: [{ number: 1 }] }],
+      },
+      style: 'gospel',
+      prompt: 'keep it warm',
+    });
+    const replay = await submitHarmonize(actors.alice!, 'linked-harmonize', {
+      scoreId,
+      style: 'gospel',
+      prompt: '  keep it warm  ',
+    });
+    expect(replay.status).toBe(202);
+    expect(replay.body.jobId).toBe(linked.body.jobId);
+    const otherScoreId = await createStoredScore(actors.alice!);
+    const associationConflict = await submitHarmonize(
+      actors.alice!,
+      'linked-harmonize',
+      {
+        scoreId: otherScoreId,
+        style: 'gospel',
+        prompt: '  keep it warm  ',
+      }
+    );
+    expect(associationConflict.status).toBe(409);
+    expect(associationConflict.body.error.code).toBe('IDEMPOTENCY_KEY_REUSED');
+
+    const inline = await submitHarmonize(actors.bob!, 'inline-harmonize', {
+      score: HARMONIZE_SCORE,
+    });
+    expect(inline.status).toBe(202);
+    const inlineJob = await repository.findAiJobById(inline.body.jobId);
+    expect(inlineJob?.scoreId).toBeNull();
+    expect(JSON.parse(inlineJob!.inputJson)).toMatchObject({
+      score: HARMONIZE_SCORE,
+    });
+  });
+
+  it('returns the score route non-disclosing 404 for both foreign and missing score IDs', async () => {
+    const foreignScoreId = await createStoredScore(actors.bob!);
+    const foreign = await submitHarmonize(actors.alice!, 'foreign-score-id', {
+      scoreId: foreignScoreId,
+    });
+    const missing = await submitHarmonize(actors.alice!, 'missing-score-id', {
+      scoreId: 'does-not-exist',
+    });
+
+    expect(foreign.status).toBe(404);
+    expect(missing.status).toBe(404);
+    expect(foreign.body).toEqual(missing.body);
+    expect(foreign.body.error).toEqual({
+      code: 'NOT_FOUND',
+      message: 'The score was not found.',
+    });
+  });
+
+  it('rechecks score access transactionally after hydration and before queue admission', async () => {
+    const scoreId = await createStoredScore(actors.admin!, 'shared');
+    await repository.replaceScoreAccess(
+      scoreId,
+      [{ userId: actors.alice!.id, canEdit: false }],
+      actors.admin!.id
+    );
+    const originalFind = repository.findScoreRow.bind(repository);
+    let revoked = false;
+    repository.findScoreRow = async (id, userId) => {
+      const row = await originalFind(id, userId);
+      if (!revoked) {
+        revoked = true;
+        await repository.replaceScoreAccess(scoreId, [], actors.admin!.id);
+      }
+      return row;
+    };
+
+    const rejected = await submitHarmonize(actors.alice!, 'acl-race', {
+      scoreId,
+    });
+    expect(rejected.status).toBe(404);
+    expect(rejected.body.error).toEqual({
+      code: 'NOT_FOUND',
+      message: 'The score was not found.',
+    });
+    expect(
+      (await asActor(request(app).get('/ai/quota'), actors.alice!)).body.used
+    ).toBe(0);
+  });
+
+  it.each(['access revoked', 'score deleted', 'ownership changed'] as const)(
+    'fails a queued score-linked job before provider work when %s',
+    async (change) => {
+      const recipient = actors.alice!;
+      const owner = change === 'access revoked' ? actors.admin! : recipient;
+      const scoreId = await createStoredScore(
+        owner,
+        change === 'access revoked' ? 'shared' : 'private'
+      );
+      if (change === 'access revoked') {
+        await repository.replaceScoreAccess(
+          scoreId,
+          [{ userId: recipient.id, canEdit: false }],
+          owner.id
+        );
+      }
+      const accepted = await submitHarmonize(
+        recipient,
+        `queued-recheck-${change.replace(/ /g, '-')}`,
+        { scoreId }
+      );
+      expect(accepted.status).toBe(202);
+
+      if (change === 'access revoked') {
+        await repository.replaceScoreAccess(scoreId, [], owner.id);
+      } else {
+        const maintenanceClient = createClient({ url: `file:${databasePath}` });
+        if (change === 'score deleted') {
+          await maintenanceClient.execute({
+            sql: 'DELETE FROM scores WHERE id = ?',
+            args: [scoreId],
+          });
+        } else {
+          await maintenanceClient.execute({
+            sql: 'UPDATE scores SET created_by = ? WHERE id = ?',
+            args: [actors.bob!.id, scoreId],
+          });
+        }
+        maintenanceClient.close();
+      }
+
+      const generate = vi.fn(async () => SUCCESSFUL_PROVIDER_RESULT);
+      const worker = new AiJobWorker(
+        repository,
+        { name: 'score-access-mock', generate },
+        () => new Date(FIXED_NOW)
+      );
+      expect(await worker.runOne()).toBe(true);
+      expect(generate).not.toHaveBeenCalled();
+      const failed = await repository.findAiJobById(accepted.body.jobId);
+      expect(failed).toMatchObject({
+        scoreId,
+        status: 'failed',
+        error: 'AI job processing failed. Submit a new request to retry.',
+      });
+    }
+  );
+
+  it('rechecks score access before each repair provider call', async () => {
+    const scoreId = await createStoredScore(actors.admin!, 'shared');
+    await repository.replaceScoreAccess(
+      scoreId,
+      [{ userId: actors.alice!.id, canEdit: false }],
+      actors.admin!.id
+    );
+    const accepted = await submitHarmonize(actors.alice!, 'repair-acl-check', {
+      scoreId,
+    });
+    expect(accepted.status).toBe(202);
+
+    let revoked = false;
+    const generate = vi.fn(async () => {
+      if (!revoked) {
+        revoked = true;
+        await repository.replaceScoreAccess(scoreId, [], actors.admin!.id);
+      }
+      return {
+        result: { parts: [] },
+        warnings: [],
+        tokensIn: 0,
+        tokensOut: 0,
+      };
+    });
+    const worker = new AiJobWorker(
+      repository,
+      { name: 'repair-access-mock', generate },
+      () => new Date(FIXED_NOW)
+    );
+
+    expect(await worker.runOne()).toBe(true);
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect((await repository.findAiJobById(accepted.body.jobId))?.status).toBe(
+      'failed'
+    );
   });
 
   it('rejects arbitrary and secret-like feature input keys before acceptance', async () => {

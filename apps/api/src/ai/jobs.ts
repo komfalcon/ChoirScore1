@@ -6,6 +6,7 @@ import {
   type ApiRepository,
 } from '../db/repository';
 import { readVoiceRanges } from '../services/voiceRanges';
+import { findAccessibleScore } from '../services/scoreAccess';
 import { generateHarmonizeProposal } from './harmonize';
 import type { AiProvider } from './providers';
 
@@ -271,6 +272,9 @@ export class AiJobWorker {
       if (!inputSchema) throw new Error('Invalid stored AI feature');
       const parsedInput = inputSchema.safeParse(storedInput);
       if (!parsedInput.success) throw new Error('Invalid stored AI input');
+      if (job.scoreId !== null && job.feature !== 'harmonize') {
+        throw new Error('Invalid AI job score association');
+      }
       const input = parsedInput.data as Record<string, unknown>;
       const work: AiWorkItem = {
         id: job.id,
@@ -278,10 +282,40 @@ export class AiJobWorker {
         input,
         signal: abortController.signal,
       };
+      // Score-linked jobs use the authorized admission-time model snapshot, but
+      // must still have current view access before each initial or repair call.
+      // Revoked, deleted, or newly inaccessible sources fail before provider I/O.
+      const scoreGuardedProvider: AiProvider =
+        job.scoreId === null
+          ? this.provider
+          : {
+              name: this.provider.name,
+              generate: async (providerWork) => {
+                const scoreId = job.scoreId;
+                if (scoreId === null) {
+                  throw new Error('Invalid AI job score association');
+                }
+                const currentUser = await this.repository.findUserById(
+                  job.userId
+                );
+                if (
+                  !currentUser ||
+                  !currentUser.isActive ||
+                  !(await findAccessibleScore(
+                    this.repository,
+                    currentUser,
+                    scoreId
+                  ))
+                ) {
+                  throw new Error('Associated score is no longer accessible.');
+                }
+                return await this.provider.generate(providerWork);
+              },
+            };
       const generation =
         job.feature === 'harmonize'
           ? readVoiceRanges(this.repository).then((voiceRanges) =>
-              generateHarmonizeProposal(this.provider, work, voiceRanges)
+              generateHarmonizeProposal(scoreGuardedProvider, work, voiceRanges)
             )
           : this.provider.generate(work);
       const output = await Promise.race([generation, aborted]);

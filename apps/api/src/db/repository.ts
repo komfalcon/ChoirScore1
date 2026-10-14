@@ -22,6 +22,7 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import * as schema from './schema';
+import { scorePermissionsFor } from '../services/scoreAccess';
 import {
   auditLog,
   aiJobs,
@@ -89,6 +90,7 @@ export interface NewAiJob {
   id: string;
   requestId: string;
   userId: string;
+  scoreId: string | null;
   feature: AiJobFeature;
   inputJson: string;
   createdAt: string;
@@ -100,6 +102,7 @@ export type AiJobSubmissionResult =
       status:
         | 'idempotency_conflict'
         | 'inactive_user'
+        | 'score_inaccessible'
         | 'ai_disabled'
         | 'ai_access_disabled'
         | 'quota_exceeded'
@@ -1349,6 +1352,62 @@ class DrizzleApiRepository implements ApiRepository {
     let reclaimedJobIds: string[] = [];
     const transaction = () =>
       this.db.transaction(async (tx): Promise<AiJobSubmissionResult> => {
+        let submittingUser: UserRecord | undefined;
+        if (job.scoreId !== null) {
+          if (job.feature !== 'harmonize') {
+            return { status: 'score_inaccessible' };
+          }
+          const linkedUsers = await tx
+            .select()
+            .from(users)
+            .where(eq(users.id, job.userId))
+            .limit(1);
+          submittingUser = linkedUsers[0];
+          if (!submittingUser || !submittingUser.isActive) {
+            return { status: 'inactive_user' };
+          }
+
+          const linkedScoreRows = await tx
+            .select({
+              score: scores,
+              version: scoreVersions,
+              creatorDisplayName: users.displayName,
+              hasAccess: sql<number>`EXISTS (
+                SELECT 1 FROM score_access AS score_access_for_viewer
+                WHERE score_access_for_viewer.score_id = ${scores.id}
+                  AND score_access_for_viewer.user_id = ${job.userId}
+              )`,
+              accessCanEdit: sql<number>`COALESCE((
+                SELECT score_access_for_viewer.can_edit
+                FROM score_access AS score_access_for_viewer
+                WHERE score_access_for_viewer.score_id = ${scores.id}
+                  AND score_access_for_viewer.user_id = ${job.userId}
+              ), 0)`,
+            })
+            .from(scores)
+            .innerJoin(
+              scoreVersions,
+              eq(scores.currentVersionId, scoreVersions.id)
+            )
+            .innerJoin(users, eq(scores.createdBy, users.id))
+            .where(eq(scores.id, job.scoreId))
+            .limit(1);
+          const rawLinkedScore = linkedScoreRows[0];
+          const linkedScore = rawLinkedScore
+            ? {
+                ...rawLinkedScore,
+                hasAccess: Number(rawLinkedScore.hasAccess) === 1,
+                accessCanEdit: Number(rawLinkedScore.accessCanEdit) === 1,
+              }
+            : null;
+          if (
+            !linkedScore ||
+            !scorePermissionsFor(linkedScore, submittingUser).canView
+          ) {
+            return { status: 'score_inaccessible' };
+          }
+        }
+
         const priorJobs = await tx
           .select()
           .from(aiJobs)
@@ -1362,17 +1421,20 @@ class DrizzleApiRepository implements ApiRepository {
         const prior = priorJobs[0];
         if (prior) {
           return prior.feature === job.feature &&
+            prior.scoreId === job.scoreId &&
             prior.inputJson === job.inputJson
             ? { status: 'replayed', job: prior }
             : { status: 'idempotency_conflict' };
         }
 
-        const userRows = await tx
-          .select()
-          .from(users)
-          .where(eq(users.id, job.userId))
-          .limit(1);
-        const user = userRows[0];
+        const userRows = submittingUser
+          ? []
+          : await tx
+              .select()
+              .from(users)
+              .where(eq(users.id, job.userId))
+              .limit(1);
+        const user = submittingUser ?? userRows[0];
         if (!user || !user.isActive) return { status: 'inactive_user' };
         if (!user.aiEnabled) return { status: 'ai_access_disabled' };
 
