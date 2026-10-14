@@ -119,6 +119,10 @@ describe('Mistral provider selection', () => {
     ['HTTP', 'http://api.orcarouter.ai/v1/chat/completions'],
     ['malformed', 'not-a-url'],
     ['incomplete HTTPS', 'https://'],
+    [
+      'credential-bearing HTTPS',
+      'https://user:secret-placeholder@api.orcarouter.ai/v1/chat/completions',
+    ],
   ])('rejects %s AI_BASE_URL without disclosing its value', (_label, value) => {
     const invalidConfig = () =>
       createAiProvider({
