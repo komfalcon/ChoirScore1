@@ -1137,14 +1137,51 @@ class DrizzleApiRepository implements ApiRepository {
         return { status: 'inactive_recipients' };
       }
 
-      await tx
-        .delete(scoreAccess)
-        .where(eq(scoreAccess.scoreId, scoreId))
-        .run();
-      if (grants.length) {
+      const existingGrants = await tx
+        .select()
+        .from(scoreAccess)
+        .where(eq(scoreAccess.scoreId, scoreId));
+      const existingByUser = new Map(
+        existingGrants.map((grant) => [grant.userId, grant])
+      );
+      const desiredByUser = new Map(
+        grants.map((grant) => [grant.userId, grant])
+      );
+      for (const existing of existingGrants) {
+        if (!desiredByUser.has(existing.userId)) {
+          await tx
+            .delete(scoreAccess)
+            .where(
+              and(
+                eq(scoreAccess.scoreId, scoreId),
+                eq(scoreAccess.userId, existing.userId)
+              )
+            )
+            .run();
+        }
+      }
+      for (const grant of grants) {
+        const existing = existingByUser.get(grant.userId);
+        if (existing && existing.canEdit !== grant.canEdit) {
+          await tx
+            .update(scoreAccess)
+            .set({ canEdit: grant.canEdit })
+            .where(
+              and(
+                eq(scoreAccess.scoreId, scoreId),
+                eq(scoreAccess.userId, grant.userId)
+              )
+            )
+            .run();
+        }
+      }
+      const newGrants = grants.filter(
+        (grant) => !existingByUser.has(grant.userId)
+      );
+      if (newGrants.length) {
         await tx
           .insert(scoreAccess)
-          .values(grants.map((grant) => ({ ...grant, scoreId })))
+          .values(newGrants.map((grant) => ({ ...grant, scoreId })))
           .run();
       }
       const byId = new Map(
