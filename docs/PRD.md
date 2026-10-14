@@ -304,7 +304,7 @@ export interface AIProvider {
 ```
 
 - One file per provider in `apps/api/src/ai/providers/`, selected by `AI_PROVIDER`. **The first and default implementation is `mistral.ts`.** Read the key only from `process.env.AI_API_KEY`.
-- **Mistral specifics:** call `POST https://api.mistral.ai/v1/chat/completions` with header `Authorization: Bearer ${AI_API_KEY}` (plain `fetch` or the official `@mistralai/mistralai` SDK). Body: `{ model, messages: [{ role: 'system', content: system }, { role: 'user', content: user }], temperature: 0.3, max_tokens, response_format }`.
+- **Mistral specifics:** the official default is `POST https://api.mistral.ai/v1/chat/completions` with header `Authorization: Bearer ${AI_API_KEY}` (plain `fetch` or the official `@mistralai/mistralai` SDK). `AI_BASE_URL` is privileged deployment configuration, not user input; a nonblank override must be a valid HTTPS URL for the full trusted chat-completions endpoint. Its configured path is used as-is (no path is appended), and redirects are rejected. Body: `{ model, messages: [{ role: 'system', content: system }, { role: 'user', content: user }], temperature: 0.3, max_tokens, response_format }`.
 - **Structured output:** prefer `response_format: { type: 'json_schema', json_schema: { name, schema, strict: true } }`, with the JSON Schema generated from our Zod model (`zod-to-json-schema`). If the chosen model rejects it, fall back to `{ type: 'json_object' }` and rely on our validation. Read the answer from `choices[0].message.content` and token counts from `usage.prompt_tokens` / `usage.completion_tokens`.
 - **Model choice:** start with `mistral-large-latest` (`AI_MODEL`) for Harmonize and Draft (hardest musical reasoning) and `mistral-small-latest` (`AI_MODEL_LIGHT`) for lyric syllable alignment and Simplify. Mistral's model names and aliases change over time: **verify current names and structured-output support in Mistral's docs at implementation time** and record the choice in `docs/DECISIONS.md`.
 - Even with strict schema mode, **always run our own Zod and music validators**: schema compliance does not make the music correct.
@@ -314,7 +314,7 @@ export interface AIProvider {
   2. Validate with the Zod schema (10.3).
   3. Run the music validators (10.4).
   4. If errors: call again with the original task + the list of errors (max 2 repairs).
-- Timeouts: 60 s per HTTP attempt. Retry once, with backoff, on retryable network/transport errors, timeouts, or 5xx responses. For score-linked jobs, recheck authorization before every outbound attempt, including retries; this per-attempt check does not make network dispatch atomic.
+- Timeouts: 60 seconds per HTTP attempt. Retry once, with backoff, on retryable network/transport errors, timeouts, or 5xx responses. With one initial provider call and up to two repairs, one retry per call can result in up to six HTTP attempts; a retry after timeout may leave upstream work and cost ambiguous. For score-linked jobs, recheck authorization before every outbound attempt, including retries; this per-attempt check does not make network dispatch atomic.
 - Record `tokens_in` and `tokens_out` on the `ai_jobs` row.
 
 ### 10.3 Internal score model (`packages/shared/src/scoreModel.ts`)
