@@ -130,12 +130,17 @@ describe('Mistral provider selection', () => {
         AI_PROVIDER: 'unsupported',
         AI_BASE_URL: value,
       });
-    expect(invalidConfig).toThrow('AI_BASE_URL must be a valid HTTPS URL.');
+    let failure: unknown;
     try {
       invalidConfig();
     } catch (error) {
-      expect(String(error)).not.toContain(value);
+      failure = error;
     }
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe(
+      'AI_BASE_URL must be a valid HTTPS URL.'
+    );
+    expect((failure as Error).message).not.toContain(value);
   });
 });
 
@@ -191,12 +196,19 @@ describe('Mistral chat completions contract', () => {
   });
 
   it('rejects redirects on every fetch attempt', async () => {
-    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(null, {
-        status: 302,
-        headers: { Location: 'https://redirected.example/private' },
-      })
-    );
+    const fetcher = vi.fn<typeof fetch>((_url, init) => {
+      if (init?.redirect === 'error') {
+        return Promise.reject(
+          new TypeError('redirect mode rejected the response')
+        );
+      }
+      return Promise.resolve(
+        new Response(null, {
+          status: 302,
+          headers: { Location: 'https://redirected.example/private' },
+        })
+      );
+    });
     const provider = new MistralAiProvider({
       apiKey: 'test-only-key',
       model: 'heavy-test-model',
@@ -207,8 +219,11 @@ describe('Mistral chat completions contract', () => {
     await expect(provider.generate(makeWork())).rejects.toThrow(
       'AI provider request failed.'
     );
-    expect(fetcher).toHaveBeenCalledOnce();
-    expect(fetcher.mock.calls[0]?.[1]?.redirect).toBe('error');
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls.map(([, init]) => init?.redirect)).toEqual([
+      'error',
+      'error',
+    ]);
   });
 
   it('maps malformed usage to zero and rejects invalid or missing JSON content generically', async () => {
