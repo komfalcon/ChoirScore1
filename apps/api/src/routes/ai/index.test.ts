@@ -494,7 +494,47 @@ describe('persisted AI jobs', () => {
     }
   );
 
-  it('rechecks score access before each repair provider call', async () => {
+  it('does not dispatch after access revoke and restore invalidates the claim before the first provider call', async () => {
+    const scoreId = await createStoredScore(actors.admin!, 'shared');
+    const grant = [{ userId: actors.alice!.id, canEdit: false }];
+    await repository.replaceScoreAccess(scoreId, grant, actors.admin!.id);
+    const accepted = await submitHarmonize(
+      actors.alice!,
+      'pre-dispatch-revoke-restore',
+      { scoreId }
+    );
+    expect(accepted.status).toBe(202);
+
+    const findScoreRow = repository.findScoreRow.bind(repository);
+    let cycledAccess = false;
+    repository.findScoreRow = async (id, userId) => {
+      const row = await findScoreRow(id, userId);
+      if (id === scoreId && userId === actors.alice!.id && !cycledAccess) {
+        cycledAccess = true;
+        await repository.replaceScoreAccess(scoreId, [], actors.admin!.id);
+        await repository.replaceScoreAccess(scoreId, grant, actors.admin!.id);
+      }
+      return row;
+    };
+    const generate = vi.fn(async () => SUCCESSFUL_PROVIDER_RESULT);
+    const worker = new AiJobWorker(
+      repository,
+      { name: 'pre-dispatch-revoke-restore', generate },
+      () => new Date(FIXED_NOW)
+    );
+
+    await expect(worker.runOne()).resolves.toBe(true);
+    expect(cycledAccess).toBe(true);
+    expect(generate).not.toHaveBeenCalled();
+    expect(await repository.findAiJobById(accepted.body.jobId)).toMatchObject({
+      status: 'failed',
+      inputJson: '{}',
+      workerId: null,
+      leaseExpiresAt: null,
+    });
+  });
+
+  it('rechecks the active claim and score access before each repair provider call', async () => {
     const scoreId = await createStoredScore(actors.admin!, 'shared');
     await repository.replaceScoreAccess(
       scoreId,
@@ -511,6 +551,11 @@ describe('persisted AI jobs', () => {
       if (!revoked) {
         revoked = true;
         await repository.replaceScoreAccess(scoreId, [], actors.admin!.id);
+        await repository.replaceScoreAccess(
+          scoreId,
+          [{ userId: actors.alice!.id, canEdit: false }],
+          actors.admin!.id
+        );
       }
       return {
         result: { parts: [] },
@@ -629,6 +674,77 @@ describe('persisted AI jobs', () => {
     });
   });
 
+  it.each(['role demotion', 'account deactivation'] as const)(
+    'uses a fresh active-user/role snapshot after the poll reread when %s occurs',
+    async (change) => {
+      const poller = change === 'role demotion' ? actors.admin! : actors.alice!;
+      const scoreOwner =
+        change === 'role demotion' ? actors.alice! : actors.admin!;
+      const scoreId = await createStoredScore(
+        scoreOwner,
+        change === 'role demotion' ? 'private' : 'shared'
+      );
+      if (change === 'account deactivation') {
+        await repository.replaceScoreAccess(
+          scoreId,
+          [{ userId: poller.id, canEdit: false }],
+          scoreOwner.id
+        );
+      }
+      const accepted = await submitHarmonize(
+        poller,
+        `poll-fresh-auth-${change.replace(/ /g, '-')}`,
+        { scoreId }
+      );
+      expect(accepted.status).toBe(202);
+      const worker = new AiJobWorker(
+        repository,
+        {
+          name: 'poll-fresh-auth',
+          generate: async () => VALID_HARMONIZE_PROVIDER_RESULT,
+        },
+        () => new Date(FIXED_NOW)
+      );
+      await expect(worker.runOne()).resolves.toBe(true);
+
+      const findJob = repository.findAiJobById.bind(repository);
+      let jobReads = 0;
+      repository.findAiJobById = async (id) => {
+        const refreshedJob = await findJob(id);
+        jobReads += 1;
+        if (jobReads === 2) {
+          const maintenanceClient = createClient({
+            url: `file:${databasePath}`,
+          });
+          if (change === 'role demotion') {
+            await maintenanceClient.execute({
+              sql: "UPDATE users SET role = 'member' WHERE id = ?",
+              args: [poller.id],
+            });
+          } else {
+            await maintenanceClient.execute({
+              sql: 'UPDATE users SET is_active = 0 WHERE id = ?',
+              args: [poller.id],
+            });
+          }
+          maintenanceClient.close();
+        }
+        return refreshedJob;
+      };
+
+      const poll = await asActor(
+        request(app).get(`/ai/jobs/${accepted.body.jobId as string}`),
+        poller
+      );
+      expect(jobReads).toBe(2);
+      expect(poll.status).toBe(change === 'role demotion' ? 404 : 401);
+      expect(poll.body).not.toHaveProperty('result');
+      expect(poll.body.error.code).toBe(
+        change === 'role demotion' ? 'NOT_FOUND' : 'UNAUTHENTICATED'
+      );
+    }
+  );
+
   it.each(['visibility change', 'account deactivation'] as const)(
     'redacts linked snapshots when %s removes current view access',
     async (change) => {
@@ -670,14 +786,16 @@ describe('persisted AI jobs', () => {
         maintenanceClient.close();
       }
 
-      expect(await repository.findAiJobById(accepted.body.jobId)).toMatchObject({
-        status: 'succeeded',
-        inputJson: '{}',
-        resultJson: null,
-        warningsJson: null,
-        tokensIn: 1,
-        tokensOut: 1,
-      });
+      expect(await repository.findAiJobById(accepted.body.jobId)).toMatchObject(
+        {
+          status: 'succeeded',
+          inputJson: '{}',
+          resultJson: null,
+          warningsJson: null,
+          tokensIn: 1,
+          tokensOut: 1,
+        }
+      );
     }
   );
 

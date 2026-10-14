@@ -304,6 +304,7 @@ export interface ApiRepository extends RepositoryTransaction {
     nextDayStart: string
   ): Promise<AiQuotaState | null>;
   findAiJobById(id: string): Promise<AiJobRecord | null>;
+  hasActiveAiJobClaim(id: string, workerId: string): Promise<boolean>;
   claimNextAiJob(
     workerId: string,
     leaseDurationMs: number
@@ -1636,6 +1637,22 @@ class DrizzleApiRepository implements ApiRepository {
       .where(eq(aiJobs.id, id))
       .limit(1);
     return rows[0] ?? null;
+  }
+
+  async hasActiveAiJobClaim(id: string, workerId: string): Promise<boolean> {
+    const rows = await this.db
+      .select({ id: aiJobs.id })
+      .from(aiJobs)
+      .where(
+        and(
+          eq(aiJobs.id, id),
+          eq(aiJobs.status, 'running'),
+          eq(aiJobs.workerId, workerId),
+          gt(aiJobs.leaseExpiresAt, AI_DATABASE_NOW)
+        )
+      )
+      .limit(1);
+    return rows.length > 0;
   }
 
   async claimNextAiJob(

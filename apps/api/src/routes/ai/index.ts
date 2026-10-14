@@ -342,8 +342,7 @@ export function createAiRouter(
       if (
         !refreshedJob ||
         refreshedJob.userId !== userId ||
-        refreshedJob.scoreId !== linkedScoreId ||
-        !(await findAccessibleScore(repository, user, linkedScoreId))
+        refreshedJob.scoreId !== linkedScoreId
       ) {
         return await sendApiError(
           res,
@@ -353,6 +352,26 @@ export function createAiRouter(
         );
       }
       job = refreshedJob;
+    }
+    const currentUser = await repository.findUserById(userId);
+    if (!currentUser || !currentUser.isActive) {
+      return await sendApiError(
+        res,
+        401,
+        'UNAUTHENTICATED',
+        'Authentication is required.'
+      );
+    }
+    if (
+      job.scoreId !== null &&
+      !(await findAccessibleScore(repository, currentUser, job.scoreId))
+    ) {
+      return await sendApiError(
+        res,
+        404,
+        'NOT_FOUND',
+        'The requested AI job was not found.'
+      );
     }
     const response = aiJobStatusResponseSchema.parse({
       jobId: job.id,

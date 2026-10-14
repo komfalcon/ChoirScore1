@@ -69,6 +69,16 @@ async function assertAssociatedScoreAccessible(
   }
 }
 
+async function assertActiveAiJobClaim(
+  repository: Pick<ApiRepository, 'hasActiveAiJobClaim'>,
+  jobId: string,
+  workerId: string
+): Promise<void> {
+  if (!(await repository.hasActiveAiJobClaim(jobId, workerId))) {
+    throw new Error('AI job claim is no longer active.');
+  }
+}
+
 export class AiJobWorker {
   private readonly workerId = randomUUID();
   private readonly inFlight = new Set<Promise<void>>();
@@ -297,27 +307,29 @@ export class AiJobWorker {
         input,
         signal: abortController.signal,
       };
-      // Score-linked jobs use the admission-time model snapshot, but must still
-      // have current view access before and after each provider request. The
-      // check-to-network interval is intentionally not transactionally locked.
-      const scoreGuardedProvider: AiProvider =
-        job.scoreId === null
-          ? this.provider
-          : {
-              name: this.provider.name,
-              generate: async (providerWork) => {
-                await assertAssociatedScoreAccessible(this.repository, job);
-                const response = await this.provider.generate(providerWork);
-                await assertAssociatedScoreAccessible(this.repository, job);
-                return response;
-              },
-            };
+      // Score-linked jobs use the admission-time model snapshot. Every provider
+      // dispatch (including repairs) rechecks current ACL and the live claim;
+      // the final check-to-network interval cannot be transactionally locked.
+      const guardedProvider: AiProvider = {
+        name: this.provider.name,
+        generate: async (providerWork) => {
+          if (job.scoreId !== null) {
+            await assertAssociatedScoreAccessible(this.repository, job);
+          }
+          await assertActiveAiJobClaim(this.repository, job.id, this.workerId);
+          const response = await this.provider.generate(providerWork);
+          if (job.scoreId !== null) {
+            await assertAssociatedScoreAccessible(this.repository, job);
+          }
+          return response;
+        },
+      };
       const generation =
         job.feature === 'harmonize'
           ? readVoiceRanges(this.repository).then((voiceRanges) =>
-              generateHarmonizeProposal(scoreGuardedProvider, work, voiceRanges)
+              generateHarmonizeProposal(guardedProvider, work, voiceRanges)
             )
-          : this.provider.generate(work);
+          : guardedProvider.generate(work);
       const output = await Promise.race([generation, aborted]);
       if (output === null) return;
       if (renewal) await renewal;
