@@ -150,6 +150,15 @@ export class MistralAiProvider implements AiProvider {
     });
 
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+      if (work.signal.aborted) throw new Error(REQUEST_CANCELLED);
+      if (work.authorizeAttempt) {
+        try {
+          await work.authorizeAttempt();
+        } catch {
+          if (work.signal.aborted) throw new Error(REQUEST_CANCELLED);
+          throw new Error(REQUEST_FAILED);
+        }
+      }
       try {
         return await this.callOnce(work, body);
       } catch (error) {

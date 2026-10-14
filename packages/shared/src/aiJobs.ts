@@ -117,8 +117,12 @@ function requireInput(value: Record<string, unknown>) {
 export const aiJobInputSchemas = {
   harmonize: z
     .object({
-      // Keep shared admission aligned with harmonizeJobRequestSchema below.
+      // The API resolves scoreId into a model before applying the canonical
+      // provider-facing harmonizeJobRequestSchema below.
       prompt: promptTextSchema.optional(),
+      // scoreId is resolved and authorized by the API before a score model is
+      // hydrated; it is not part of the provider-facing Harmonize contract.
+      scoreId: z.string().trim().min(1).max(128).optional(),
       score: scoreModelSchema.optional(),
       melody: musicalTextSchema.optional(),
       key: scoreKeySchema.optional(),

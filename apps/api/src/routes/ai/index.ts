@@ -5,11 +5,14 @@ import {
   aiJobSubmissionResponseSchema,
   aiQuotaResponseSchema,
   harmonizePreviewSchema,
+  musicXmlToModel,
+  scoreModelSchema,
 } from '@choirscore/shared';
 import { newId } from '../../audit';
 import { validateHarmonizeSubmission } from '../../ai/harmonize';
 import type { ApiRepository, NewAiJob } from '../../db/repository';
 import { sendApiError } from '../../errors';
+import { findAccessibleScore } from '../../services/scoreAccess';
 import type { RequestWithContext } from '../../types';
 
 function utcDayBounds(now: Date) {
@@ -123,9 +126,61 @@ export function createAiRouter(
         'The request payload is invalid.'
       );
     }
+    const user = (req as RequestWithContext).authUser;
+    if (!user) {
+      return await sendApiError(
+        res,
+        401,
+        'UNAUTHENTICATED',
+        'Authentication is required.'
+      );
+    }
+
     let normalizedInput: Record<string, unknown> = parsed.data.input;
+    let scoreId: string | null = null;
     if (parsed.data.feature === 'harmonize') {
-      const harmonize = validateHarmonizeSubmission(parsed.data.input);
+      let harmonizeInput = parsed.data.input;
+      const requestedScoreId = parsed.data.input.scoreId;
+      if (typeof requestedScoreId === 'string') {
+        scoreId = requestedScoreId.trim();
+        if ('score' in parsed.data.input) {
+          return await sendApiError(
+            res,
+            400,
+            'VALIDATION_ERROR',
+            'Provide either a scoreId or an inline score, not both.'
+          );
+        }
+        const row = await findAccessibleScore(repository, user, scoreId);
+        if (!row) {
+          return await sendApiError(
+            res,
+            404,
+            'NOT_FOUND',
+            'The score was not found.'
+          );
+        }
+        try {
+          const conversion = musicXmlToModel(row.version.musicxml);
+          const { preservation: _preservation, ...model } = conversion.model;
+          const hydratedScore = scoreModelSchema.parse({
+            ...model,
+            title: row.score.title,
+            composer: row.score.composer,
+          });
+          const options = { ...parsed.data.input };
+          delete options.scoreId;
+          harmonizeInput = { ...options, score: hydratedScore };
+        } catch {
+          return await sendApiError(
+            res,
+            400,
+            'VALIDATION_ERROR',
+            'The linked score could not be used for Harmonize.'
+          );
+        }
+      }
+      const harmonize = validateHarmonizeSubmission(harmonizeInput);
       if (!harmonize.success) {
         return await sendApiError(
           res,
@@ -136,15 +191,7 @@ export function createAiRouter(
       }
       normalizedInput = { ...harmonize.input };
     }
-    const userId = (req as RequestWithContext).authUser?.id;
-    if (!userId) {
-      return await sendApiError(
-        res,
-        401,
-        'UNAUTHENTICATED',
-        'Authentication is required.'
-      );
-    }
+    const userId = user.id;
 
     const currentTime = now();
     const { dayStart, nextDayStart } = utcDayBounds(currentTime);
@@ -163,6 +210,7 @@ export function createAiRouter(
       id: newId(),
       requestId: parsed.data.requestId,
       userId,
+      scoreId,
       feature: parsed.data.feature,
       inputJson,
       createdAt: currentTime.toISOString(),
@@ -188,6 +236,14 @@ export function createAiRouter(
         401,
         'UNAUTHENTICATED',
         'Authentication is required.'
+      );
+    }
+    if (result.status === 'score_inaccessible') {
+      return await sendApiError(
+        res,
+        404,
+        'NOT_FOUND',
+        'The score was not found.'
       );
     }
     if (result.status === 'ai_disabled') {
@@ -239,7 +295,8 @@ export function createAiRouter(
   });
 
   router.get('/jobs/:id', async (req, res) => {
-    const userId = (req as RequestWithContext).authUser?.id;
+    const user = (req as RequestWithContext).authUser;
+    const userId = user?.id;
     if (!userId) {
       return await sendApiError(
         res,
@@ -257,8 +314,58 @@ export function createAiRouter(
         'The requested AI job was not found.'
       );
     }
-    const job = await repository.findAiJobById(id);
+    let job = await repository.findAiJobById(id);
     if (!job || job.userId !== userId) {
+      return await sendApiError(
+        res,
+        404,
+        'NOT_FOUND',
+        'The requested AI job was not found.'
+      );
+    }
+    if (job.scoreId !== null) {
+      const linkedScoreId = job.scoreId;
+      if (
+        !user ||
+        !(await findAccessibleScore(repository, user, linkedScoreId))
+      ) {
+        return await sendApiError(
+          res,
+          404,
+          'NOT_FOUND',
+          'The requested AI job was not found.'
+        );
+      }
+      // Re-read after the access check so deletion-trigger redaction is
+      // reflected rather than serializing a pre-deletion result snapshot.
+      const refreshedJob = await repository.findAiJobById(id);
+      if (
+        !refreshedJob ||
+        refreshedJob.userId !== userId ||
+        refreshedJob.scoreId !== linkedScoreId
+      ) {
+        return await sendApiError(
+          res,
+          404,
+          'NOT_FOUND',
+          'The requested AI job was not found.'
+        );
+      }
+      job = refreshedJob;
+    }
+    const currentUser = await repository.findUserById(userId);
+    if (!currentUser || !currentUser.isActive) {
+      return await sendApiError(
+        res,
+        401,
+        'UNAUTHENTICATED',
+        'Authentication is required.'
+      );
+    }
+    if (
+      job.scoreId !== null &&
+      !(await findAccessibleScore(repository, currentUser, job.scoreId))
+    ) {
       return await sendApiError(
         res,
         404,
