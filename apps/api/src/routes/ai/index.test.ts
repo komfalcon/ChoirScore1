@@ -19,7 +19,11 @@ import {
 } from '../../db/repository';
 import { SESSION_COOKIE, createSessionToken } from '../../security/session';
 import { AiJobWorker, AI_WORKER_LEASE_MS } from '../../ai/jobs';
-import { MockAiProvider, UnavailableAiProvider } from '../../ai/providers';
+import {
+  MistralAiProvider,
+  MockAiProvider,
+  UnavailableAiProvider,
+} from '../../ai/providers';
 import type { AiProvider, AiProviderResult } from '../../ai/providers';
 import type { AiWorkItem } from '../../ai/jobs';
 
@@ -718,7 +722,7 @@ describe('persisted AI jobs', () => {
           });
           if (change === 'role demotion') {
             await maintenanceClient.execute({
-              sql: "UPDATE users SET role = 'member' WHERE id = ?",
+              sql: "UPDATE users SET role = 'member', voice_part = 'S' WHERE id = ?",
               args: [poller.id],
             });
           } else {
@@ -742,6 +746,73 @@ describe('persisted AI jobs', () => {
       expect(poll.body.error.code).toBe(
         change === 'role demotion' ? 'NOT_FOUND' : 'UNAUTHENTICATED'
       );
+    }
+  );
+
+  it.each(['score access revocation', 'claim loss'] as const)(
+    'suppresses a Mistral retry after linked-job %s between request attempts',
+    async (change) => {
+      const scoreId = await createStoredScore(actors.admin!, 'shared');
+      await repository.replaceScoreAccess(
+        scoreId,
+        [{ userId: actors.alice!.id, canEdit: false }],
+        actors.admin!.id
+      );
+      const accepted = await submitHarmonize(
+        actors.alice!,
+        `retry-authorization-${change.replace(/ /g, '-')}`,
+        { scoreId }
+      );
+      expect(accepted.status).toBe(202);
+      const jobId = accepted.body.jobId as string;
+      let attempts = 0;
+      const fetcher = vi.fn<typeof fetch>(async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          if (change === 'score access revocation') {
+            await repository.replaceScoreAccess(scoreId, [], actors.admin!.id);
+          } else {
+            const claimedJob = await repository.findAiJobById(jobId);
+            expect(claimedJob?.workerId).toEqual(expect.any(String));
+            expect(
+              await repository.releaseAiJobClaim(jobId, claimedJob!.workerId!)
+            ).toBe(true);
+          }
+        }
+        return new Response(JSON.stringify({ error: 'temporary failure' }), {
+          status: 503,
+        });
+      });
+      const worker = new AiJobWorker(
+        repository,
+        new MistralAiProvider({
+          apiKey: 'test-only-key',
+          model: 'test-model',
+          modelLight: 'test-light-model',
+          fetcher,
+        }),
+        () => new Date(FIXED_NOW)
+      );
+
+      await expect(worker.runOne()).resolves.toBe(true);
+
+      expect(attempts).toBe(1);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      const finalJob = await repository.findAiJobById(jobId);
+      if (change === 'score access revocation') {
+        expect(finalJob).toMatchObject({
+          status: 'failed',
+          inputJson: '{}',
+          resultJson: null,
+          warningsJson: null,
+        });
+      } else {
+        expect(finalJob).toMatchObject({
+          status: 'queued',
+          workerId: null,
+          leaseExpiresAt: null,
+        });
+      }
     }
   );
 

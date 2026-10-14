@@ -22,6 +22,8 @@ export interface AiWorkItem {
   feature: AiJobFeature;
   input: Record<string, unknown>;
   signal: AbortSignal;
+  /** Revalidate the live claim and linked-score ACL before each provider attempt. */
+  authorizeAttempt?: () => Promise<void>;
 }
 
 function serializeJson(value: unknown): string {
@@ -308,16 +310,24 @@ export class AiJobWorker {
         signal: abortController.signal,
       };
       // Score-linked jobs use the admission-time model snapshot. Every provider
-      // dispatch (including repairs) rechecks current ACL and the live claim;
-      // the final check-to-network interval cannot be transactionally locked.
+      // call (including repairs) checks current ACL and the live claim; the
+      // adapter callback repeats it before each request attempt. The final
+      // check-to-network interval is not atomic, so an in-flight request cannot
+      // be recalled and completion fencing remains necessary.
+      const authorizeProviderAttempt = async (): Promise<void> => {
+        if (job.scoreId !== null) {
+          await assertAssociatedScoreAccessible(this.repository, job);
+        }
+        await assertActiveAiJobClaim(this.repository, job.id, this.workerId);
+      };
       const guardedProvider: AiProvider = {
         name: this.provider.name,
         generate: async (providerWork) => {
-          if (job.scoreId !== null) {
-            await assertAssociatedScoreAccessible(this.repository, job);
-          }
-          await assertActiveAiJobClaim(this.repository, job.id, this.workerId);
-          const response = await this.provider.generate(providerWork);
+          await authorizeProviderAttempt();
+          const response = await this.provider.generate({
+            ...providerWork,
+            authorizeAttempt: authorizeProviderAttempt,
+          });
           if (job.scoreId !== null) {
             await assertAssociatedScoreAccessible(this.repository, job);
           }
