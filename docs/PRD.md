@@ -75,7 +75,9 @@ Browser ──► Vercel (static app + rewrite /api/* ──►) Pxxl API ──
 
 ### 2.3 Environment variables
 **API (Pxxl dashboard):**
-`PORT`, `NODE_ENV`, `DATABASE_URL`, `DATABASE_AUTH_TOKEN`, `JWT_SECRET`, `COOKIE_DOMAIN` (optional), `ALLOWED_ORIGIN`, `AI_PROVIDER` (= `mistral`), `AI_API_KEY`, `AI_MODEL` (heavy tasks, e.g. `mistral-large-latest`), `AI_MODEL_LIGHT` (light tasks, e.g. `mistral-small-latest`), `AI_DAILY_LIMIT_DEFAULT` (default 20), `AI_MAX_MEASURES_PER_CALL` (reserved future setting, default 64; not enforced by the current job/provider-routing code), `ADMIN_BOOTSTRAP_USERNAME`, `ADMIN_BOOTSTRAP_PASSWORD` (used once to seed the first admin).
+`PORT`, `NODE_ENV`, `DATABASE_URL`, `DATABASE_AUTH_TOKEN`, `JWT_SECRET`, `COOKIE_DOMAIN` (optional), `ALLOWED_ORIGIN`, `AI_PROVIDER` (= `mistral`), `AI_API_KEY`, `AI_BASE_URL` (optional Mistral-compatible endpoint override), `AI_MODEL` (heavy tasks, e.g. `mistral-large-latest`), `AI_MODEL_LIGHT` (light tasks, e.g. `mistral-small-latest`), `AI_DAILY_LIMIT_DEFAULT` (default 20), `AI_MAX_MEASURES_PER_CALL` (reserved future setting, default 64; not enforced by the current job/provider-routing code), `ADMIN_BOOTSTRAP_USERNAME`, `ADMIN_BOOTSTRAP_PASSWORD` (used once to seed the first admin).
+
+For a nonblank `AI_BASE_URL`, the startup validator rejects malformed URLs, non-HTTPS URLs, and URLs containing userinfo; it does not verify that the host is trusted or that the path targets chat completions. The deployment operator must configure a trusted host and the correct full endpoint path. The configured path is used as-is (not appended).
 
 **Web (Vercel):** `VITE_API_BASE` (default `/api`) and `PXXL_API_URL` (API origin, used only by the Vercel route configuration). **No secrets in the frontend, ever.**
 
