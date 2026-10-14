@@ -295,7 +295,8 @@ export function createAiRouter(
   });
 
   router.get('/jobs/:id', async (req, res) => {
-    const userId = (req as RequestWithContext).authUser?.id;
+    const user = (req as RequestWithContext).authUser;
+    const userId = user?.id;
     if (!userId) {
       return await sendApiError(
         res,
@@ -313,7 +314,7 @@ export function createAiRouter(
         'The requested AI job was not found.'
       );
     }
-    const job = await repository.findAiJobById(id);
+    let job = await repository.findAiJobById(id);
     if (!job || job.userId !== userId) {
       return await sendApiError(
         res,
@@ -321,6 +322,37 @@ export function createAiRouter(
         'NOT_FOUND',
         'The requested AI job was not found.'
       );
+    }
+    if (job.scoreId !== null) {
+      const linkedScoreId = job.scoreId;
+      if (
+        !user ||
+        !(await findAccessibleScore(repository, user, linkedScoreId))
+      ) {
+        return await sendApiError(
+          res,
+          404,
+          'NOT_FOUND',
+          'The requested AI job was not found.'
+        );
+      }
+      // Re-read after the access check so deletion-trigger redaction is
+      // reflected rather than serializing a pre-deletion result snapshot.
+      const refreshedJob = await repository.findAiJobById(id);
+      if (
+        !refreshedJob ||
+        refreshedJob.userId !== userId ||
+        refreshedJob.scoreId !== linkedScoreId ||
+        !(await findAccessibleScore(repository, user, linkedScoreId))
+      ) {
+        return await sendApiError(
+          res,
+          404,
+          'NOT_FOUND',
+          'The requested AI job was not found.'
+        );
+      }
+      job = refreshedJob;
     }
     const response = aiJobStatusResponseSchema.parse({
       jobId: job.id,

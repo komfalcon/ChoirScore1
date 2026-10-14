@@ -147,6 +147,19 @@ const SUCCESSFUL_PROVIDER_RESULT: AiProviderResult = {
   tokensOut: 0,
 };
 
+const VALID_HARMONIZE_PROVIDER_RESULT: AiProviderResult = {
+  result: {
+    parts: [
+      { id: 'A', measures: [{ number: 1, pitches: ['E4'] }] },
+      { id: 'T', measures: [{ number: 1, pitches: ['G3'] }] },
+      { id: 'B', measures: [{ number: 1, pitches: ['C3'] }] },
+    ],
+  },
+  warnings: [],
+  tokensIn: 1,
+  tokensOut: 1,
+};
+
 async function insertUser(
   username: string,
   role: UserRecord['role'],
@@ -420,7 +433,7 @@ describe('persisted AI jobs', () => {
         { name: 'score-access-mock', generate },
         () => new Date(FIXED_NOW)
       );
-      expect(await worker.runOne()).toBe(true);
+      expect(await worker.runOne()).toBe(change !== 'score deleted');
       expect(generate).not.toHaveBeenCalled();
       const failed = await repository.findAiJobById(accepted.body.jobId);
       expect(failed).toMatchObject({
@@ -428,6 +441,17 @@ describe('persisted AI jobs', () => {
         status: 'failed',
         error: 'AI job processing failed. Submit a new request to retry.',
       });
+      if (change === 'score deleted') {
+        expect(failed).toMatchObject({
+          inputJson: '{}',
+          resultJson: null,
+          warningsJson: null,
+          tokensIn: null,
+          tokensOut: null,
+          workerId: null,
+          leaseExpiresAt: null,
+        });
+      }
     }
   );
 
@@ -467,6 +491,173 @@ describe('persisted AI jobs', () => {
     expect((await repository.findAiJobById(accepted.body.jobId))?.status).toBe(
       'failed'
     );
+  });
+
+  it('rechecks linked access on poll and redacts completed snapshots on score deletion', async () => {
+    const scoreId = await createStoredScore(actors.admin!, 'shared');
+    await repository.replaceScoreAccess(
+      scoreId,
+      [{ userId: actors.alice!.id, canEdit: false }],
+      actors.admin!.id
+    );
+    const accepted = await submitHarmonize(actors.alice!, 'poll-linked-score', {
+      scoreId,
+    });
+    expect(accepted.status).toBe(202);
+    const worker = new AiJobWorker(
+      repository,
+      {
+        name: 'linked-score-success',
+        generate: async () => VALID_HARMONIZE_PROVIDER_RESULT,
+      },
+      () => new Date(FIXED_NOW)
+    );
+    await expect(worker.runOne()).resolves.toBe(true);
+    expect((await repository.findAiJobById(accepted.body.jobId))?.status).toBe(
+      'succeeded'
+    );
+
+    await repository.replaceScoreAccess(scoreId, [], actors.admin!.id);
+    const deniedPoll = await asActor(
+      request(app).get(`/ai/jobs/${accepted.body.jobId as string}`),
+      actors.alice!
+    );
+    expect(deniedPoll.status).toBe(404);
+    expect(deniedPoll.body.error).toEqual({
+      code: 'NOT_FOUND',
+      message: 'The requested AI job was not found.',
+    });
+    expect(deniedPoll.body).not.toHaveProperty('result');
+
+    const maintenanceClient = createClient({ url: `file:${databasePath}` });
+    await maintenanceClient.execute({
+      sql: 'DELETE FROM scores WHERE id = ?',
+      args: [scoreId],
+    });
+    maintenanceClient.close();
+    expect(await repository.findAiJobById(accepted.body.jobId)).toMatchObject({
+      scoreId,
+      status: 'failed',
+      inputJson: '{}',
+      resultJson: null,
+      warningsJson: null,
+      tokensIn: null,
+      tokensOut: null,
+      workerId: null,
+      leaseExpiresAt: null,
+    });
+  });
+
+  it('rechecks access after a provider response before persisting success', async () => {
+    const scoreId = await createStoredScore(actors.admin!, 'shared');
+    await repository.replaceScoreAccess(
+      scoreId,
+      [{ userId: actors.alice!.id, canEdit: false }],
+      actors.admin!.id
+    );
+    const accepted = await submitHarmonize(actors.alice!, 'post-response-acl', {
+      scoreId,
+    });
+    expect(accepted.status).toBe(202);
+    const generate = vi.fn(async () => {
+      await repository.replaceScoreAccess(scoreId, [], actors.admin!.id);
+      return VALID_HARMONIZE_PROVIDER_RESULT;
+    });
+    const worker = new AiJobWorker(
+      repository,
+      { name: 'post-response-access-mock', generate },
+      () => new Date(FIXED_NOW)
+    );
+
+    await expect(worker.runOne()).resolves.toBe(true);
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(await repository.findAiJobById(accepted.body.jobId)).toMatchObject({
+      status: 'failed',
+      resultJson: null,
+      warningsJson: null,
+    });
+  });
+
+  it('atomically declines success when access changes after the final worker check', async () => {
+    const scoreId = await createStoredScore(actors.admin!, 'shared');
+    await repository.replaceScoreAccess(
+      scoreId,
+      [{ userId: actors.alice!.id, canEdit: false }],
+      actors.admin!.id
+    );
+    const accepted = await submitHarmonize(
+      actors.alice!,
+      'atomic-complete-acl',
+      {
+        scoreId,
+      }
+    );
+    expect(accepted.status).toBe(202);
+    const complete = repository.completeAiJob.bind(repository);
+    repository.completeAiJob = async (id, workerId, update, linkedScore) => {
+      await repository.replaceScoreAccess(scoreId, [], actors.admin!.id);
+      return await complete(id, workerId, update, linkedScore);
+    };
+    const worker = new AiJobWorker(
+      repository,
+      {
+        name: 'atomic-complete-access-mock',
+        generate: async () => VALID_HARMONIZE_PROVIDER_RESULT,
+      },
+      () => new Date(FIXED_NOW)
+    );
+
+    await expect(worker.runOne()).resolves.toBe(true);
+    expect(await repository.findAiJobById(accepted.body.jobId)).toMatchObject({
+      status: 'failed',
+      resultJson: null,
+    });
+  });
+
+  it('redacts and invalidates a linked job deleted while its provider call is in flight', async () => {
+    const scoreId = await createStoredScore(actors.alice!);
+    const accepted = await submitHarmonize(actors.alice!, 'delete-in-flight', {
+      scoreId,
+    });
+    expect(accepted.status).toBe(202);
+    const providerEntered = deferred<void>();
+    const providerResponse = deferred<AiProviderResult>();
+    const generate = vi.fn(async () => {
+      providerEntered.resolve();
+      return await providerResponse.promise;
+    });
+    const worker = new AiJobWorker(
+      repository,
+      { name: 'in-flight-delete-mock', generate },
+      () => new Date(FIXED_NOW)
+    );
+    const processing = worker.runOne();
+    await providerEntered.promise;
+
+    const maintenanceClient = createClient({ url: `file:${databasePath}` });
+    await maintenanceClient.execute({
+      sql: 'DELETE FROM scores WHERE id = ?',
+      args: [scoreId],
+    });
+    maintenanceClient.close();
+    expect(await repository.findAiJobById(accepted.body.jobId)).toMatchObject({
+      status: 'failed',
+      inputJson: '{}',
+      resultJson: null,
+      warningsJson: null,
+      workerId: null,
+      leaseExpiresAt: null,
+    });
+
+    providerResponse.resolve(VALID_HARMONIZE_PROVIDER_RESULT);
+    await expect(processing).resolves.toBe(true);
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(await repository.findAiJobById(accepted.body.jobId)).toMatchObject({
+      status: 'failed',
+      inputJson: '{}',
+      resultJson: null,
+      warningsJson: null,
+    });
   });
 
   it('rejects arbitrary and secret-like feature input keys before acceptance', async () => {

@@ -9,6 +9,7 @@ import {
   gte,
   inArray,
   isNotNull,
+  isNull,
   like,
   lte,
   lt,
@@ -322,7 +323,8 @@ export interface ApiRepository extends RepositoryTransaction {
       tokensIn: number;
       tokensOut: number;
       finishedAt: string;
-    }
+    },
+    linkedScore?: { scoreId: string; userId: string }
   ): Promise<boolean>;
   failAiJob(
     id: string,
@@ -1666,7 +1668,8 @@ class DrizzleApiRepository implements ApiRepository {
       tokensIn: number;
       tokensOut: number;
       finishedAt: string;
-    }
+    },
+    linkedScore?: { scoreId: string; userId: string }
   ): Promise<boolean> {
     if (!isJsonObjectJson(update.resultJson)) {
       throw new Error('AI job result must be a JSON object');
@@ -1687,7 +1690,35 @@ class DrizzleApiRepository implements ApiRepository {
               eq(aiJobs.id, id),
               eq(aiJobs.status, 'running'),
               eq(aiJobs.workerId, workerId),
-              gt(aiJobs.leaseExpiresAt, AI_DATABASE_NOW)
+              gt(aiJobs.leaseExpiresAt, AI_DATABASE_NOW),
+              linkedScore
+                ? and(
+                    eq(aiJobs.scoreId, linkedScore.scoreId),
+                    eq(aiJobs.userId, linkedScore.userId),
+                    sql`EXISTS (
+                      SELECT 1
+                      FROM scores AS linked_scores
+                      JOIN users AS linked_users
+                        ON linked_users.id = ai_jobs.user_id
+                      WHERE linked_scores.id = ai_jobs.score_id
+                        AND linked_users.is_active = 1
+                        AND (
+                          linked_scores.created_by = linked_users.id
+                          OR linked_users.role IN ('admin', 'director')
+                          OR linked_scores.visibility = 'choir'
+                          OR (
+                            linked_scores.visibility = 'shared'
+                            AND EXISTS (
+                              SELECT 1
+                              FROM score_access AS linked_access
+                              WHERE linked_access.score_id = linked_scores.id
+                                AND linked_access.user_id = linked_users.id
+                            )
+                          )
+                        )
+                    )`
+                  )
+                : isNull(aiJobs.scoreId)
             )
           )
           .run();

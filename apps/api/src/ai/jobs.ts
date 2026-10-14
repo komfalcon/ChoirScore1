@@ -54,6 +54,21 @@ function serializeJsonObject(value: unknown): string {
   return serialized;
 }
 
+async function assertAssociatedScoreAccessible(
+  repository: ApiRepository,
+  job: Pick<AiJobRecord, 'scoreId' | 'userId'>
+): Promise<void> {
+  if (job.scoreId === null) return;
+  const currentUser = await repository.findUserById(job.userId);
+  if (
+    !currentUser ||
+    !currentUser.isActive ||
+    !(await findAccessibleScore(repository, currentUser, job.scoreId))
+  ) {
+    throw new Error('Associated score is no longer accessible.');
+  }
+}
+
 export class AiJobWorker {
   private readonly workerId = randomUUID();
   private readonly inFlight = new Set<Promise<void>>();
@@ -282,34 +297,19 @@ export class AiJobWorker {
         input,
         signal: abortController.signal,
       };
-      // Score-linked jobs use the authorized admission-time model snapshot, but
-      // must still have current view access before each initial or repair call.
-      // Revoked, deleted, or newly inaccessible sources fail before provider I/O.
+      // Score-linked jobs use the admission-time model snapshot, but must still
+      // have current view access before and after each provider request. The
+      // check-to-network interval is intentionally not transactionally locked.
       const scoreGuardedProvider: AiProvider =
         job.scoreId === null
           ? this.provider
           : {
               name: this.provider.name,
               generate: async (providerWork) => {
-                const scoreId = job.scoreId;
-                if (scoreId === null) {
-                  throw new Error('Invalid AI job score association');
-                }
-                const currentUser = await this.repository.findUserById(
-                  job.userId
-                );
-                if (
-                  !currentUser ||
-                  !currentUser.isActive ||
-                  !(await findAccessibleScore(
-                    this.repository,
-                    currentUser,
-                    scoreId
-                  ))
-                ) {
-                  throw new Error('Associated score is no longer accessible.');
-                }
-                return await this.provider.generate(providerWork);
+                await assertAssociatedScoreAccessible(this.repository, job);
+                const response = await this.provider.generate(providerWork);
+                await assertAssociatedScoreAccessible(this.repository, job);
+                return response;
               },
             };
       const generation =
@@ -330,13 +330,32 @@ export class AiJobWorker {
       ) {
         throw new Error('Invalid provider response');
       }
-      await this.repository.completeAiJob(job.id, this.workerId, {
+      const completion = {
         resultJson: serializeJsonObject(output.result),
         warningsJson: serializeJson(output.warnings ?? []),
         tokensIn: output.tokensIn,
         tokensOut: output.tokensOut,
         finishedAt: this.now().toISOString(),
-      });
+      };
+      if (job.scoreId !== null) {
+        await assertAssociatedScoreAccessible(this.repository, job);
+      }
+      const completed = await this.repository.completeAiJob(
+        job.id,
+        this.workerId,
+        completion,
+        job.scoreId === null
+          ? undefined
+          : { scoreId: job.scoreId, userId: job.userId }
+      );
+      if (!completed && !leaseLost) {
+        await this.repository.failAiJob(
+          job.id,
+          this.workerId,
+          AI_PROCESSING_FAILURE_MESSAGE,
+          this.now().toISOString()
+        );
+      }
     } catch {
       if (!leaseLost) {
         await this.repository.failAiJob(
