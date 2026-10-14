@@ -2,7 +2,7 @@ import { aiJobInputSchemas } from '@choirscore/shared';
 import type { AiWorkItem } from '../jobs';
 import type { AiProvider, AiProviderResult } from './index';
 
-/** The fixed official Mistral API endpoint; deployment origins are not configurable. */
+/** Official Mistral endpoint by default; an explicit baseUrl can override it. */
 export const MISTRAL_CHAT_COMPLETIONS_URL =
   'https://api.mistral.ai/v1/chat/completions';
 
