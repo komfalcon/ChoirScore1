@@ -85,7 +85,12 @@ describe('score autosave migration', () => {
       ]);
       const aiJobColumns = await client.execute("PRAGMA table_info('ai_jobs')");
       expect(aiJobColumns.rows.map((column) => column.name)).toEqual(
-        expect.arrayContaining(['request_id', 'worker_id', 'lease_expires_at'])
+        expect.arrayContaining([
+          'request_id',
+          'worker_id',
+          'lease_expires_at',
+          'score_id',
+        ])
       );
       const aiJobIndexes = await client.execute("PRAGMA index_list('ai_jobs')");
       expect(aiJobIndexes.rows.map((index) => index.name)).toContain(
@@ -93,6 +98,9 @@ describe('score autosave migration', () => {
       );
       expect(aiJobIndexes.rows.map((index) => index.name)).toContain(
         'ai_jobs_status_lease_idx'
+      );
+      expect(aiJobIndexes.rows.map((index) => index.name)).toContain(
+        'ai_jobs_score_idx'
       );
       const legacyJob = await client.execute({
         sql: 'SELECT status, worker_id, lease_expires_at FROM ai_jobs WHERE id = ?',

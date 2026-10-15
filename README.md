@@ -48,5 +48,5 @@ npm run lint
 - Start command: `npm run start`
 - Set environment values from `apps/api/.env.example`.
 - API server listens on `process.env.PORT`.
-- AI services route through Orca Router (or Mistral-compatible endpoints) using `AI_BASE_URL`.
-
+- Mistral uses the official `https://api.mistral.ai/v1/chat/completions` endpoint by default. `AI_BASE_URL` is privileged deployment configuration, not user input: leave it blank for the official default or set the full trusted HTTPS chat-completions endpoint. Startup validation checks only that a nonblank value is a parseable HTTPS URL without userinfo; it does not verify host trust or that the path targets chat completions. Configure a trusted host and the correct full endpoint path at deployment. The configured path is used as-is (not appended), provider fetch rejects redirects, and endpoint configuration and secrets are not logged.
+- The timeout is 60 seconds per HTTP attempt. The initial provider call plus up to two repairs can make up to six HTTP attempts (one retry per call); retrying after a timeout may leave upstream work and cost ambiguous.

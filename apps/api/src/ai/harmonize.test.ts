@@ -72,7 +72,7 @@ function work(value: Record<string, unknown>): AiWorkItem {
 }
 
 describe('Harmonize inline pipeline', () => {
-  it('normalizes score defaults and rejects scoreId, incomplete measures, and non-S melodies', () => {
+  it('normalizes score defaults and rejects unhydrated scoreId, incomplete measures, and non-S melodies', () => {
     const accepted = validateHarmonizeSubmission(input());
     expect(accepted.success).toBe(true);
     if (!accepted.success) return;

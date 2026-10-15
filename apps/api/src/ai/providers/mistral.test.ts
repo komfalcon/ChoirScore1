@@ -105,7 +105,7 @@ describe('Mistral provider selection', () => {
       {
         AI_PROVIDER: 'mistral',
         AI_API_KEY: 'test-only-key',
-        AI_BASE_URL: 'https://api.orcarouter.ai/v1/chat/completions',
+        AI_BASE_URL: ' https://api.orcarouter.ai/v1/chat/completions ',
       },
       fetcher
     );
@@ -113,6 +113,34 @@ describe('Mistral provider selection', () => {
 
     const [url] = fetcher.mock.calls[0]!;
     expect(url).toBe('https://api.orcarouter.ai/v1/chat/completions');
+  });
+
+  it.each([
+    ['HTTP', 'http://api.orcarouter.ai/v1/chat/completions'],
+    ['malformed', 'not-a-url'],
+    ['incomplete HTTPS', 'https://'],
+    [
+      'credential-bearing HTTPS',
+      'https://user:secret-placeholder@api.orcarouter.ai/v1/chat/completions',
+    ],
+  ])('rejects %s AI_BASE_URL without disclosing its value', (_label, value) => {
+    const invalidConfig = () =>
+      createAiProvider({
+        NODE_ENV: 'development',
+        AI_PROVIDER: 'unsupported',
+        AI_BASE_URL: value,
+      });
+    let failure: unknown;
+    try {
+      invalidConfig();
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe(
+      'AI_BASE_URL must be a valid HTTPS URL.'
+    );
+    expect((failure as Error).message).not.toContain(value);
   });
 });
 
@@ -165,6 +193,37 @@ describe('Mistral chat completions contract', () => {
       tokensIn: 17,
       tokensOut: 8,
     });
+  });
+
+  it('rejects redirects on every fetch attempt', async () => {
+    const fetcher = vi.fn<typeof fetch>((_url, init) => {
+      if (init?.redirect === 'error') {
+        return Promise.reject(
+          new TypeError('redirect mode rejected the response')
+        );
+      }
+      return Promise.resolve(
+        new Response(null, {
+          status: 302,
+          headers: { Location: 'https://redirected.example/private' },
+        })
+      );
+    });
+    const provider = new MistralAiProvider({
+      apiKey: 'test-only-key',
+      model: 'heavy-test-model',
+      modelLight: 'light-test-model',
+      fetcher,
+    });
+
+    await expect(provider.generate(makeWork())).rejects.toThrow(
+      'AI provider request failed.'
+    );
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls.map(([, init]) => init?.redirect)).toEqual([
+      'error',
+      'error',
+    ]);
   });
 
   it('maps malformed usage to zero and rejects invalid or missing JSON content generically', async () => {

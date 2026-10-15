@@ -2,9 +2,26 @@ import { aiJobInputSchemas } from '@choirscore/shared';
 import type { AiWorkItem } from '../jobs';
 import type { AiProvider, AiProviderResult } from './index';
 
-/** The fixed official Mistral API endpoint; deployment origins are not configurable. */
+/** Official Mistral endpoint by default; an explicit baseUrl can override it. */
 export const MISTRAL_CHAT_COMPLETIONS_URL =
   'https://api.mistral.ai/v1/chat/completions';
+
+/** Validate privileged deployment configuration without exposing its value. */
+export function validateMistralBaseUrl(value?: string): string | undefined {
+  const baseUrl = value?.trim();
+  if (!baseUrl) return undefined;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    throw new Error('AI_BASE_URL must be a valid HTTPS URL.');
+  }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password) {
+    throw new Error('AI_BASE_URL must be a valid HTTPS URL.');
+  }
+  return baseUrl;
+}
 
 export const MISTRAL_DEFAULT_MODEL = 'mistral-large-latest';
 export const MISTRAL_DEFAULT_MODEL_LIGHT = 'mistral-small-latest';
@@ -104,9 +121,11 @@ export class MistralAiProvider implements AiProvider {
   readonly name = 'mistral';
   private readonly fetcher: typeof fetch;
   private readonly timeoutMs: number;
+  private readonly baseUrl?: string;
 
   constructor(private readonly options: MistralAiProviderOptions) {
     this.fetcher = options.fetcher ?? globalThis.fetch;
+    this.baseUrl = validateMistralBaseUrl(options.baseUrl);
     const requestedTimeout = options.timeoutMs ?? MISTRAL_REQUEST_TIMEOUT_MS;
     this.timeoutMs =
       Number.isFinite(requestedTimeout) && requestedTimeout > 0
@@ -150,6 +169,15 @@ export class MistralAiProvider implements AiProvider {
     });
 
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+      if (work.signal.aborted) throw new Error(REQUEST_CANCELLED);
+      if (work.authorizeAttempt) {
+        try {
+          await work.authorizeAttempt();
+        } catch {
+          if (work.signal.aborted) throw new Error(REQUEST_CANCELLED);
+          throw new Error(REQUEST_FAILED);
+        }
+      }
       try {
         return await this.callOnce(work, body);
       } catch (error) {
@@ -206,9 +234,10 @@ export class MistralAiProvider implements AiProvider {
     const request = (async () => {
       let response: Response;
       try {
-        const url = this.options.baseUrl?.trim() || MISTRAL_CHAT_COMPLETIONS_URL;
+        const url = this.baseUrl ?? MISTRAL_CHAT_COMPLETIONS_URL;
         response = await this.fetcher(url, {
           method: 'POST',
+          redirect: 'error',
           headers: {
             Authorization: `Bearer ${this.options.apiKey}`,
             'Content-Type': 'application/json',

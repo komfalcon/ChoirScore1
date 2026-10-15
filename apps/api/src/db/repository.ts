@@ -9,6 +9,7 @@ import {
   gte,
   inArray,
   isNotNull,
+  isNull,
   like,
   lte,
   lt,
@@ -22,6 +23,7 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import * as schema from './schema';
+import { scorePermissionsFor } from '../services/scoreAccess';
 import {
   auditLog,
   aiJobs,
@@ -89,6 +91,7 @@ export interface NewAiJob {
   id: string;
   requestId: string;
   userId: string;
+  scoreId: string | null;
   feature: AiJobFeature;
   inputJson: string;
   createdAt: string;
@@ -100,6 +103,7 @@ export type AiJobSubmissionResult =
       status:
         | 'idempotency_conflict'
         | 'inactive_user'
+        | 'score_inaccessible'
         | 'ai_disabled'
         | 'ai_access_disabled'
         | 'quota_exceeded'
@@ -300,6 +304,7 @@ export interface ApiRepository extends RepositoryTransaction {
     nextDayStart: string
   ): Promise<AiQuotaState | null>;
   findAiJobById(id: string): Promise<AiJobRecord | null>;
+  hasActiveAiJobClaim(id: string, workerId: string): Promise<boolean>;
   claimNextAiJob(
     workerId: string,
     leaseDurationMs: number
@@ -319,7 +324,8 @@ export interface ApiRepository extends RepositoryTransaction {
       tokensIn: number;
       tokensOut: number;
       finishedAt: string;
-    }
+    },
+    linkedScore?: { scoreId: string; userId: string }
   ): Promise<boolean>;
   failAiJob(
     id: string,
@@ -1132,14 +1138,51 @@ class DrizzleApiRepository implements ApiRepository {
         return { status: 'inactive_recipients' };
       }
 
-      await tx
-        .delete(scoreAccess)
-        .where(eq(scoreAccess.scoreId, scoreId))
-        .run();
-      if (grants.length) {
+      const existingGrants = await tx
+        .select()
+        .from(scoreAccess)
+        .where(eq(scoreAccess.scoreId, scoreId));
+      const existingByUser = new Map(
+        existingGrants.map((grant) => [grant.userId, grant])
+      );
+      const desiredByUser = new Map(
+        grants.map((grant) => [grant.userId, grant])
+      );
+      for (const existing of existingGrants) {
+        if (!desiredByUser.has(existing.userId)) {
+          await tx
+            .delete(scoreAccess)
+            .where(
+              and(
+                eq(scoreAccess.scoreId, scoreId),
+                eq(scoreAccess.userId, existing.userId)
+              )
+            )
+            .run();
+        }
+      }
+      for (const grant of grants) {
+        const existing = existingByUser.get(grant.userId);
+        if (existing && existing.canEdit !== grant.canEdit) {
+          await tx
+            .update(scoreAccess)
+            .set({ canEdit: grant.canEdit })
+            .where(
+              and(
+                eq(scoreAccess.scoreId, scoreId),
+                eq(scoreAccess.userId, grant.userId)
+              )
+            )
+            .run();
+        }
+      }
+      const newGrants = grants.filter(
+        (grant) => !existingByUser.has(grant.userId)
+      );
+      if (newGrants.length) {
         await tx
           .insert(scoreAccess)
-          .values(grants.map((grant) => ({ ...grant, scoreId })))
+          .values(newGrants.map((grant) => ({ ...grant, scoreId })))
           .run();
       }
       const byId = new Map(
@@ -1349,6 +1392,62 @@ class DrizzleApiRepository implements ApiRepository {
     let reclaimedJobIds: string[] = [];
     const transaction = () =>
       this.db.transaction(async (tx): Promise<AiJobSubmissionResult> => {
+        let submittingUser: UserRecord | undefined;
+        if (job.scoreId !== null) {
+          if (job.feature !== 'harmonize') {
+            return { status: 'score_inaccessible' };
+          }
+          const linkedUsers = await tx
+            .select()
+            .from(users)
+            .where(eq(users.id, job.userId))
+            .limit(1);
+          submittingUser = linkedUsers[0];
+          if (!submittingUser || !submittingUser.isActive) {
+            return { status: 'inactive_user' };
+          }
+
+          const linkedScoreRows = await tx
+            .select({
+              score: scores,
+              version: scoreVersions,
+              creatorDisplayName: users.displayName,
+              hasAccess: sql<number>`EXISTS (
+                SELECT 1 FROM score_access AS score_access_for_viewer
+                WHERE score_access_for_viewer.score_id = ${scores.id}
+                  AND score_access_for_viewer.user_id = ${job.userId}
+              )`,
+              accessCanEdit: sql<number>`COALESCE((
+                SELECT score_access_for_viewer.can_edit
+                FROM score_access AS score_access_for_viewer
+                WHERE score_access_for_viewer.score_id = ${scores.id}
+                  AND score_access_for_viewer.user_id = ${job.userId}
+              ), 0)`,
+            })
+            .from(scores)
+            .innerJoin(
+              scoreVersions,
+              eq(scores.currentVersionId, scoreVersions.id)
+            )
+            .innerJoin(users, eq(scores.createdBy, users.id))
+            .where(eq(scores.id, job.scoreId))
+            .limit(1);
+          const rawLinkedScore = linkedScoreRows[0];
+          const linkedScore = rawLinkedScore
+            ? {
+                ...rawLinkedScore,
+                hasAccess: Number(rawLinkedScore.hasAccess) === 1,
+                accessCanEdit: Number(rawLinkedScore.accessCanEdit) === 1,
+              }
+            : null;
+          if (
+            !linkedScore ||
+            !scorePermissionsFor(linkedScore, submittingUser).canView
+          ) {
+            return { status: 'score_inaccessible' };
+          }
+        }
+
         const priorJobs = await tx
           .select()
           .from(aiJobs)
@@ -1362,17 +1461,20 @@ class DrizzleApiRepository implements ApiRepository {
         const prior = priorJobs[0];
         if (prior) {
           return prior.feature === job.feature &&
+            prior.scoreId === job.scoreId &&
             prior.inputJson === job.inputJson
             ? { status: 'replayed', job: prior }
             : { status: 'idempotency_conflict' };
         }
 
-        const userRows = await tx
-          .select()
-          .from(users)
-          .where(eq(users.id, job.userId))
-          .limit(1);
-        const user = userRows[0];
+        const userRows = submittingUser
+          ? []
+          : await tx
+              .select()
+              .from(users)
+              .where(eq(users.id, job.userId))
+              .limit(1);
+        const user = submittingUser ?? userRows[0];
         if (!user || !user.isActive) return { status: 'inactive_user' };
         if (!user.aiEnabled) return { status: 'ai_access_disabled' };
 
@@ -1537,6 +1639,22 @@ class DrizzleApiRepository implements ApiRepository {
     return rows[0] ?? null;
   }
 
+  async hasActiveAiJobClaim(id: string, workerId: string): Promise<boolean> {
+    const rows = await this.db
+      .select({ id: aiJobs.id })
+      .from(aiJobs)
+      .where(
+        and(
+          eq(aiJobs.id, id),
+          eq(aiJobs.status, 'running'),
+          eq(aiJobs.workerId, workerId),
+          gt(aiJobs.leaseExpiresAt, AI_DATABASE_NOW)
+        )
+      )
+      .limit(1);
+    return rows.length > 0;
+  }
+
   async claimNextAiJob(
     workerId: string,
     leaseDurationMs: number
@@ -1604,7 +1722,8 @@ class DrizzleApiRepository implements ApiRepository {
       tokensIn: number;
       tokensOut: number;
       finishedAt: string;
-    }
+    },
+    linkedScore?: { scoreId: string; userId: string }
   ): Promise<boolean> {
     if (!isJsonObjectJson(update.resultJson)) {
       throw new Error('AI job result must be a JSON object');
@@ -1625,7 +1744,35 @@ class DrizzleApiRepository implements ApiRepository {
               eq(aiJobs.id, id),
               eq(aiJobs.status, 'running'),
               eq(aiJobs.workerId, workerId),
-              gt(aiJobs.leaseExpiresAt, AI_DATABASE_NOW)
+              gt(aiJobs.leaseExpiresAt, AI_DATABASE_NOW),
+              linkedScore
+                ? and(
+                    eq(aiJobs.scoreId, linkedScore.scoreId),
+                    eq(aiJobs.userId, linkedScore.userId),
+                    sql`EXISTS (
+                      SELECT 1
+                      FROM scores AS linked_scores
+                      JOIN users AS linked_users
+                        ON linked_users.id = ai_jobs.user_id
+                      WHERE linked_scores.id = ai_jobs.score_id
+                        AND linked_users.is_active = 1
+                        AND (
+                          linked_scores.created_by = linked_users.id
+                          OR linked_users.role IN ('admin', 'director')
+                          OR linked_scores.visibility = 'choir'
+                          OR (
+                            linked_scores.visibility = 'shared'
+                            AND EXISTS (
+                              SELECT 1
+                              FROM score_access AS linked_access
+                              WHERE linked_access.score_id = linked_scores.id
+                                AND linked_access.user_id = linked_users.id
+                            )
+                          )
+                        )
+                    )`
+                  )
+                : isNull(aiJobs.scoreId)
             )
           )
           .run();

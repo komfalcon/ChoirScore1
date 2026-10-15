@@ -22,11 +22,14 @@ export async function runMigrations(
     });
     if (applied.rows.length > 0) continue;
 
-    const sql = readFileSync(join(migrationsDirectory, file), 'utf8');
-    const statements = sql
-      .split(';')
-      .map((statement) => statement.trim())
-      .filter(Boolean);
+    const sql = readFileSync(join(migrationsDirectory, file), 'utf8').trim();
+    // Trigger bodies contain internal semicolons and must remain one statement.
+    const statements = /^CREATE\s+TRIGGER\b/i.test(sql)
+      ? [sql]
+      : sql
+          .split(';')
+          .map((statement) => statement.trim())
+          .filter(Boolean);
     const transaction = await client.transaction('write');
     try {
       for (const statement of statements) await transaction.execute(statement);

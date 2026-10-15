@@ -6,6 +6,7 @@ import {
   type ApiRepository,
 } from '../db/repository';
 import { readVoiceRanges } from '../services/voiceRanges';
+import { findAccessibleScore } from '../services/scoreAccess';
 import { generateHarmonizeProposal } from './harmonize';
 import type { AiProvider } from './providers';
 
@@ -21,6 +22,8 @@ export interface AiWorkItem {
   feature: AiJobFeature;
   input: Record<string, unknown>;
   signal: AbortSignal;
+  /** Revalidate the live claim and linked-score ACL before each provider attempt. */
+  authorizeAttempt?: () => Promise<void>;
 }
 
 function serializeJson(value: unknown): string {
@@ -51,6 +54,31 @@ function serializeJsonObject(value: unknown): string {
     throw new Error('AI result must serialize to a JSON object');
   }
   return serialized;
+}
+
+async function assertAssociatedScoreAccessible(
+  repository: ApiRepository,
+  job: Pick<AiJobRecord, 'scoreId' | 'userId'>
+): Promise<void> {
+  if (job.scoreId === null) return;
+  const currentUser = await repository.findUserById(job.userId);
+  if (
+    !currentUser ||
+    !currentUser.isActive ||
+    !(await findAccessibleScore(repository, currentUser, job.scoreId))
+  ) {
+    throw new Error('Associated score is no longer accessible.');
+  }
+}
+
+async function assertActiveAiJobClaim(
+  repository: Pick<ApiRepository, 'hasActiveAiJobClaim'>,
+  jobId: string,
+  workerId: string
+): Promise<void> {
+  if (!(await repository.hasActiveAiJobClaim(jobId, workerId))) {
+    throw new Error('AI job claim is no longer active.');
+  }
 }
 
 export class AiJobWorker {
@@ -271,6 +299,9 @@ export class AiJobWorker {
       if (!inputSchema) throw new Error('Invalid stored AI feature');
       const parsedInput = inputSchema.safeParse(storedInput);
       if (!parsedInput.success) throw new Error('Invalid stored AI input');
+      if (job.scoreId !== null && job.feature !== 'harmonize') {
+        throw new Error('Invalid AI job score association');
+      }
       const input = parsedInput.data as Record<string, unknown>;
       const work: AiWorkItem = {
         id: job.id,
@@ -278,12 +309,37 @@ export class AiJobWorker {
         input,
         signal: abortController.signal,
       };
+      // Score-linked jobs use the admission-time model snapshot. Every provider
+      // call (including repairs) checks current ACL and the live claim; the
+      // adapter callback repeats it before each request attempt. The final
+      // check-to-network interval is not atomic, so an in-flight request cannot
+      // be recalled and completion fencing remains necessary.
+      const authorizeProviderAttempt = async (): Promise<void> => {
+        if (job.scoreId !== null) {
+          await assertAssociatedScoreAccessible(this.repository, job);
+        }
+        await assertActiveAiJobClaim(this.repository, job.id, this.workerId);
+      };
+      const guardedProvider: AiProvider = {
+        name: this.provider.name,
+        generate: async (providerWork) => {
+          await authorizeProviderAttempt();
+          const response = await this.provider.generate({
+            ...providerWork,
+            authorizeAttempt: authorizeProviderAttempt,
+          });
+          if (job.scoreId !== null) {
+            await assertAssociatedScoreAccessible(this.repository, job);
+          }
+          return response;
+        },
+      };
       const generation =
         job.feature === 'harmonize'
           ? readVoiceRanges(this.repository).then((voiceRanges) =>
-              generateHarmonizeProposal(this.provider, work, voiceRanges)
+              generateHarmonizeProposal(guardedProvider, work, voiceRanges)
             )
-          : this.provider.generate(work);
+          : guardedProvider.generate(work);
       const output = await Promise.race([generation, aborted]);
       if (output === null) return;
       if (renewal) await renewal;
@@ -296,13 +352,32 @@ export class AiJobWorker {
       ) {
         throw new Error('Invalid provider response');
       }
-      await this.repository.completeAiJob(job.id, this.workerId, {
+      const completion = {
         resultJson: serializeJsonObject(output.result),
         warningsJson: serializeJson(output.warnings ?? []),
         tokensIn: output.tokensIn,
         tokensOut: output.tokensOut,
         finishedAt: this.now().toISOString(),
-      });
+      };
+      if (job.scoreId !== null) {
+        await assertAssociatedScoreAccessible(this.repository, job);
+      }
+      const completed = await this.repository.completeAiJob(
+        job.id,
+        this.workerId,
+        completion,
+        job.scoreId === null
+          ? undefined
+          : { scoreId: job.scoreId, userId: job.userId }
+      );
+      if (!completed && !leaseLost) {
+        await this.repository.failAiJob(
+          job.id,
+          this.workerId,
+          AI_PROCESSING_FAILURE_MESSAGE,
+          this.now().toISOString()
+        );
+      }
     } catch {
       if (!leaseLost) {
         await this.repository.failAiJob(

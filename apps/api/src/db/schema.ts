@@ -152,6 +152,9 @@ export const aiJobs = sqliteTable(
     userId: text('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
+    // Deliberately not a foreign key: the ID must survive source deletion so
+    // queued work can fail closed at the worker boundary.
+    scoreId: text('score_id'),
     feature: text('feature', {
       enum: ['harmonize', 'draft', 'simplify'],
     }).notNull(),

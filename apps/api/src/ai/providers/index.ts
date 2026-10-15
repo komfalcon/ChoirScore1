@@ -3,6 +3,7 @@ import {
   MISTRAL_DEFAULT_MODEL,
   MISTRAL_DEFAULT_MODEL_LIGHT,
   MistralAiProvider,
+  validateMistralBaseUrl,
 } from './mistral';
 
 export interface AiProviderResult {
@@ -51,13 +52,14 @@ export function createAiProvider(
 ): AiProvider {
   const provider = (env.AI_PROVIDER ?? '').trim().toLowerCase();
   const apiKey = env.AI_API_KEY?.trim();
+  const baseUrl = validateMistralBaseUrl(env.AI_BASE_URL);
   if (provider !== 'mistral' || !apiKey) return new UnavailableAiProvider();
 
   return new MistralAiProvider({
     apiKey,
     model: env.AI_MODEL?.trim() || MISTRAL_DEFAULT_MODEL,
     modelLight: env.AI_MODEL_LIGHT?.trim() || MISTRAL_DEFAULT_MODEL_LIGHT,
-    baseUrl: env.AI_BASE_URL?.trim() || undefined,
+    baseUrl,
     fetcher,
   });
 }
