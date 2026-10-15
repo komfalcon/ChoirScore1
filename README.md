@@ -37,7 +37,9 @@ npm run lint
 ### Vercel (web)
 
 - Root directory: `apps/web`
-- Build command: `npm run build`
+- Install command: `cd ../.. && npm ci` (the root install override in `apps/web/vercel.json`)
+- Build command: `cd ../.. && npm run build --workspace @choirscore/shared && npm run build --workspace @choirscore/web` (builds shared before web)
+- These commands require Vercel to expose repository files above `apps/web` while the Root Directory remains `apps/web`. Enable `Include source files outside of the Root Directory in the Build Step`; Vercel enables this by default for new projects, but verify this project's setting.
 - Output directory: `dist`
 - Set `PXXL_API_URL` in the Vercel project environment to the Pxxl API origin (scheme and host, without a trailing slash). The Vercel route uses this value at request time; do not put the API origin in `VITE_*` variables or hardcode it in the repository. Keep `VITE_API_BASE=/api` so browser requests and session cookies stay same-origin.
 
