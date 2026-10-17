@@ -1,5 +1,10 @@
 version = 1
 
+[build]
+installCommand = "cd ../.. && npm install --include=dev --no-audit --no-fund"
+buildCommand = "cd ../.. && npm run build --workspace=@choirscore/shared && npm run build --workspace=@choirscore/api"
+startCommand = "cd ../.. && npm run start --workspace=@choirscore/api"
+
 [services.choirscore]
 baseDirectory = "apps/api"
 packageManager = "npm"
