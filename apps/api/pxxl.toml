@@ -1,8 +1,8 @@
 version = 1
 
 [services.choirscore]
-base_directory = "apps/api"
-package_manager = "npm"
-install_command = "cd ../.. && npm install --include=dev --no-audit --no-fund"
-build_command = "cd ../.. && npm run build --workspace=@choirscore/shared && npm run build --workspace=@choirscore/api"
-start_command = "cd ../.. && npm run start --workspace=@choirscore/api"
+baseDirectory = "apps/api"
+packageManager = "npm"
+installCommand = "cd ../.. && npm install --include=dev --no-audit --no-fund"
+buildCommand = "cd ../.. && npm run build --workspace=@choirscore/shared && npm run build --workspace=@choirscore/api"
+startCommand = "cd ../.. && npm run start --workspace=@choirscore/api"
