@@ -43,7 +43,7 @@ async function start() {
       });
     }
     startupStage = 'port_validation';
-    const port = Number(process.env.PORT ?? 4000);
+    const port = Number(process.env.PORT ?? 3000);
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
       throw new Error('PORT must be a valid TCP port');
     }
@@ -55,7 +55,7 @@ async function start() {
     });
     startupStage = 'http_listen';
     const listeningServer = await new Promise<Server>((resolve, reject) => {
-      const boundServer = app.listen(port, () => {
+      const boundServer = app.listen(port, '0.0.0.0', () => {
         boundServer.removeListener('error', reject);
         resolve(boundServer);
       });

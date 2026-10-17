@@ -149,7 +149,7 @@ afterEach(() => {
 });
 
 describe('M1 API security and auth', () => {
-  it.each(['/healthz', '/api/healthz'])(
+  it.each(['/', '/healthz', '/api/healthz'])(
     'keeps the health endpoint public at %s',
     async (path) => {
       const response = await request(app).get(path);

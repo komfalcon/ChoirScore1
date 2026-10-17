@@ -77,7 +77,7 @@ export function createApp({
   app.use(requireCsrfHeader);
   app.use(authenticationMiddleware(repository, config));
 
-  app.get(['/healthz', '/api/healthz'], (_req, res) => {
+  app.get(['/', '/healthz', '/api/healthz'], (_req, res) => {
     res.status(200).json({ ok: true });
   });
 

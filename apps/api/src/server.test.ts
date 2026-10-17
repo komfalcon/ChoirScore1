@@ -69,7 +69,13 @@ vi.mock('./app', () => ({
   createApp: () => {
     mocks.fail('app_creation');
     return {
-      listen: (_port: number, ready: () => void) => {
+      listen: (
+        _port: number,
+        hostOrReady: string | (() => void),
+        maybeReady?: () => void
+      ) => {
+        const ready =
+          typeof hostOrReady === 'function' ? hostOrReady : maybeReady!;
         const server = Object.assign(new EventEmitter(), {
           listening: false,
           close: (callback: () => void) => {
