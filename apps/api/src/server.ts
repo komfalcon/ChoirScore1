@@ -5,11 +5,16 @@ import { createRepositoryFromEnv } from './db/repository';
 import { bootstrapAdmin } from './services/bootstrapAdmin';
 import { AiJobWorker } from './ai/jobs';
 import { createAiProvider } from './ai/providers';
+import { startupFailure, type StartupStage } from './startupDiagnostics';
+
+let startupStage: StartupStage = 'configuration';
 
 async function start() {
   const config = readApiConfig();
+  startupStage = 'repository_initialization';
   const repository = await createRepositoryFromEnv();
   try {
+    startupStage = 'admin_bootstrap';
     const bootstrap = await bootstrapAdmin(
       repository,
       readBootstrapCredentials()
@@ -21,8 +26,10 @@ async function start() {
           'Change the bootstrap administrator password after first login.',
       });
     }
+    startupStage = 'ai_provider_initialization';
     const aiProvider = createAiProvider();
     const aiWorker = new AiJobWorker(repository, aiProvider);
+    startupStage = 'ai_job_recovery';
     const recoveredJobs = await aiWorker.recoverAfterRestart();
     if (recoveredJobs > 0) {
       structuredLogger.warn({
@@ -30,22 +37,31 @@ async function start() {
         count: recoveredJobs,
       });
     }
+    startupStage = 'port_validation';
     const port = Number(process.env.PORT ?? 4000);
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
       throw new Error('PORT must be a valid TCP port');
     }
+    startupStage = 'app_creation';
     const app = createApp({
       repository,
       config,
       aiProviderAvailable: aiProvider.name !== 'unavailable',
     });
-    const server = app.listen(port, () => {
-      structuredLogger.info({
-        event: 'api_started',
-        port,
-        nodeEnv: config.nodeEnv,
-      });
-    });
+    startupStage = 'http_listen';
+    const server = await new Promise<ReturnType<typeof app.listen>>(
+      (resolve, reject) => {
+        const server = app.listen(port, () => {
+          server.removeListener('error', reject);
+          structuredLogger.info({
+            event: 'api_started',
+          });
+          resolve(server);
+        });
+        server.once('error', reject);
+      }
+    );
+    startupStage = 'worker_start';
     aiWorker.start();
     let shutdownStarted = false;
     const close = () => {
@@ -86,9 +102,6 @@ async function start() {
 }
 
 void start().catch((error: unknown) => {
-  structuredLogger.error({
-    event: 'api_startup_failed',
-    errorType: error instanceof Error ? error.name : 'unknown',
-  });
+  structuredLogger.error(startupFailure(startupStage, error));
   process.exitCode = 1;
 });
