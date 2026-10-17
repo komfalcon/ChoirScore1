@@ -1,3 +1,4 @@
+import type { Server } from 'node:http';
 import { structuredLogger } from './audit';
 import { readApiConfig, readBootstrapCredentials } from './config';
 import { createApp } from './app';
@@ -13,6 +14,9 @@ async function start() {
   const config = readApiConfig();
   startupStage = 'repository_initialization';
   const repository = await createRepositoryFromEnv();
+  let workerForCleanup: AiJobWorker | undefined;
+  let server: Server | undefined;
+  let workerStartAttempted = false;
   try {
     startupStage = 'admin_bootstrap';
     const bootstrap = await bootstrapAdmin(
@@ -29,6 +33,7 @@ async function start() {
     startupStage = 'ai_provider_initialization';
     const aiProvider = createAiProvider();
     const aiWorker = new AiJobWorker(repository, aiProvider);
+    workerForCleanup = aiWorker;
     startupStage = 'ai_job_recovery';
     const recoveredJobs = await aiWorker.recoverAfterRestart();
     if (recoveredJobs > 0) {
@@ -49,26 +54,29 @@ async function start() {
       aiProviderAvailable: aiProvider.name !== 'unavailable',
     });
     startupStage = 'http_listen';
-    const server = await new Promise<ReturnType<typeof app.listen>>(
-      (resolve, reject) => {
-        const server = app.listen(port, () => {
-          server.removeListener('error', reject);
-          structuredLogger.info({
-            event: 'api_started',
-          });
-          resolve(server);
-        });
-        server.once('error', reject);
-      }
-    );
+    const listeningServer = await new Promise<Server>((resolve, reject) => {
+      const boundServer = app.listen(port, () => {
+        boundServer.removeListener('error', reject);
+        resolve(boundServer);
+      });
+      server = boundServer;
+      boundServer.once('error', reject);
+    });
+    server = listeningServer;
     startupStage = 'worker_start';
+    workerStartAttempted = true;
     aiWorker.start();
+    structuredLogger.info({
+      event: 'api_started',
+      port,
+      nodeEnv: config.nodeEnv,
+    });
     let shutdownStarted = false;
     const close = () => {
       if (shutdownStarted) return;
       shutdownStarted = true;
       const httpDrained = new Promise<void>((resolve) => {
-        server.close((error) => {
+        listeningServer.close((error) => {
           if (error) {
             structuredLogger.error({
               event: 'api_http_shutdown_failed',
@@ -96,7 +104,24 @@ async function start() {
     process.once('SIGTERM', close);
     process.once('SIGINT', close);
   } catch (error) {
-    repository.close();
+    try {
+      const serverToClose = server;
+      if (serverToClose?.listening) {
+        await new Promise<void>((resolve) => {
+          serverToClose.close(() => resolve());
+          serverToClose.closeAllConnections();
+        });
+      }
+    } catch {
+      server?.closeAllConnections();
+    }
+    try {
+      if (workerStartAttempted) await workerForCleanup?.stop();
+    } catch {
+      // Keep the original startup failure as the diagnostic.
+    } finally {
+      repository.close();
+    }
     throw error;
   }
 }

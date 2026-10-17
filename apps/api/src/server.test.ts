@@ -14,9 +14,12 @@ const mocks = vi.hoisted(() => ({
     }
   },
   close: vi.fn(),
+  httpClose: vi.fn(),
+  httpCloseAllConnections: vi.fn(),
   error: vi.fn(),
   info: vi.fn(),
   workerStart: vi.fn(),
+  workerStop: vi.fn(),
 }));
 
 vi.mock('./audit', () => ({
@@ -57,6 +60,9 @@ vi.mock('./ai/jobs', () => ({
       mocks.workerStart();
       mocks.fail('worker_start');
     }
+    async stop() {
+      mocks.workerStop();
+    }
   },
 }));
 vi.mock('./app', () => ({
@@ -64,7 +70,15 @@ vi.mock('./app', () => ({
     mocks.fail('app_creation');
     return {
       listen: (_port: number, ready: () => void) => {
-        const server = new EventEmitter();
+        const server = Object.assign(new EventEmitter(), {
+          listening: false,
+          close: (callback: () => void) => {
+            mocks.httpClose();
+            server.listening = false;
+            callback();
+          },
+          closeAllConnections: () => mocks.httpCloseAllConnections(),
+        });
         queueMicrotask(() => {
           if (mocks.stage === 'http_listen') {
             server.emit(
@@ -74,6 +88,7 @@ vi.mock('./app', () => ({
               })
             );
           } else {
+            server.listening = true;
             ready();
           }
         });
@@ -115,8 +130,32 @@ describe('startup failure attribution without external services', () => {
       expect(mocks.close).toHaveBeenCalledTimes(
         ['configuration', 'repository_initialization'].includes(stage) ? 0 : 1
       );
+      expect(mocks.httpClose).toHaveBeenCalledTimes(
+        stage === 'worker_start' ? 1 : 0
+      );
+      expect(mocks.httpCloseAllConnections).toHaveBeenCalledTimes(
+        stage === 'worker_start' ? 1 : 0
+      );
+      expect(mocks.workerStop).toHaveBeenCalledTimes(
+        stage === 'worker_start' ? 1 : 0
+      );
+      if (stage === 'worker_start') expect(mocks.info).not.toHaveBeenCalled();
       if (stage === 'http_listen')
         expect(mocks.workerStart).not.toHaveBeenCalled();
     }
   );
+
+  it('preserves success telemetry after the listener and worker start', async () => {
+    mocks.stage = '';
+    vi.stubEnv('PORT', '4321');
+    await import('./server');
+    await vi.waitFor(() => expect(mocks.info).toHaveBeenCalledOnce());
+    expect(mocks.info).toHaveBeenCalledWith({
+      event: 'api_started',
+      port: 4321,
+      nodeEnv: 'PRIVATE_ENV_VALUE',
+    });
+    expect(mocks.workerStart).toHaveBeenCalledOnce();
+    expect(mocks.error).not.toHaveBeenCalled();
+  });
 });
