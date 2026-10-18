@@ -150,7 +150,7 @@ afterEach(() => {
 
 describe('M1 API security and auth', () => {
   it.each(['/', '/healthz', '/api/healthz'])(
-    'keeps the health endpoint public at %s',
+    'keeps the root and health endpoints public at %s',
     async (path) => {
       const response = await request(app).get(path);
       expect(response.status).toBe(200);

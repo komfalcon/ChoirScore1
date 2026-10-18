@@ -7,7 +7,7 @@ import type { RequestWithContext } from '../types';
 
 function isPublicRequest(method: string, path: string) {
   return (
-    (method === 'GET' && ['/healthz', '/api/healthz'].includes(path)) ||
+    (method === 'GET' && ['/', '/healthz', '/api/healthz'].includes(path)) ||
     (method === 'POST' && path === '/auth/login')
   );
 }
